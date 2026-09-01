@@ -226,6 +226,7 @@ private struct HoverRow<Content: View>: View {
         .buttonStyle(.plain)
         .disabled(!enabled)
         .accessibilityLabel(accessibilityText)
+        .accessibilityHint("Opens this item in Ghostty")
         .background(
             Color.primary.opacity(isHovered ? 0.04 : 0),
             in: RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -277,6 +278,7 @@ private struct GroupHeader: View {
         .buttonStyle(.plain)
         .disabled(!enabled)
         .accessibilityLabel("\(title), \(summary.text)")
+        .accessibilityHint("Opens this group in Ghostty")
         .background(
             Color.primary.opacity(isHovered && enabled ? 0.03 : 0),
             in: RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -394,6 +396,7 @@ private struct SourceFocusRow: View {
         .accessibilityLabel(
             "\(source.descriptor.name), \(accessibilitySummary.isEmpty ? summary.text : accessibilitySummary), \(isExpanded ? "expanded" : "collapsed")"
         )
+        .accessibilityHint("Expands or collapses this source")
         .padding(.trailing, 8)
         .background(backgroundColor, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .onHover { isHovered = $0 }

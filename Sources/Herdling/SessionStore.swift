@@ -2,6 +2,13 @@ import Foundation
 import Observation
 import ServiceManagement
 
+struct SourceRetryPolicy {
+    static func delay(afterFailure count: Int) -> TimeInterval? {
+        guard count >= 2 else { return nil }
+        return min(15 * pow(2, Double(count - 2)), 60)
+    }
+}
+
 enum AgentStatus: String, Sendable {
     case blocked
     case done
@@ -159,11 +166,15 @@ final class SessionStore {
     private let loadBranches: BranchLoader
     private let ghostty: GhosttyController
     private let sleep: @Sendable (Duration) async throws -> Void
+    private let now: @Sendable () -> Date
+    private let localMonitor: (any LocalSessionMonitoring)?
     private var pollTask: Task<Void, Never>?
     private var pollingStarted = false
+    private var localMonitorActive = false
     private var pollGeneration = 0
     private var refreshRequested = false
     private var sourceFailureCounts: [String: Int] = [:]
+    private var sourceRetryAfter: [String: Date] = [:]
     @ObservationIgnored var onChange: (() -> Void)?
     @ObservationIgnored private lazy var focusRunner = LatestRequestRunner<FocusRequest> { [weak self] request in
         await self?.performFocus(request)
@@ -183,14 +194,16 @@ final class SessionStore {
     var launchAtLoginEnabled: Bool { SMAppService.mainApp.status == .enabled }
 
     convenience init() {
-        self.init(client: HerdrClient())
+        self.init(client: HerdrClient(), localMonitor: HerdrLocalSessionMonitor())
     }
 
     init(
         client: HerdrClient,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         loadSource: SourceLoader? = nil,
-        loadBranches: BranchLoader? = nil
+        loadBranches: BranchLoader? = nil,
+        localMonitor: (any LocalSessionMonitoring)? = nil,
+        now: @escaping @Sendable () -> Date = Date.init
     ) {
         let aliases = SSHConfig.aliases()
         let persisted = UserDefaults.standard.stringArray(forKey: "selected-ssh-aliases") ?? []
@@ -202,6 +215,8 @@ final class SessionStore {
             await GitBranchResolver.shared.branches(source: source, paths: paths)
         }
         self.sleep = sleep
+        self.now = now
+        self.localMonitor = localMonitor
         self.ghostty = ghostty
         availableSSHAliases = aliases
         selectedSSHAliases = selected
@@ -213,6 +228,13 @@ final class SessionStore {
     func start() {
         guard !pollingStarted else { return }
         pollingStarted = true
+        if let localMonitor {
+            Task { [weak self] in
+                await localMonitor.start { [weak self] event in
+                    await self?.handleLocalMonitor(event)
+                }
+            }
+        }
         Task { await refresh() }
         scheduleNextPoll()
     }
@@ -223,6 +245,8 @@ final class SessionStore {
         pollGeneration += 1
         pollTask?.cancel()
         pollTask = nil
+        localMonitorActive = false
+        if let localMonitor { Task { await localMonitor.stop() } }
     }
 
     func setPanelOpen(_ open: Bool) {
@@ -255,7 +279,14 @@ final class SessionStore {
 
         let loadSource = self.loadSource
         let loadBranches = self.loadBranches
-        let descriptors = sources.map(\.descriptor)
+        let currentTime = now()
+        let descriptors = sources.map(\.descriptor).filter { descriptor in
+            if localMonitorActive, descriptor == .local { return false }
+            guard descriptor.sshAlias != nil, let retryAfter = sourceRetryAfter[descriptor.id] else {
+                return true
+            }
+            return retryAfter <= currentTime
+        }
         let previousSources = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
         var completed: [String: SourceLoad] = [:]
         await withTaskGroup(of: SourceLoad.self) { group in
@@ -293,9 +324,11 @@ final class SessionStore {
         for index in nextSources.indices {
             let current = nextSources[index]
             guard let load = completed[current.id] else { continue }
+            if load.descriptor == .local, localMonitorActive { continue }
             var updated = current
             if let loaded = load.sessions {
                 sourceFailureCounts[load.descriptor.id] = 0
+                sourceRetryAfter.removeValue(forKey: load.descriptor.id)
                 updated.online = true
                 updated.error = nil
                 updated.sessions = loaded
@@ -303,6 +336,11 @@ final class SessionStore {
             } else {
                 let failureCount = (sourceFailureCounts[load.descriptor.id] ?? 0) + 1
                 sourceFailureCounts[load.descriptor.id] = failureCount
+                if load.descriptor.sshAlias != nil,
+                   let delay = SourceRetryPolicy.delay(afterFailure: failureCount)
+                {
+                    sourceRetryAfter[load.descriptor.id] = now().addingTimeInterval(delay)
+                }
                 updated.online = false
                 let retryingInitialLoad = pollingStarted && updated.sessions.isEmpty && failureCount == 1
                 updated.error = retryingInitialLoad ? nil : load.error
@@ -316,6 +354,32 @@ final class SessionStore {
             nextSources[index] = updated
         }
         sources = nextSources
+    }
+
+    private func handleLocalMonitor(_ event: LocalSessionMonitorEvent) async {
+        guard pollingStarted else { return }
+        switch event {
+        case let .sessions(loaded):
+            localMonitorActive = true
+            guard let index = sources.firstIndex(where: { $0.descriptor == .local }) else { return }
+            let sessions = Self.sessions(from: loaded, previous: sources[index].sessions)
+            let branches = await loadBranches(.local, Self.branchPaths(from: sessions))
+            guard pollingStarted, localMonitorActive,
+                  let currentIndex = sources.firstIndex(where: { $0.descriptor == .local })
+            else { return }
+            sourceFailureCounts[SourceDescriptor.local.id] = 0
+            var local = sources[currentIndex]
+            local.sessions = sessions
+            local.branches = branches
+            local.online = true
+            local.error = nil
+            sources[currentIndex] = local
+            onChange?()
+        case .unavailable:
+            let usedStream = localMonitorActive
+            localMonitorActive = false
+            if usedStream { await refresh() }
+        }
     }
 
     func focus(_ agent: AgentInfo, in session: SessionInfo, source: SourceDescriptor = .local) {
@@ -365,6 +429,7 @@ final class SessionStore {
         let descriptors = [SourceDescriptor.local] + selectedSSHAliases.map(SourceDescriptor.remote)
         let retainedIDs = Set(descriptors.map(\.id))
         sourceFailureCounts = sourceFailureCounts.filter { retainedIDs.contains($0.key) }
+        sourceRetryAfter = sourceRetryAfter.filter { retainedIDs.contains($0.key) }
         sources = descriptors.map { old[$0.id] ?? SourceInfo(descriptor: $0, sessions: [], online: false, error: nil) }
         onChange?()
         Task { await refresh() }

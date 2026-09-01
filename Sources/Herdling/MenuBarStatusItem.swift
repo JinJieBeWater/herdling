@@ -5,6 +5,7 @@ import SwiftUI
 final class MenuBarStatusItem: NSObject {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     var onClick: (() -> Void)?
+    private var lastStatus: MenuStatus?
 
     override init() {
         super.init()
@@ -16,11 +17,30 @@ final class MenuBarStatusItem: NSObject {
         button.title = ""
         button.image = nil
         button.toolTip = "Herdling"
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(statusWindowScaleChanged(_:)),
+            name: NSWindow.didChangeBackingPropertiesNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(statusWindowScaleChanged(_:)),
+            name: NSWindow.didChangeScreenNotification,
+            object: nil
+        )
     }
 
     func update(_ status: MenuStatus) {
+        lastStatus = status
         let presentation = MenuBarStatusPresentation.for(status)
-        let image = Self.summaryImage(presentation)
+        let image = Self.summaryImage(
+            presentation,
+            scale: Self.renderingScale(
+                buttonScale: item.button?.window?.backingScaleFactor,
+                fallbackScale: NSScreen.main?.backingScaleFactor ?? 2
+            )
+        )
         item.length = ceil(image.size.width) + 10
         item.button?.image = image
         item.button?.title = ""
@@ -37,9 +57,23 @@ final class MenuBarStatusItem: NSObject {
         onClick?()
     }
 
-    private static func summaryImage(_ presentation: MenuBarStatusPresentation) -> NSImage {
+    @objc private func statusWindowScaleChanged(_ notification: Notification) {
+        guard notification.object as? NSWindow === item.button?.window,
+              let lastStatus
+        else { return }
+        update(lastStatus)
+    }
+
+    static func renderingScale(buttonScale: CGFloat?, fallbackScale: CGFloat) -> CGFloat {
+        buttonScale ?? fallbackScale
+    }
+
+    private static func summaryImage(
+        _ presentation: MenuBarStatusPresentation,
+        scale: CGFloat
+    ) -> NSImage {
         let renderer = ImageRenderer(content: MenuBarSummaryStrip(entries: presentation.entries))
-        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+        renderer.scale = scale
         let image = renderer.nsImage ?? NSImage()
         image.isTemplate = true
         image.accessibilityDescription = presentation.accessibilityText

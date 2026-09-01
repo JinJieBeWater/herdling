@@ -4,7 +4,7 @@ import SwiftUI
 @MainActor
 final class StatusItemController: NSObject {
     static let panelWidth: CGFloat = 420
-    static let panelTopMargin: CGFloat = 12
+    static let panelTopMargin: CGFloat = 0
     static let panelBottomMargin: CGFloat = 16
     private let store: SessionStore
     private let menuBarItem = MenuBarStatusItem()
@@ -66,7 +66,7 @@ final class StatusItemController: NSObject {
         menuBarItem.item.menu = nil
     }
 
-    @objc private func openSettings() {
+    @objc func openSettings() {
         store.setShowingSettings(true)
         if !panel.isVisible { openPanel() }
     }
@@ -88,6 +88,14 @@ final class StatusItemController: NSObject {
         store.setPanelOpen(true)
         outsideClickMonitor.start()
         installKeyMonitor()
+    }
+
+    func showPanel() {
+        if panel.isVisible {
+            panel.makeKeyAndOrderFront(nil)
+        } else {
+            openPanel()
+        }
     }
 
     private func closePanel() {
@@ -220,7 +228,7 @@ final class StatusItemController: NSObject {
     }
 
     static func panelTopY(buttonRect: NSRect, visibleFrame: NSRect) -> CGFloat {
-        min(buttonRect.minY - 8, visibleFrame.maxY - panelTopMargin)
+        min(buttonRect.minY - panelTopMargin, visibleFrame.maxY - panelTopMargin)
     }
 
     static func panelSize(preferred: NSSize, buttonRect: NSRect, visibleFrame: NSRect) -> NSSize {

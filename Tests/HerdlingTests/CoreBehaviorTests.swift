@@ -48,6 +48,15 @@ struct CoreBehaviorTests {
     }
 
     @Test
+    func sshRetryBackoffStartsAfterInitialGraceAndCapsAtOneMinute() {
+        #expect(SourceRetryPolicy.delay(afterFailure: 1) == nil)
+        #expect(SourceRetryPolicy.delay(afterFailure: 2) == 15)
+        #expect(SourceRetryPolicy.delay(afterFailure: 3) == 30)
+        #expect(SourceRetryPolicy.delay(afterFailure: 4) == 60)
+        #expect(SourceRetryPolicy.delay(afterFailure: 8) == 60)
+    }
+
+    @Test
     func herdrGroupedOrderIsPreserved() throws {
         let snapshot = Data(#"{"result":{"snapshot":{"agents":[{"agent":"pi","agent_status":"idle","cwd":"/w1/a","foreground_cwd":null,"name":"first-w1","pane_id":"w1:p1","terminal_title":null,"terminal_title_stripped":null,"workspace_id":"w1"},{"agent":"pi","agent_status":"blocked","cwd":"/w2/a","foreground_cwd":null,"name":"first-w2","pane_id":"w2:p1","terminal_title":null,"terminal_title_stripped":null,"workspace_id":"w2"},{"agent":"pi","agent_status":"done","cwd":"/w1/b","foreground_cwd":null,"name":"second-w1","pane_id":"w1:p2","terminal_title":null,"terminal_title_stripped":null,"workspace_id":"w1"}],"workspaces":[{"label":"Workspace 2","workspace_id":"w2"},{"label":"Workspace 1","workspace_id":"w1"},{"label":"Empty","workspace_id":"w3"}]}}}"#.utf8)
 
@@ -56,6 +65,113 @@ struct CoreBehaviorTests {
         #expect(groups[0].agents.map(\.title) == ["first-w2"])
         #expect(groups[1].agents.map(\.title) == ["first-w1", "second-w1"])
         #expect(groups[2].agents.isEmpty)
+    }
+
+    @Test
+    func socketSnapshotPreservesWorkspaceAndAgentOrder() throws {
+        let line = Data(#"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"version":"0.8.2","protocol":1,"workspaces":[{"workspace_id":"w2","label":"Second"},{"workspace_id":"w1","label":"First"}],"tabs":[],"panes":[],"layouts":[],"agents":[{"terminal_id":"t1","agent_status":"idle","workspace_id":"w1","tab_id":"tab","pane_id":"w1:p1","focused":false,"revision":1,"name":"one","cwd":"/one"},{"terminal_id":"t2","agent_status":"blocked","workspace_id":"w2","tab_id":"tab","pane_id":"w2:p1","focused":false,"revision":1,"name":"two","cwd":"/two"}]}}}"#.utf8)
+
+        guard case let .snapshot(groups) = try HerdrSocketMessage.decode(line, refreshedAt: .distantPast) else {
+            Issue.record("Expected socket snapshot")
+            return
+        }
+        #expect(groups.map(\.name) == ["Second", "First"])
+        #expect(groups[0].agents.map(\.title) == ["two"])
+        #expect(groups[1].agents.map(\.title) == ["one"])
+        #expect(groups[1].agents[0].updatedAt == .distantPast)
+    }
+
+    @Test
+    func socketEventIsRecognized() throws {
+        let event = Data(#"{"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"working"}}"#.utf8)
+        #expect(try HerdrSocketMessage.decode(event, refreshedAt: .now).isEvent)
+    }
+
+    @Test
+    func socketSubscriptionAcknowledgementIsRecognized() throws {
+        let acknowledgement = Data(#"{"id":"subscription","result":{"type":"subscription_started"}}"#.utf8)
+        guard case .subscriptionStarted = try HerdrSocketMessage.decode(acknowledgement, refreshedAt: .now) else {
+            Issue.record("Expected subscription acknowledgement")
+            return
+        }
+    }
+
+    @Test
+    func olderSocketSnapshotCannotOverwriteNewerGeneration() {
+        var ledger = SnapshotGenerationLedger()
+        let acceptedSecond = ledger.accept(endpoint: "default", generation: 2)
+        let acceptedFirst = ledger.accept(endpoint: "default", generation: 1)
+        let acceptedThird = ledger.accept(endpoint: "default", generation: 3)
+        #expect(acceptedSecond)
+        #expect(!acceptedFirst)
+        #expect(acceptedThird)
+    }
+
+    @Test
+    func statusSubscriptionsAlwaysCarryRequiredPaneIDs() throws {
+        let data = Data(HerdrLocalSessionMonitor.subscriptionRequest(paneIDs: ["w2:p2", "w1:p1"]).utf8)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let params = try #require(object["params"] as? [String: Any])
+        let subscriptions = try #require(params["subscriptions"] as? [[String: String]])
+        let statusSubscriptions = subscriptions.filter { $0["type"] == "pane.agent_status_changed" }
+
+        #expect(statusSubscriptions == [
+            ["type": "pane.agent_status_changed", "pane_id": "w1:p1"],
+            ["type": "pane.agent_status_changed", "pane_id": "w2:p2"],
+        ])
+    }
+
+    @Test
+    func localSocketDiscoveryKeepsDefaultThenNamedSessionOrder() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("herdling-sockets-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("sessions/zeta"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("sessions/alpha"), withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: root.appendingPathComponent("herdr.sock").path, contents: nil)
+        FileManager.default.createFile(atPath: root.appendingPathComponent("sessions/zeta/herdr.sock").path, contents: nil)
+        FileManager.default.createFile(atPath: root.appendingPathComponent("sessions/alpha/herdr.sock").path, contents: nil)
+
+        #expect(HerdrLocalSessionMonitor.endpoints(configDirectory: root) == [
+            HerdrSocketEndpoint(session: "default", path: root.appendingPathComponent("herdr.sock").path),
+            HerdrSocketEndpoint(session: "alpha", path: root.appendingPathComponent("sessions/alpha/herdr.sock").path),
+            HerdrSocketEndpoint(session: "zeta", path: root.appendingPathComponent("sessions/zeta/herdr.sock").path),
+        ])
+    }
+
+    @Test
+    @MainActor
+    func localSocketSnapshotBecomesAuthoritativeOverPolling() async {
+        let agent = AgentInfo(
+            paneID: "socket-pane", title: "socket-agent", status: .working,
+            workspace: "Socket Space", cwd: "/socket", updatedAt: .now
+        )
+        let monitor = ImmediateLocalSessionMonitor(event: .sessions([
+            HerdrClient.LoadedSession(
+                name: "default",
+                groups: [AgentGroup(id: "socket", name: "Socket Space", agents: [agent])],
+                error: nil
+            ),
+        ]))
+        let recorder = SourceLoadRecorder()
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            sleep: { _ in try await Task.sleep(for: .seconds(30)) },
+            loadSource: { descriptor in recorder.load(descriptor) },
+            loadBranches: { _, paths in Dictionary(uniqueKeysWithValues: paths.map { ($0, "main") }) },
+            localMonitor: monitor
+        )
+
+        store.start()
+        for _ in 0..<1_000 where store.sources[0].sessions.first?.agents.first?.paneID != "socket-pane" {
+            await Task.yield()
+        }
+        let callsBeforeRefresh = recorder.localCallCount
+        await store.refresh()
+
+        #expect(store.sources[0].sessions.first?.agents.first?.paneID == "socket-pane")
+        #expect(store.sources[0].branches == ["/socket": "main"])
+        #expect(recorder.localCallCount == callsBeforeRefresh)
+        store.stop()
     }
 
     @Test
@@ -450,6 +566,8 @@ struct CoreBehaviorTests {
         #expect(statusItem.item.length > 50)
         #expect(statusItem.item.button?.accessibilityLabel() == presentation.accessibilityText)
         #expect(statusItem.item.button?.image?.isTemplate == true)
+        #expect(MenuBarStatusItem.renderingScale(buttonScale: 1, fallbackScale: 2) == 1)
+        #expect(MenuBarStatusItem.renderingScale(buttonScale: nil, fallbackScale: 2) == 2)
     }
 
     @Test
@@ -486,13 +604,13 @@ struct CoreBehaviorTests {
             panelSize: panelSize,
             visibleFrame: visibleFrame
         )
-        #expect(panelSize == NSSize(width: 900, height: 256))
+        #expect(panelSize == NSSize(width: 900, height: 264))
         #expect(origin == NSPoint(x: 92, y: 16))
         #expect(origin.y + panelSize.height <= visibleFrame.maxY)
         #expect(StatusItemController.availablePanelHeight(
             buttonRect: buttonRect,
             visibleFrame: visibleFrame
-        ) == 256)
+        ) == 264)
 
         let narrowPanel = StatusItemController.panelSize(
             preferred: NSSize(width: 900, height: 340),
@@ -518,7 +636,11 @@ struct CoreBehaviorTests {
             buttonRect: NSRect(x: 900, y: 800, width: 20, height: 20),
             visibleFrame: visibleFrame
         )
-        #expect(fullHeightSize.height == 772)
+        #expect(fullHeightSize.height == 784)
+        #expect(StatusItemController.panelTopY(
+            buttonRect: NSRect(x: 900, y: 800, width: 20, height: 20),
+            visibleFrame: visibleFrame
+        ) == visibleFrame.maxY)
         let compactSize = NSSize(width: 900, height: 200)
         let expandedSize = NSSize(width: 900, height: 500)
         let compactOrigin = StatusItemController.panelOrigin(
@@ -594,6 +716,33 @@ struct CoreBehaviorTests {
         #expect(StatusItemController.escapeAction(showingSettings: true) == .showRoster)
         #expect(StatusItemController.escapeAction(showingSettings: false) == .closePanel)
     }
+
+    @Test
+    @MainActor
+    func applicationMenuProvidesStandardSettingsAndQuitShortcuts() throws {
+        let menu = HerdlingApplicationMenu.make(settingsTarget: NSObject())
+        let appMenu = try #require(menu.items.first?.submenu)
+        let settings = try #require(appMenu.items.first { $0.action == #selector(StatusItemController.openSettings) })
+        let quit = try #require(appMenu.items.first { $0.action == #selector(NSApplication.terminate(_:)) })
+
+        #expect(settings.keyEquivalent == ",")
+        #expect(settings.keyEquivalentModifierMask == .command)
+        #expect(quit.keyEquivalent == "q")
+        #expect(quit.keyEquivalentModifierMask == .command)
+    }
+
+    @Test
+    func singleInstanceLockAllowsOnlyOneHolderAndReleasesCleanly() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("herdling-lock-test-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        var first = try #require(SingleInstanceLock.acquire(identifier: "test", directory: directory))
+        #expect(SingleInstanceLock.acquire(identifier: "test", directory: directory) == nil)
+        first.release()
+        first = try #require(SingleInstanceLock.acquire(identifier: "test", directory: directory))
+        #expect(first.isHeld)
+    }
 }
 
 private actor SleepRecorder {
@@ -662,5 +811,31 @@ private final class BranchQueryRecorder: @unchecked Sendable {
     func resolve(_ paths: [String]) -> [String: String] {
         lock.withLock { calls += 1 }
         return paths.contains("/repo") ? ["/repo": "main"] : [:]
+    }
+}
+
+private actor ImmediateLocalSessionMonitor: LocalSessionMonitoring {
+    let event: LocalSessionMonitorEvent
+
+    init(event: LocalSessionMonitorEvent) {
+        self.event = event
+    }
+
+    func start(handler: @escaping @Sendable (LocalSessionMonitorEvent) async -> Void) async {
+        await handler(event)
+    }
+
+    func stop() async {}
+}
+
+private final class SourceLoadRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var localCalls = 0
+
+    var localCallCount: Int { lock.withLock { localCalls } }
+
+    func load(_ source: SourceDescriptor) -> [HerdrClient.LoadedSession] {
+        if source == .local { lock.withLock { localCalls += 1 } }
+        return []
     }
 }

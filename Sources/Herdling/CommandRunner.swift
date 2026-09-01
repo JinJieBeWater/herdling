@@ -16,11 +16,17 @@ enum CommandRunner {
         }
     }
 
-    static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval = 5) throws -> Data {
+    static func run(
+        _ executable: String,
+        _ arguments: [String],
+        timeout: TimeInterval = 5,
+        standardInput: Data? = nil
+    ) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        process.standardInput = FileHandle.nullDevice
+        let inputPipe = standardInput == nil ? nil : Pipe()
+        process.standardInput = inputPipe ?? FileHandle.nullDevice
 
         let directory = FileManager.default.temporaryDirectory
         let token = UUID().uuidString
@@ -41,6 +47,10 @@ enum CommandRunner {
         }
 
         try process.run()
+        if let standardInput, let inputPipe {
+            try inputPipe.fileHandleForWriting.write(contentsOf: standardInput)
+            try inputPipe.fileHandleForWriting.close()
+        }
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning, Date() < deadline {
             Thread.sleep(forTimeInterval: 0.05)
