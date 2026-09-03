@@ -41,19 +41,50 @@ struct CoreBehaviorTests {
     }
 
     @Test
-    func remoteHerdrUsesLoginShellPath() {
-        let command = HerdrClient.remoteCommand(arguments: ["session", "list", "--json"])
-        #expect(command.hasPrefix("$SHELL -lc "))
-        #expect(command.contains("herdr"))
+    @MainActor
+    func ghosttyOpenBehaviorPersistsAndDefaultsToTab() {
+        let suite = "HerdlingTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        var store = SessionStore(
+            client: HerdrClient(executable: nil),
+            sourceDescriptors: [.local],
+            defaults: defaults
+        )
+        #expect(store.ghosttyOpenBehavior == .tab)
+
+        store.setGhosttyOpenBehavior(.window)
+        #expect(defaults.string(forKey: "ghostty-open-behavior") == "window")
+
+        store = SessionStore(
+            client: HerdrClient(executable: nil),
+            sourceDescriptors: [.local],
+            defaults: defaults
+        )
+        #expect(store.ghosttyOpenBehavior == .window)
     }
 
     @Test
-    func sshRetryBackoffStartsAfterInitialGraceAndCapsAtOneMinute() {
-        #expect(SourceRetryPolicy.delay(afterFailure: 1) == nil)
-        #expect(SourceRetryPolicy.delay(afterFailure: 2) == 15)
-        #expect(SourceRetryPolicy.delay(afterFailure: 3) == 30)
-        #expect(SourceRetryPolicy.delay(afterFailure: 4) == 60)
-        #expect(SourceRetryPolicy.delay(afterFailure: 8) == 60)
+    func remoteHerdrUsesLoginShellPath() throws {
+        let command = HerdrClient.remoteCommand(arguments: ["session", "list", "--json"])
+        #expect(command.hasPrefix("$SHELL -lc "))
+        #expect(command.contains("herdr"))
+        #expect(HerdrRemoteSessionMonitor.socketCommand(path: "/home/a b/herdr.sock") ==
+            "exec nc -U '/home/a b/herdr.sock'")
+        #expect(HerdrRemoteSessionMonitor.socketCommand(path: "/home/a'b/herdr.sock") ==
+            "exec nc -U '/home/a'\\''b/herdr.sock'")
+        let sessions = try HerdrClient.parseRunningSessions(Data(
+            #"{"sessions":[{"name":"default","running":true,"socket_path":"/custom/herdr.sock"}]}"#.utf8
+        ))
+        #expect(sessions.map(\.name) == ["default"])
+        #expect(sessions.map(\.socketPath) == ["/custom/herdr.sock"])
+        #expect(HerdrRemoteSessionMonitor.reconnectDelay(attempt: 1) == 1)
+        #expect(HerdrRemoteSessionMonitor.reconnectDelay(attempt: 2) == 2)
+        #expect(HerdrRemoteSessionMonitor.reconnectDelay(attempt: 7) == 60)
+        let streamArguments = HerdrClient.sshArguments(alias: "kvm", command: "stream", keepAlive: true)
+        #expect(streamArguments.contains("ServerAliveInterval=15"))
+        #expect(streamArguments.contains("ServerAliveCountMax=2"))
     }
 
     @Test
@@ -65,6 +96,33 @@ struct CoreBehaviorTests {
         #expect(groups[0].agents.map(\.title) == ["first-w2"])
         #expect(groups[1].agents.map(\.title) == ["first-w1", "second-w1"])
         #expect(groups[2].agents.isEmpty)
+    }
+
+    @Test
+    func fallbackLoadsSessionsConcurrentlyAndKeepsOrder() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("herdling-concurrent-load-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let executable = directory.appendingPathComponent("fake-herdr")
+        let root = HerdrClient.shellQuote(directory.path)
+        let script = """
+        #!/bin/sh
+        if [ "$1" = session ]; then
+          printf '%s\n' '{"sessions":[{"name":"a","running":true},{"name":"b","running":true}]}'
+          exit 0
+        fi
+        touch \(root)/"$2"
+        while [ ! -f \(root)/a ] || [ ! -f \(root)/b ]; do sleep 0.01; done
+        printf '%s\n' '{"result":{"snapshot":{"agents":[],"workspaces":[]}}}'
+        """
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+
+        let loaded = try await HerdrClient(executable: executable.path).load()
+
+        #expect(loaded.map(\.name) == ["a", "b"])
+        #expect(loaded.allSatisfy { $0.groups != nil })
     }
 
     @Test
@@ -84,7 +142,10 @@ struct CoreBehaviorTests {
     @Test
     func socketEventIsRecognized() throws {
         let event = Data(#"{"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"working"}}"#.utf8)
-        #expect(try HerdrSocketMessage.decode(event, refreshedAt: .now).isEvent)
+        guard case .event = try HerdrSocketMessage.decode(event, refreshedAt: .now) else {
+            Issue.record("Expected socket event")
+            return
+        }
     }
 
     @Test
@@ -119,6 +180,13 @@ struct CoreBehaviorTests {
             ["type": "pane.agent_status_changed", "pane_id": "w1:p1"],
             ["type": "pane.agent_status_changed", "pane_id": "w2:p2"],
         ])
+
+        let snapshot = try #require(
+            JSONSerialization.jsonObject(with: Data(HerdrLocalSessionMonitor.snapshotRequest.utf8))
+                as? [String: Any]
+        )
+        #expect(snapshot["id"] as? String == "snapshot")
+        #expect(snapshot["method"] as? String == "session.snapshot")
     }
 
     @Test
@@ -145,7 +213,7 @@ struct CoreBehaviorTests {
             paneID: "socket-pane", title: "socket-agent", status: .working,
             workspace: "Socket Space", cwd: "/socket", updatedAt: .now
         )
-        let monitor = ImmediateLocalSessionMonitor(event: .sessions([
+        let monitor = ImmediateSessionMonitor(event: .sessions([
             HerdrClient.LoadedSession(
                 name: "default",
                 groups: [AgentGroup(id: "socket", name: "Socket Space", agents: [agent])],
@@ -175,6 +243,153 @@ struct CoreBehaviorTests {
     }
 
     @Test
+    @MainActor
+    func remoteSocketMonitorReplacesPolling() async {
+        let descriptor = SourceDescriptor.remote("kvm")
+        let agent = AgentInfo(
+            paneID: "remote-pane", title: "remote-agent", status: .idle,
+            workspace: "Remote Space", cwd: "/remote", updatedAt: .now
+        )
+        let monitor = ImmediateSessionMonitor(event: .sessions([
+            HerdrClient.LoadedSession(
+                name: "default",
+                groups: [AgentGroup(id: "remote", name: "Remote Space", agents: [agent])],
+                error: nil
+            ),
+        ]))
+        let recorder = SourceLoadRecorder()
+        let sleepRecorder = SleepRecorder()
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            sleep: { duration in try await sleepRecorder.sleep(duration) },
+            loadSource: { descriptor in recorder.load(descriptor) },
+            loadBranches: { _, _ in [:] },
+            remoteMonitorFactory: { _ in monitor },
+            sourceDescriptors: [descriptor]
+        )
+
+        store.start()
+        for _ in 0..<1_000 where store.sources[0].sessions.first?.agents.first?.paneID != "remote-pane" {
+            await Task.yield()
+        }
+        await store.refresh()
+
+        #expect(store.sources[0].sessions.first?.agents.first?.paneID == "remote-pane")
+        #expect(recorder.remoteCallCount == 0)
+        #expect(await sleepRecorder.durations.isEmpty)
+        store.stop()
+    }
+
+    @Test
+    @MainActor
+    func unavailableRemoteMonitorReconnectsWithoutPolling() async {
+        let descriptor = SourceDescriptor.remote("kvm")
+        let monitor = ImmediateSessionMonitor(event: .unavailable)
+        let recorder = SourceLoadRecorder()
+        let sleepRecorder = SleepRecorder()
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            sleep: { duration in try await sleepRecorder.sleep(duration) },
+            loadSource: { descriptor in recorder.load(descriptor) },
+            remoteMonitorFactory: { _ in monitor },
+            sourceDescriptors: [descriptor]
+        )
+
+        store.start()
+        for _ in 0..<100 { await Task.yield() }
+        await store.refresh()
+
+        #expect(recorder.remoteCallCount == 0)
+        #expect(await sleepRecorder.durations.isEmpty)
+        store.stop()
+    }
+
+    @Test
+    @MainActor
+    func readdedRemoteRejectsOldMonitorEvents() async {
+        let suite = "HerdlingTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let descriptor = SourceDescriptor.remote("kvm")
+        let oldMonitor = ManualSessionMonitor()
+        let newMonitor = ManualSessionMonitor()
+        let monitors = MonitorFactoryQueue([oldMonitor, newMonitor])
+        let branchStarted = AsyncGate()
+        let releaseBranch = AsyncGate()
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            loadBranches: { _, _ in
+                await branchStarted.release()
+                await releaseBranch.wait()
+                return [:]
+            },
+            remoteMonitorFactory: { _ in monitors.next() },
+            sourceDescriptors: [descriptor],
+            defaults: defaults
+        )
+
+        store.start()
+        await oldMonitor.waitUntilStarted()
+        let staleEvent = Task { await oldMonitor.emit(.sessions([loadedSession(paneID: "old")])) }
+        await branchStarted.wait()
+        store.setRemoteAlias("kvm", enabled: false)
+        store.setRemoteAlias("kvm", enabled: true)
+        await newMonitor.waitUntilStarted()
+
+        await releaseBranch.release()
+        await staleEvent.value
+        #expect(store.sources.first { $0.descriptor == descriptor }?.sessions.isEmpty == true)
+
+        await newMonitor.emit(.sessions([loadedSession(paneID: "new")]))
+        #expect(store.sources.first { $0.descriptor == descriptor }?
+            .sessions.first?.agents.first?.paneID == "new")
+        store.stop()
+    }
+
+    @Test
+    func stoppedRemoteDiscoveryDoesNotSchedulePeriodicWakeups() async {
+        let discoveryStarted = AsyncGate()
+        let releaseDiscovery = AsyncGate()
+        let monitor = HerdrRemoteSessionMonitor(
+            source: .remote("kvm"),
+            discoverSessions: {
+                await discoveryStarted.release()
+                await releaseDiscovery.wait()
+                return []
+            }
+        )
+        let start = Task { await monitor.start { _ in } }
+
+        await discoveryStarted.wait()
+        await monitor.stop()
+        await releaseDiscovery.release()
+        await start.value
+
+        #expect(await !monitor.isDiscoveryScheduled)
+    }
+
+    @Test
+    func socketBootstrapUsesSinglePersistentTransport() throws {
+        let published = DispatchSemaphore(value: 0)
+        let connection = HerdrSocketConnection(
+            endpoint: HerdrSocketEndpoint(session: "default", path: "/unused"),
+            eventExecutable: "/bin/sh",
+            eventArguments: [
+                "-c",
+                "read preliminary; printf '%s\\n' '{\"id\":\"snapshot\",\"result\":{\"type\":\"session_snapshot\",\"snapshot\":{\"workspaces\":[],\"agents\":[]}}}'; read subscription; printf '%s\\n' '{\"id\":\"subscription\",\"result\":{\"type\":\"subscription_started\"}}'; read authoritative; printf '%s\\n' '{\"id\":\"snapshot\",\"result\":{\"type\":\"session_snapshot\",\"snapshot\":{\"workspaces\":[],\"agents\":[]}}}'; printf '%s\\n' '{\"event\":\"workspace.updated\"}'; read refresh; printf '%s\\n' '{\"id\":\"snapshot\",\"result\":{\"type\":\"session_snapshot\",\"snapshot\":{\"workspaces\":[],\"agents\":[]}}}'; sleep 5",
+            ],
+            onSnapshot: { _, _, _, _ in published.signal() },
+            onEnd: { _, _ in }
+        )
+        defer { connection.stop() }
+
+        try connection.start()
+
+        #expect(published.wait(timeout: .now() + 1) == .success)
+        #expect(published.wait(timeout: .now() + 1) == .success)
+    }
+
+    @Test
     func rosterNestsWorktreesUnderExistingSpaceWithoutReordering() {
         let groups = [
             AgentGroup(id: "my", name: "my", agents: []),
@@ -188,7 +403,6 @@ struct CoreBehaviorTests {
         let spaces = RosterLayout.spaces(from: groups)
         #expect(spaces.map(\.name) == ["my", "Engineer", "v5", "unknown/path"])
         #expect(spaces[1].worktrees.map(\.name) == ["Engineer/investigate-inft-50"])
-        #expect(spaces[1].groups.map(\.name) == ["Engineer", "Engineer/investigate-inft-50"])
         #expect(spaces[1].worktreeName(spaces[1].worktrees[0]) == "investigate-inft-50")
         #expect(spaces[1].displayedWorktrees.map(\.name) == ["investigate-inft-50"])
         #expect(spaces[1].displayedWorktrees.map(\.group.name) == ["Engineer/investigate-inft-50"])
@@ -213,13 +427,6 @@ struct CoreBehaviorTests {
         ])
         #expect(nestedBranch.map(\.name) == ["A"])
         #expect(nestedBranch[0].worktreeName(nestedBranch[0].worktrees[0]) == "feature/nested")
-    }
-
-    @Test
-    func rosterStorageKeysCannotCollide() {
-        let first = RosterLayout.storageKey("branches", components: ["ssh:a", "b.c", "w"])
-        let second = RosterLayout.storageKey("branches", components: ["ssh:a.b", "c", "w"])
-        #expect(first != second)
     }
 
     @Test
@@ -265,7 +472,6 @@ struct CoreBehaviorTests {
             worktrees: []
         )
 
-        #expect(RosterLayout.branchPaths(from: [space]) == ["/repo", "/repo-worktree"])
         #expect(RosterLayout.branchSummary(
             for: space.primary.agents,
             resolved: ["/repo-worktree": "feature/nested"]
@@ -289,7 +495,7 @@ struct CoreBehaviorTests {
             )
         }
 
-        let counts = RosterLayout.statusCounts(agents: [
+        let counts = AgentStatusCount.summarize([
             agent("idle", .idle),
             agent("blocked-1", .blocked),
             agent("working", .working),
@@ -305,6 +511,148 @@ struct CoreBehaviorTests {
             AgentStatusCount(status: .idle, count: 1),
             AgentStatusCount(status: .unknown, count: 1),
         ])
+    }
+
+    @Test
+    func recentAgentsKeepEveryAttentionItemInPriorityOrderAndExpireIdleAfterThirtyMinutes() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let agents = [
+            recentAgent("idle-old", .idle, changedAt: now.addingTimeInterval(-1_801)),
+            recentAgent("working-1", .working, changedAt: now.addingTimeInterval(-20)),
+            recentAgent("done", .done, changedAt: now.addingTimeInterval(-30)),
+            recentAgent("blocked", .blocked, changedAt: now.addingTimeInterval(-40)),
+            recentAgent("idle-recent", .idle, changedAt: now.addingTimeInterval(-1_799)),
+            recentAgent("unknown", .unknown, changedAt: now),
+        ] + (2...7).map { recentAgent("working-\($0)", .working, changedAt: now.addingTimeInterval(Double(-$0))) }
+        let source = SourceInfo(
+            descriptor: .local,
+            sessions: [SessionInfo(name: "default", agents: agents, online: true)],
+            online: true
+        )
+
+        let items = RecentAgentList.items(from: [source], at: now)
+
+        #expect(items.count == 10)
+        #expect(items.map(\.agent.status) == [
+            .blocked, .done,
+            .working, .working, .working, .working, .working, .working, .working,
+            .idle,
+        ])
+        #expect(items.map(\.agent.title).contains("idle-old") == false)
+        #expect(items.map(\.agent.title).contains("unknown") == false)
+    }
+
+    @Test
+    func recentAgentIdentityIncludesSourceSessionAndPane() {
+        let agent = recentAgent("shared", .working, changedAt: .now)
+        let sources = [SourceDescriptor.local, .remote("kvm")].map { descriptor in
+            SourceInfo(
+                descriptor: descriptor,
+                sessions: [SessionInfo(name: "default", agents: [agent], online: true)],
+                online: true
+            )
+        }
+
+        let items = RecentAgentList.items(from: sources, at: .now)
+
+        #expect(items.count == 2)
+        #expect(Set(items.map(\.id)).count == 2)
+    }
+
+    @Test
+    func recentOutlineKeepsOnlySelectedAgentsAndRequiredAncestors() throws {
+        let now = Date(timeIntervalSince1970: 10_000)
+        func item(_ title: String, _ status: AgentStatus, workspace: String, changedAt: Date) -> AgentInfo {
+            AgentInfo(
+                paneID: title,
+                title: title,
+                status: status,
+                workspace: workspace,
+                cwd: "/\(title)",
+                updatedAt: changedAt
+            )
+        }
+        let source = SourceInfo(
+            descriptor: .local,
+            sessions: [SessionInfo(
+                name: "default",
+                groups: [
+                    AgentGroup(
+                        id: "project",
+                        name: "Project",
+                        agents: [item("old", .idle, workspace: "Project", changedAt: now.addingTimeInterval(-1_801))]
+                    ),
+                    AgentGroup(
+                        id: "feature",
+                        name: "Project/feature",
+                        agents: [item("active", .blocked, workspace: "Project/feature", changedAt: now)]
+                    ),
+                    AgentGroup(
+                        id: "unrelated",
+                        name: "Unrelated",
+                        agents: [item("unknown", .unknown, workspace: "Unrelated", changedAt: now)]
+                    ),
+                ],
+                online: true
+            )],
+            online: true,
+            branches: ["/active": "feature"]
+        )
+
+        let outline = RecentAgentList.outlineSources(
+            from: [source],
+            items: RecentAgentList.items(from: [source], at: now)
+        )
+        let session = try #require(outline.first?.sessions.first)
+
+        #expect(session.groups.map(\.name) == ["Project", "Project/feature"])
+        #expect(session.groups[0].agents.isEmpty)
+        #expect(session.groups[1].agents.map(\.title) == ["active"])
+        #expect(outline.first?.branches == ["/active": "feature"])
+    }
+
+    @Test
+    @MainActor
+    func recentIdleStartsAtObservedStatusTransition() async {
+        let monitor = ManualSessionMonitor()
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            localMonitor: monitor,
+            sourceDescriptors: [.local]
+        )
+        let firstSeen = Date(timeIntervalSince1970: 1_000)
+
+        store.start()
+        await monitor.waitUntilStarted()
+        await monitor.emit(.sessions([loadedSession(
+            paneID: "pane",
+            status: .idle,
+            changedAt: firstSeen
+        )]))
+        #expect(store.recentAgents(at: firstSeen).isEmpty)
+
+        let workingAt = firstSeen.addingTimeInterval(60)
+        await monitor.emit(.sessions([loadedSession(
+            paneID: "pane",
+            status: .working,
+            changedAt: workingAt
+        )]))
+        await monitor.emit(.sessions([loadedSession(
+            paneID: "pane",
+            status: .working,
+            changedAt: workingAt.addingTimeInterval(60)
+        )]))
+        #expect(store.recentAgents(at: workingAt.addingTimeInterval(60)).first?.agent.updatedAt == workingAt)
+
+        let idleAt = workingAt.addingTimeInterval(120)
+        await monitor.emit(.sessions([loadedSession(
+            paneID: "pane",
+            status: .idle,
+            changedAt: idleAt
+        )]))
+        #expect(store.recentAgents(at: idleAt).map(\.agent.paneID) == ["pane"])
+        #expect(store.recentAgents(at: idleAt.addingTimeInterval(1_800)).isEmpty)
+        store.stop()
     }
 
     @Test
@@ -400,7 +748,7 @@ struct CoreBehaviorTests {
     }
 
     @Test
-    func existingUnclaimedHerdrTerminalIsAdoptedOnlyWhenUnambiguous() {
+    func existingHerdrTerminalUsesProbeWhenShellMakesCountsAmbiguous() {
         #expect(GhosttyController.adoptableTerminalID(
             liveTerminalIDs: ["local-terminal", "remote-terminal"],
             claimedTerminalIDs: ["remote-terminal"],
@@ -412,8 +760,9 @@ struct CoreBehaviorTests {
             liveTerminalIDs: ["shell", "local-terminal", "remote-terminal"],
             claimedTerminalIDs: ["remote-terminal"],
             allClientTTYs: ["ttys000", "ttys021"],
-            targetTTYs: ["ttys000"]
-        ) == nil)
+            targetTTYs: ["ttys000"],
+            probedTerminalID: "local-terminal"
+        ) == "local-terminal")
     }
 
     @Test
@@ -574,19 +923,12 @@ struct CoreBehaviorTests {
     func rosterWorkingColorUsesSystemAccent() throws {
         let appearance = try #require(NSAppearance(named: .aqua))
         var accent: NSColor?
+        var working: NSColor?
         appearance.performAsCurrentDrawingAppearance {
             accent = NSColor.controlAccentColor.usingColorSpace(.sRGB)
+            working = StatusPalette.working.usingColorSpace(.sRGB)
         }
-        #expect(StatusPalette.workingColor(for: appearance) == accent)
-    }
-
-    @Test
-    func agentStatusIndicatorsStayDistinct() {
-        #expect(AgentStatus.blocked.indicatorSymbolName == "xmark.circle.fill")
-        #expect(AgentStatus.working.indicatorSymbolName == "circle.lefthalf.filled")
-        #expect(AgentStatus.done.indicatorSymbolName == "checkmark.circle.fill")
-        #expect(AgentStatus.idle.indicatorSymbolName == "circle")
-        #expect(AgentStatus.unknown.indicatorSymbolName == "questionmark.circle")
+        #expect(working == accent)
     }
 
     @Test
@@ -681,12 +1023,6 @@ struct CoreBehaviorTests {
 
     @Test
     @MainActor
-    func rosterWidthDoesNotChangeWithCollapseState() {
-        #expect(StatusItemController.panelWidth == 420)
-    }
-
-    @Test
-    @MainActor
     func sourceSelectionImmediatelyNotifiesStatusItem() {
         let store = SessionStore(client: HerdrClient(executable: nil))
         var changes = 0
@@ -737,11 +1073,10 @@ struct CoreBehaviorTests {
             .appendingPathComponent("herdling-lock-test-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        var first = try #require(SingleInstanceLock.acquire(identifier: "test", directory: directory))
+        let first = try #require(SingleInstanceLock.acquire(identifier: "test", directory: directory))
         #expect(SingleInstanceLock.acquire(identifier: "test", directory: directory) == nil)
         first.release()
-        first = try #require(SingleInstanceLock.acquire(identifier: "test", directory: directory))
-        #expect(first.isHeld)
+        #expect(SingleInstanceLock.acquire(identifier: "test", directory: directory) != nil)
     }
 }
 
@@ -814,28 +1149,97 @@ private final class BranchQueryRecorder: @unchecked Sendable {
     }
 }
 
-private actor ImmediateLocalSessionMonitor: LocalSessionMonitoring {
-    let event: LocalSessionMonitorEvent
+private actor ImmediateSessionMonitor: SessionMonitoring {
+    let event: SessionMonitorEvent
 
-    init(event: LocalSessionMonitorEvent) {
+    init(event: SessionMonitorEvent) {
         self.event = event
     }
 
-    func start(handler: @escaping @Sendable (LocalSessionMonitorEvent) async -> Void) async {
+    func start(handler: @escaping @Sendable (SessionMonitorEvent) async -> Void) async {
         await handler(event)
     }
 
     func stop() async {}
 }
 
+private actor ManualSessionMonitor: SessionMonitoring {
+    private var handler: (@Sendable (SessionMonitorEvent) async -> Void)?
+
+    func start(handler: @escaping @Sendable (SessionMonitorEvent) async -> Void) async {
+        self.handler = handler
+    }
+
+    func stop() async {
+        // Deliberately retain the handler to simulate an already queued stale event.
+    }
+
+    func emit(_ event: SessionMonitorEvent) async {
+        await handler?(event)
+    }
+
+    func waitUntilStarted() async {
+        while handler == nil { await Task.yield() }
+    }
+}
+
+private final class MonitorFactoryQueue: @unchecked Sendable {
+    private let lock = NSLock()
+    private var monitors: [ManualSessionMonitor]
+
+    init(_ monitors: [ManualSessionMonitor]) {
+        self.monitors = monitors
+    }
+
+    func next() -> any SessionMonitoring {
+        lock.withLock { monitors.removeFirst() }
+    }
+}
+
+private func loadedSession(
+    paneID: String,
+    status: AgentStatus = .idle,
+    changedAt: Date = .now
+) -> HerdrClient.LoadedSession {
+    let agent = AgentInfo(
+        paneID: paneID,
+        title: paneID,
+        status: status,
+        workspace: "Remote",
+        cwd: "/remote",
+        updatedAt: changedAt
+    )
+    return HerdrClient.LoadedSession(
+        name: "default",
+        groups: [AgentGroup(id: "remote", name: "Remote", agents: [agent])],
+        error: nil
+    )
+}
+
+private func recentAgent(_ title: String, _ status: AgentStatus, changedAt: Date) -> AgentInfo {
+    AgentInfo(
+        paneID: title,
+        title: title,
+        status: status,
+        workspace: "Space",
+        cwd: "/repo",
+        updatedAt: changedAt
+    )
+}
+
 private final class SourceLoadRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var localCalls = 0
+    private var remoteCalls = 0
 
     var localCallCount: Int { lock.withLock { localCalls } }
+    var remoteCallCount: Int { lock.withLock { remoteCalls } }
 
     func load(_ source: SourceDescriptor) -> [HerdrClient.LoadedSession] {
-        if source == .local { lock.withLock { localCalls += 1 } }
+        lock.withLock {
+            if source == .local { localCalls += 1 }
+            else { remoteCalls += 1 }
+        }
         return []
     }
 }

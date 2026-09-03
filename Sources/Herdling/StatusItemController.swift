@@ -1,5 +1,49 @@
 import AppKit
+import os
 import SwiftUI
+
+enum PanelHeightBridge {
+    private struct State {
+        var generation = 0
+        var pendingHeight: CGFloat?
+        var isScheduled = false
+    }
+
+    private static let state = OSAllocatedUnfairLock(initialState: State())
+    @MainActor static var applyHeight: ((CGFloat) -> Void)?
+
+    nonisolated static func invalidate() {
+        state.withLock {
+            $0.generation += 1
+            $0.pendingHeight = nil
+            $0.isScheduled = false
+        }
+    }
+
+    nonisolated static func push(_ height: CGFloat) {
+        guard height > 0 else { return }
+        let (generation, shouldSchedule) = state.withLock { state in
+            state.pendingHeight = height
+            let generation = state.generation
+            guard !state.isScheduled else { return (generation, false) }
+            state.isScheduled = true
+            return (generation, true)
+        }
+        guard shouldSchedule else { return }
+
+        DispatchQueue.main.async {
+            let height = state.withLock { state -> CGFloat? in
+                guard state.generation == generation else { return nil }
+                let height = state.pendingHeight
+                state.pendingHeight = nil
+                state.isScheduled = false
+                return height
+            }
+            guard let height else { return }
+            MainActor.assumeIsolated { applyHeight?(height) }
+        }
+    }
+}
 
 @MainActor
 final class StatusItemController: NSObject {
@@ -9,6 +53,7 @@ final class StatusItemController: NSObject {
     private let store: SessionStore
     private let menuBarItem = MenuBarStatusItem()
     private let panel = MenuBarPanel()
+    private lazy var hostingController = NSHostingController(rootView: AgentListView(store: store))
     private lazy var outsideClickMonitor = PanelOutsideClickMonitor(
         panel: panel,
         statusItems: [menuBarItem.item],
@@ -22,13 +67,14 @@ final class StatusItemController: NSObject {
         self.store = store
         super.init()
 
+        PanelHeightBridge.applyHeight = { [weak self] height in
+            self?.updatePanelHeight(height)
+        }
+
         menuBarItem.onClick = { [weak self] in self?.statusButtonClicked() }
 
-        let controller = NSHostingController(rootView: AgentListView(store: store) { [weak self] height in
-            self?.updatePanelHeight(height)
-        })
-        controller.sizingOptions = []
-        panel.contentViewController = controller
+        hostingController.sizingOptions = []
+        panel.contentViewController = hostingController
         panel.setContentSize(NSSize(width: Self.panelWidth, height: preferredPanelHeight))
 
         store.onChange = { [weak self] in self?.updateStatus() }
@@ -81,6 +127,8 @@ final class StatusItemController: NSObject {
               let screen = window.screen ?? NSScreen.main
         else { return }
 
+        PanelHeightBridge.invalidate()
+        hostingController.view.layoutSubtreeIfNeeded()
         resizePanel(button: button, window: window, screen: screen)
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(nil)
@@ -99,6 +147,7 @@ final class StatusItemController: NSObject {
     }
 
     private func closePanel() {
+        PanelHeightBridge.invalidate()
         panel.orderOut(nil)
         panel.makeFirstResponder(nil)
         menuBarItem.setHighlighted(false)

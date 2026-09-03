@@ -6,7 +6,6 @@ final class SingleInstanceLock {
 
     private let stateLock = NSLock()
     private var descriptor: Int32?
-    var isHeld: Bool { stateLock.withLock { descriptor != nil } }
 
     private init(descriptor: Int32) {
         self.descriptor = descriptor

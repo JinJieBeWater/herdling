@@ -1,6 +1,11 @@
 import AppKit
 import Foundation
 
+enum GhosttyOpenBehavior: String, CaseIterable, Sendable {
+    case window
+    case tab
+}
+
 actor GhosttyController {
     enum GhosttyError: LocalizedError {
         case notInstalled
@@ -26,6 +31,11 @@ actor GhosttyController {
         let terminalID: String
     }
 
+    private struct TerminalSnapshot {
+        let id: String
+        let name: String
+    }
+
     private let defaults: UserDefaults
     private var activationInProgress = false
 
@@ -46,7 +56,8 @@ actor GhosttyController {
     func activateClient(
         source: SourceDescriptor = .local,
         session: String,
-        command: String
+        command: String,
+        openBehavior: GhosttyOpenBehavior
     ) async throws {
         guard !activationInProgress else { throw GhosttyError.operationInProgress }
         activationInProgress = true
@@ -74,8 +85,49 @@ actor GhosttyController {
         }
 
         try await ensureGhosttyRunning(existing: applications.first)
-        let mapping = try await createWindow(initialInput: command)
+        let mapping = switch openBehavior {
+        case .tab:
+            try await createTabOrWindow(initialInput: command)
+        case .window:
+            try await createWindow(initialInput: command)
+        }
         saveMapping(mapping, forKey: key)
+    }
+
+    private func createTabOrWindow(initialInput: String) async throws -> ClientMapping {
+        let windowInput = initialInput.hasSuffix("\n") ? initialInput : initialInput + "\n"
+        let script = """
+        tell application "Ghostty"
+          if (count of windows) is 0 then
+            set cfg to new surface configuration
+            set initial input of cfg to \(Self.appleScriptString(windowInput))
+            set win to new window with configuration cfg
+            set term to terminal 1 of selected tab of win
+            return id of term as text
+          end if
+          set anchorID to id of focused terminal of selected tab of front window as text
+          if not (perform action "new_tab" on terminal id anchorID) then error "Ghostty rejected action new_tab."
+          set terminalID to missing value
+          repeat 80 times
+            set term to focused terminal of selected tab of front window
+            if (id of term as text) is not anchorID then
+              try
+                input text "" to term
+                set terminalID to id of term as text
+                exit repeat
+              end try
+            end if
+            delay 0.025
+          end repeat
+          if terminalID is missing value then error "Ghostty did not return a writable tab."
+          input text \(Self.appleScriptString(initialInput)) to terminal id terminalID
+          send key "enter" to terminal id terminalID
+          return terminalID
+        end tell
+        """
+        let terminalID = try await runAppleScript(script).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !terminalID.isEmpty else { throw GhosttyError.clientCreationFailed }
+        return ClientMapping(terminalID: terminalID)
     }
 
     private func createWindow(initialInput: String) async throws -> ClientMapping {
@@ -115,7 +167,8 @@ actor GhosttyController {
         session: String,
         ghosttyPID: Int
     ) async throws -> ClientMapping? {
-        let liveTerminalIDs = try await terminalIDs()
+        let terminals = try await terminalSnapshots()
+        let liveTerminalIDs = terminals.map(\.id)
         let clients = try await Task.detached {
             try GhosttyProcessCatalog.load(ghosttyPID: ghosttyPID)
         }.value
@@ -123,23 +176,39 @@ actor GhosttyController {
             .filter { $0.sourceID == source.id && $0.session == session }
             .map(\.tty)
         let claimedTerminalIDs = claimedTerminalIDs(liveTerminalIDs: Set(liveTerminalIDs))
-        guard let terminalID = Self.adoptableTerminalID(
+        if let terminalID = Self.adoptableTerminalID(
             liveTerminalIDs: liveTerminalIDs,
             claimedTerminalIDs: claimedTerminalIDs,
             allClientTTYs: clients.map(\.tty),
             targetTTYs: targetTTYs
-        ) else { return nil }
+        ) {
+            return ClientMapping(terminalID: terminalID)
+        }
+
+        guard Set(targetTTYs).count == 1,
+              let tty = targetTTYs.first,
+              let probedTerminalID = try await probeTerminal(tty: tty, terminals: terminals),
+              let terminalID = Self.adoptableTerminalID(
+                  liveTerminalIDs: liveTerminalIDs,
+                  claimedTerminalIDs: claimedTerminalIDs,
+                  allClientTTYs: clients.map(\.tty),
+                  targetTTYs: targetTTYs,
+                  probedTerminalID: probedTerminalID
+              )
+        else { return nil }
         return ClientMapping(terminalID: terminalID)
     }
 
-    private func terminalIDs() async throws -> [String] {
+    private func terminalSnapshots() async throws -> [TerminalSnapshot] {
         let script = """
         tell application "Ghostty"
           set output to ""
+          set fieldSeparator to ASCII character 31
+          set recordSeparator to ASCII character 30
           repeat with win in windows
             repeat with tabItem in tabs of win
               repeat with term in terminals of tabItem
-                set output to output & (id of term as text) & linefeed
+                set output to output & (id of term as text) & fieldSeparator & (name of term as text) & recordSeparator
               end repeat
             end repeat
           end repeat
@@ -147,8 +216,50 @@ actor GhosttyController {
         end tell
         """
         return try await runAppleScript(script)
-            .split(whereSeparator: \Character.isNewline)
-            .map(String.init)
+            .split(separator: "\u{1e}")
+            .compactMap { record in
+                let fields = record.split(separator: "\u{1f}", maxSplits: 1, omittingEmptySubsequences: false)
+                guard fields.count == 2 else { return nil }
+                return TerminalSnapshot(id: String(fields[0]), name: String(fields[1]))
+            }
+    }
+
+    private func probeTerminal(tty: String, terminals: [TerminalSnapshot]) async throws -> String? {
+        guard tty.range(of: #"^ttys[0-9]+$"#, options: .regularExpression) != nil else { return nil }
+        let marker = "herdling-\(UUID().uuidString)"
+        do { try Self.writeTitle(marker, tty: tty) }
+        catch { return nil }
+
+        var matched: TerminalSnapshot?
+        for _ in 0..<40 {
+            let candidates = try await terminalSnapshots().filter { $0.name == marker }
+            if candidates.count > 1 { break }
+            if let candidate = candidates.first {
+                matched = candidate
+                break
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+
+        if let matched,
+           let previous = terminals.first(where: { $0.id == matched.id })?.name,
+           try await terminalSnapshots().first(where: { $0.id == matched.id })?.name == marker
+        {
+            try? Self.writeTitle(Self.safeTerminalTitle(previous), tty: tty)
+        } else if matched == nil {
+            try? Self.writeTitle("", tty: tty)
+        }
+        return matched?.id
+    }
+
+    private static func writeTitle(_ title: String, tty: String) throws {
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: "/dev/\(tty)"))
+        defer { try? handle.close() }
+        try handle.write(contentsOf: Data("\u{1b}]2;\(title)\u{7}".utf8))
+    }
+
+    private static func safeTerminalTitle(_ title: String) -> String {
+        String(title.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7f }.prefix(256))
     }
 
     private func claimedTerminalIDs(liveTerminalIDs: Set<String>) -> Set<String> {
@@ -203,12 +314,20 @@ actor GhosttyController {
         liveTerminalIDs: [String],
         claimedTerminalIDs: Set<String>,
         allClientTTYs: [String],
-        targetTTYs: [String]
+        targetTTYs: [String],
+        probedTerminalID: String? = nil
     ) -> String? {
         let live = Set(liveTerminalIDs)
         let clients = Set(allClientTTYs)
         let targets = Set(targetTTYs)
         let unclaimed = live.subtracting(claimedTerminalIDs)
+        if let probedTerminalID,
+           targets.count == 1,
+           targets.isSubset(of: clients),
+           unclaimed.contains(probedTerminalID)
+        {
+            return probedTerminalID
+        }
         guard live.count == clients.count,
               targets.count == 1,
               unclaimed.count == 1
