@@ -15,6 +15,7 @@ actor HerdrRemoteSessionMonitor: SessionMonitoring {
     private var hasDiscoveredSessions = false
     private var reconnectAttempt = 0
     private var lifecycleGeneration: UInt64 = 0
+    private var discoveryScheduleGeneration: UInt64 = 0
 
     init(
         source: SourceDescriptor,
@@ -38,6 +39,7 @@ actor HerdrRemoteSessionMonitor: SessionMonitoring {
 
     func stop() {
         lifecycleGeneration &+= 1
+        discoveryScheduleGeneration &+= 1
         handler = nil
         discoveryTask?.cancel()
         discoveryTask = nil
@@ -85,6 +87,17 @@ actor HerdrRemoteSessionMonitor: SessionMonitoring {
             snapshots.removeValue(forKey: path)
             snapshotGenerations.remove(endpoint: path)
         }
+        let existingConnections = endpoints.compactMap { endpoint in
+            connections[endpoint.path].map { (endpoint, $0) }
+        }
+        let refreshResults = await HerdrSocketConnection.refreshAll(existingConnections)
+        guard handler != nil, lifecycleGeneration == generation else { return }
+        for result in refreshResults where !result.succeeded {
+            guard connections[result.path]?.id == result.connectionID else { continue }
+            connections.removeValue(forKey: result.path)?.stop()
+            snapshots.removeValue(forKey: result.path)
+            snapshotGenerations.remove(endpoint: result.path)
+        }
         var pendingConnections: [(HerdrSocketEndpoint, HerdrSocketConnection)] = []
         for endpoint in endpoints where connections[endpoint.path] == nil {
             guard let connection = makeConnection(endpoint) else { continue }
@@ -112,6 +125,15 @@ actor HerdrRemoteSessionMonitor: SessionMonitoring {
                 command: HerdrClient.remoteShellCommand(Self.socketCommand(path: endpoint.path)),
                 keepAlive: true
             ),
+            onSubscriptionChange: { [weak self] connectionID, endpoint, groups in
+                Task {
+                    await self?.subscriptionChanged(
+                        groups,
+                        at: endpoint,
+                        connectionID: connectionID
+                    )
+                }
+            },
             onSnapshot: { [weak self] connectionID, endpoint, generation, groups in
                 Task {
                     await self?.received(
@@ -172,6 +194,23 @@ actor HerdrRemoteSessionMonitor: SessionMonitoring {
         scheduleReconnect(generation: lifecycleGeneration)
     }
 
+    private func subscriptionChanged(
+        _ groups: [AgentGroup],
+        at endpoint: HerdrSocketEndpoint,
+        connectionID: UUID
+    ) {
+        guard connections[endpoint.path]?.id == connectionID else { return }
+        snapshots[endpoint.path] = HerdrClient.LoadedSession(
+            name: endpoint.session,
+            groups: groups,
+            error: nil
+        )
+        publish()
+        connections.removeValue(forKey: endpoint.path)?.stop()
+        snapshotGenerations.remove(endpoint: endpoint.path)
+        scheduleDiscovery(after: .milliseconds(50), generation: lifecycleGeneration)
+    }
+
     private func publish() {
         guard !endpointOrder.isEmpty,
               endpointOrder.allSatisfy({ connections[$0] != nil && snapshots[$0] != nil })
@@ -189,11 +228,24 @@ actor HerdrRemoteSessionMonitor: SessionMonitoring {
     private func enqueue(_ event: SessionMonitorEvent) {
         guard let handler else { return }
         let previous = publicationTask
-        publicationTask = Task {
-            await previous?.value
-            guard !Task.isCancelled else { return }
-            await handler(event)
+        let generation = lifecycleGeneration
+        publicationTask = Task { [weak self] in
+            await self?.deliver(event, to: handler, after: previous, generation: generation)
         }
+    }
+
+    private func deliver(
+        _ event: SessionMonitorEvent,
+        to handler: @escaping @Sendable (SessionMonitorEvent) async -> Void,
+        after previous: Task<Void, Never>?,
+        generation: UInt64
+    ) async {
+        await previous?.value
+        guard !Task.isCancelled,
+              lifecycleGeneration == generation,
+              self.handler != nil
+        else { return }
+        await handler(event)
     }
 
     private func scheduleReconnect(generation: UInt64) {
@@ -205,17 +257,25 @@ actor HerdrRemoteSessionMonitor: SessionMonitoring {
 
     private func scheduleDiscovery(after delay: Duration, generation: UInt64) {
         guard handler != nil, lifecycleGeneration == generation else { return }
+        discoveryScheduleGeneration &+= 1
+        let scheduleGeneration = discoveryScheduleGeneration
         discoveryTask?.cancel()
         discoveryTask = Task { [weak self] in
             do { try await Task.sleep(for: delay) }
             catch { return }
             guard let self else { return }
-            await self.discoveryDidFire(generation: generation)
+            await self.discoveryDidFire(
+                generation: generation,
+                scheduleGeneration: scheduleGeneration
+            )
         }
     }
 
-    private func discoveryDidFire(generation: UInt64) async {
-        guard handler != nil, lifecycleGeneration == generation else { return }
+    private func discoveryDidFire(generation: UInt64, scheduleGeneration: UInt64) async {
+        guard handler != nil,
+              lifecycleGeneration == generation,
+              discoveryScheduleGeneration == scheduleGeneration
+        else { return }
         discoveryTask = nil
         await discover(generation: generation)
     }

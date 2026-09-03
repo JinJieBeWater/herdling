@@ -11,6 +11,7 @@ actor GhosttyController {
         case notInstalled
         case automationFailed(String)
         case clientCreationFailed
+        case clientLaunchFailed
         case operationInProgress
 
         var errorDescription: String? {
@@ -21,6 +22,8 @@ actor GhosttyController {
                 message.isEmpty ? "Ghostty automation failed." : message
             case .clientCreationFailed:
                 "Ghostty did not return a client terminal."
+            case .clientLaunchFailed:
+                "Herdr client did not start in Ghostty."
             case .operationInProgress:
                 "Another Ghostty focus operation is still running."
             }
@@ -29,6 +32,12 @@ actor GhosttyController {
 
     struct ClientMapping: Codable, Equatable, Sendable {
         let terminalID: String
+        let tty: String?
+
+        init(terminalID: String, tty: String? = nil) {
+            self.terminalID = terminalID
+            self.tty = tty
+        }
     }
 
     private struct TerminalSnapshot {
@@ -65,33 +74,85 @@ actor GhosttyController {
 
         let key = Self.mappingKey(source: source, session: session)
         let applications = await runningApplications()
-        if let mapping = loadMapping(forKey: key), !applications.isEmpty {
-            if try await focusTerminal(id: mapping.terminalID) {
+        var existingTargetTTYs: Set<String> = []
+        if let application = applications.first {
+            let existingMapping = loadMapping(forKey: key)
+            let clients = try await Task.detached {
+                try GhosttyProcessCatalog.load(ghosttyPID: Int(application.processIdentifier))
+            }.value
+            existingTargetTTYs = Set(clients.lazy.filter {
+                $0.sourceID == source.id && $0.session == session
+            }.map(\.tty))
+            if let existingMapping,
+               let terminalID = Self.reusableMappedTerminalID(
+                   mapping: existingMapping,
+                   clients: clients,
+                   sourceID: source.id,
+                   session: session
+               ),
+               try await focusTerminal(id: terminalID)
+            {
                 return
             }
-            defaults.removeObject(forKey: key)
-        }
+            if existingMapping != nil { defaults.removeObject(forKey: key) }
 
-        if let application = applications.first,
-           let mapping = try await adoptExistingClient(
-               source: source,
-               session: session,
-               ghosttyPID: Int(application.processIdentifier)
-           ),
-           try await focusTerminal(id: mapping.terminalID)
-        {
-            saveMapping(mapping, forKey: key)
-            return
+            if let mapping = try await adoptExistingClient(
+                source: source,
+                session: session,
+                clients: clients,
+                preferredMapping: existingMapping
+            ), try await focusTerminal(id: mapping.terminalID) {
+                saveMapping(mapping, forKey: key)
+                return
+            }
         }
 
         try await ensureGhosttyRunning(existing: applications.first)
-        let mapping = switch openBehavior {
+        let pendingMapping = switch openBehavior {
         case .tab:
             try await createTabOrWindow(initialInput: command)
         case .window:
             try await createWindow(initialInput: command)
         }
+        let mapping = try await confirmCreatedClient(
+            pendingMapping,
+            source: source,
+            session: session,
+            excluding: existingTargetTTYs
+        )
         saveMapping(mapping, forKey: key)
+    }
+
+    private func confirmCreatedClient(
+        _ mapping: ClientMapping,
+        source: SourceDescriptor,
+        session: String,
+        excluding existingTTYs: Set<String>
+    ) async throws -> ClientMapping {
+        for _ in 0..<40 {
+            if let application = await runningApplications().first,
+               let clients = try? await Task.detached(operation: {
+                   try GhosttyProcessCatalog.load(ghosttyPID: Int(application.processIdentifier))
+               }).value
+            {
+                let targetTTYs = Self.newClientTTYs(
+                    clients: clients,
+                    excluding: existingTTYs,
+                    sourceID: source.id,
+                    session: session
+                )
+                if !targetTTYs.isEmpty {
+                    let terminals = try await terminalSnapshots()
+                    for tty in targetTTYs where
+                        try await probeTerminal(tty: tty, terminals: terminals) == mapping.terminalID
+                    {
+                        return ClientMapping(terminalID: mapping.terminalID, tty: tty)
+                    }
+                }
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw GhosttyError.clientLaunchFailed
     }
 
     private func createTabOrWindow(initialInput: String) async throws -> ClientMapping {
@@ -165,38 +226,54 @@ actor GhosttyController {
     private func adoptExistingClient(
         source: SourceDescriptor,
         session: String,
-        ghosttyPID: Int
+        clients: [GhosttyClientProcess],
+        preferredMapping: ClientMapping?
     ) async throws -> ClientMapping? {
         let terminals = try await terminalSnapshots()
         let liveTerminalIDs = terminals.map(\.id)
-        let clients = try await Task.detached {
-            try GhosttyProcessCatalog.load(ghosttyPID: ghosttyPID)
-        }.value
         let targetTTYs = clients
             .filter { $0.sourceID == source.id && $0.session == session }
             .map(\.tty)
-        let claimedTerminalIDs = claimedTerminalIDs(liveTerminalIDs: Set(liveTerminalIDs))
+        var seenTTYs: Set<String> = []
+        let uniqueTargetTTYs = targetTTYs.filter { seenTTYs.insert($0).inserted }
+        let claimedTerminalIDs = claimedTerminalIDs(
+            liveTerminalIDs: Set(liveTerminalIDs),
+            excluding: preferredMapping?.terminalID
+        )
+
+        if let preferredMapping,
+           preferredMapping.tty == nil,
+           liveTerminalIDs.contains(preferredMapping.terminalID)
+        {
+            for tty in uniqueTargetTTYs {
+                if try await probeTerminal(tty: tty, terminals: terminals) == preferredMapping.terminalID {
+                    return ClientMapping(terminalID: preferredMapping.terminalID, tty: tty)
+                }
+            }
+        }
+
         if let terminalID = Self.adoptableTerminalID(
             liveTerminalIDs: liveTerminalIDs,
             claimedTerminalIDs: claimedTerminalIDs,
             allClientTTYs: clients.map(\.tty),
             targetTTYs: targetTTYs
         ) {
-            return ClientMapping(terminalID: terminalID)
+            return ClientMapping(terminalID: terminalID, tty: targetTTYs.first)
         }
 
-        guard Set(targetTTYs).count == 1,
-              let tty = targetTTYs.first,
-              let probedTerminalID = try await probeTerminal(tty: tty, terminals: terminals),
-              let terminalID = Self.adoptableTerminalID(
+        for tty in uniqueTargetTTYs {
+            guard let probedTerminalID = try await probeTerminal(tty: tty, terminals: terminals),
+                  let terminalID = Self.adoptableTerminalID(
                   liveTerminalIDs: liveTerminalIDs,
                   claimedTerminalIDs: claimedTerminalIDs,
                   allClientTTYs: clients.map(\.tty),
-                  targetTTYs: targetTTYs,
+                  targetTTYs: [tty],
                   probedTerminalID: probedTerminalID
               )
-        else { return nil }
-        return ClientMapping(terminalID: terminalID)
+            else { continue }
+            return ClientMapping(terminalID: terminalID, tty: tty)
+        }
+        return nil
     }
 
     private func terminalSnapshots() async throws -> [TerminalSnapshot] {
@@ -262,12 +339,13 @@ actor GhosttyController {
         String(title.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7f }.prefix(256))
     }
 
-    private func claimedTerminalIDs(liveTerminalIDs: Set<String>) -> Set<String> {
+    private func claimedTerminalIDs(liveTerminalIDs: Set<String>, excluding: String?) -> Set<String> {
         Set(defaults.dictionaryRepresentation().compactMap { key, value in
             guard key.hasPrefix("ghostty-client."),
                   let data = value as? Data,
                   let mapping = try? JSONDecoder().decode(ClientMapping.self, from: data),
-                  liveTerminalIDs.contains(mapping.terminalID)
+                  liveTerminalIDs.contains(mapping.terminalID),
+                  mapping.terminalID != excluding
             else { return nil }
             return mapping.terminalID
         })
@@ -310,6 +388,37 @@ actor GhosttyController {
         "ghostty-client.\(source.id.utf8.count):\(source.id):\(session.utf8.count):\(session)"
     }
 
+    nonisolated static func reusableMappedTerminalID(
+        mapping: ClientMapping,
+        clients: [GhosttyClientProcess],
+        sourceID: String,
+        session: String
+    ) -> String? {
+        guard let tty = mapping.tty,
+              clients.contains(where: {
+                  $0.tty == tty && $0.sourceID == sourceID && $0.session == session
+              })
+        else { return nil }
+        return mapping.terminalID
+    }
+
+    nonisolated static func newClientTTYs(
+        clients: [GhosttyClientProcess],
+        excluding existingTTYs: Set<String>,
+        sourceID: String,
+        session: String
+    ) -> [String] {
+        var seen: Set<String> = []
+        return clients.compactMap { client in
+            guard client.sourceID == sourceID,
+                  client.session == session,
+                  !existingTTYs.contains(client.tty),
+                  seen.insert(client.tty).inserted
+            else { return nil }
+            return client.tty
+        }
+    }
+
     nonisolated static func adoptableTerminalID(
         liveTerminalIDs: [String],
         claimedTerminalIDs: Set<String>,
@@ -324,7 +433,7 @@ actor GhosttyController {
         if let probedTerminalID,
            targets.count == 1,
            targets.isSubset(of: clients),
-           unclaimed.contains(probedTerminalID)
+           live.contains(probedTerminalID)
         {
             return probedTerminalID
         }

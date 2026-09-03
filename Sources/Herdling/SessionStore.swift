@@ -27,11 +27,33 @@ struct AgentStatusCount: Equatable, Identifiable {
 struct AgentInfo: Identifiable, Sendable {
     var id: String { paneID }
     let paneID: String
+    let tabID: String?
     let title: String
     let status: AgentStatus
     let workspace: String
     let cwd: String
+    let revision: UInt64?
     var updatedAt: Date
+
+    init(
+        paneID: String,
+        tabID: String? = nil,
+        title: String,
+        status: AgentStatus,
+        workspace: String,
+        cwd: String,
+        revision: UInt64? = nil,
+        updatedAt: Date
+    ) {
+        self.paneID = paneID
+        self.tabID = tabID
+        self.title = title
+        self.status = status
+        self.workspace = workspace
+        self.cwd = cwd
+        self.revision = revision
+        self.updatedAt = updatedAt
+    }
 }
 
 struct AgentGroup: Identifiable, Sendable {
@@ -137,7 +159,7 @@ struct RecentAgentItem: Identifiable, Sendable {
 }
 
 enum RecentAgentList {
-    static let idleLifetime: TimeInterval = 30 * 60
+    static let idleLifetime: TimeInterval = 10 * 60
 
     private struct SessionSelection {
         var workspaceNames: Set<String> = []
@@ -306,6 +328,8 @@ final class SessionStore {
     private let remoteMonitorFactory: RemoteMonitorFactory?
     private var remoteMonitors: [String: any SessionMonitoring] = [:]
     private var monitorGenerations: [String: UUID] = [:]
+    private var monitorStartTasks: [String: Task<Void, Never>] = [:]
+    private var branchLoadGenerations: [String: UUID] = [:]
     private var pollFallbackSourceIDs: Set<String> = []
     private var pollTask: Task<Void, Never>?
     private var pollingStarted = false
@@ -321,6 +345,7 @@ final class SessionStore {
     private(set) var availableSSHAliases: [String]
     private(set) var selectedSSHAliases: [String]
     private(set) var focusError: String?
+    private(set) var focusingAgentID: RecentAgentItem.ID?
     private(set) var settingsError: String?
     private(set) var automationStatus = "Not checked"
     private(set) var ghosttyOpenBehavior: GhosttyOpenBehavior
@@ -385,11 +410,7 @@ final class SessionStore {
         if let localMonitor {
             let generation = UUID()
             monitorGenerations[SourceDescriptor.local.id] = generation
-            Task { [weak self] in
-                await localMonitor.start { [weak self] event in
-                    await self?.handleMonitor(event, source: .local, generation: generation)
-                }
-            }
+            startMonitor(localMonitor, source: .local, generation: generation)
         }
         for descriptor in sources.map(\.descriptor) where descriptor.sshAlias != nil {
             startRemoteMonitor(for: descriptor)
@@ -399,6 +420,19 @@ final class SessionStore {
     }
 
     func stop() {
+        let plan = prepareToStop()
+        Task { await finishStopping(plan) }
+    }
+
+    func stopAndWait() async {
+        await finishStopping(prepareToStop())
+    }
+
+    private func prepareToStop() -> (
+        local: (any SessionMonitoring)?,
+        remotes: [any SessionMonitoring],
+        starts: [Task<Void, Never>]
+    ) {
         pollingStarted = false
         refreshRequested = false
         pollGeneration += 1
@@ -406,10 +440,24 @@ final class SessionStore {
         pollTask = nil
         monitorGenerations.removeAll()
         pollFallbackSourceIDs.removeAll()
-        if let localMonitor { Task { await localMonitor.stop() } }
         let monitors = Array(remoteMonitors.values)
         remoteMonitors.removeAll()
-        for monitor in monitors { Task { await monitor.stop() } }
+        let starts = Array(monitorStartTasks.values)
+        starts.forEach { $0.cancel() }
+        monitorStartTasks.removeAll()
+        return (localMonitor, monitors, starts)
+    }
+
+    private func finishStopping(_ plan: (
+        local: (any SessionMonitoring)?,
+        remotes: [any SessionMonitoring],
+        starts: [Task<Void, Never>]
+    )) async {
+        let monitors = [plan.local].compactMap { $0 } + plan.remotes
+        let stops = monitors.map { monitor in Task { await monitor.stop() } }
+        for start in plan.starts { await start.value }
+        for stop in stops { await stop.value }
+        for monitor in monitors { await monitor.stop() }
     }
 
     func setPanelOpen(_ open: Bool) {
@@ -531,20 +579,34 @@ final class SessionStore {
             let leftFallback = pollFallbackSourceIDs.remove(descriptor.id) != nil
             guard let index = sources.firstIndex(where: { $0.descriptor == descriptor }) else { return }
             let sessions = Self.sessions(from: loaded, previous: sources[index].sessions)
-            let branches = await loadBranches(descriptor, Self.branchPaths(from: sessions))
-            guard pollingStarted,
-                  monitorGenerations[descriptor.id] == generation,
-                  let currentIndex = sources.firstIndex(where: { $0.descriptor == descriptor })
-            else { return }
+            let branchPaths = Self.branchPaths(from: sessions)
+            let branchPathSet = Set(branchPaths)
+            let previousBranchPaths = Set(Self.branchPaths(from: sources[index].sessions))
+            if branchPathSet != previousBranchPaths {
+                branchLoadGenerations[descriptor.id] = UUID()
+            }
             sourceFailureCounts[descriptor.id] = 0
-            var updated = sources[currentIndex]
+            var updated = sources[index]
             updated.sessions = sessions
-            updated.branches = branches
+            updated.branches = updated.branches.filter { branchPathSet.contains($0.key) }
             updated.online = true
             updated.error = nil
-            sources[currentIndex] = updated
+            sources[index] = updated
             if leftFallback { scheduleNextPoll() }
             onChange?()
+            guard !branchPathSet.isSubset(of: previousBranchPaths),
+                  let branchGeneration = branchLoadGenerations[descriptor.id]
+            else { return }
+            let loadBranches = self.loadBranches
+            Task { [weak self] in
+                let branches = await loadBranches(descriptor, branchPaths)
+                self?.applyBranches(
+                    branches,
+                    to: descriptor,
+                    monitorGeneration: generation,
+                    branchGeneration: branchGeneration
+                )
+            }
         case .unavailable:
             if descriptor == .local {
                 let enteredFallback = pollFallbackSourceIDs.insert(descriptor.id).inserted
@@ -554,6 +616,21 @@ final class SessionStore {
                 markRemoteMonitorUnavailable(descriptor)
             }
         }
+    }
+
+    private func applyBranches(
+        _ branches: [String: String],
+        to descriptor: SourceDescriptor,
+        monitorGeneration: UUID,
+        branchGeneration: UUID
+    ) {
+        guard pollingStarted,
+              monitorGenerations[descriptor.id] == monitorGeneration,
+              branchLoadGenerations[descriptor.id] == branchGeneration,
+              let index = sources.firstIndex(where: { $0.descriptor == descriptor })
+        else { return }
+        sources[index].branches = branches
+        onChange?()
     }
 
     private func startRemoteMonitor(for descriptor: SourceDescriptor) {
@@ -567,9 +644,31 @@ final class SessionStore {
         remoteMonitors[descriptor.id] = monitor
         monitorGenerations[descriptor.id] = generation
         pollFallbackSourceIDs.remove(descriptor.id)
-        Task { [weak self] in
+        startMonitor(monitor, source: descriptor, generation: generation)
+    }
+
+    private func startMonitor(
+        _ monitor: any SessionMonitoring,
+        source descriptor: SourceDescriptor,
+        generation: UUID
+    ) {
+        let sourceID = descriptor.id
+        monitorStartTasks[sourceID]?.cancel()
+        monitorStartTasks[sourceID] = Task { [weak self] in
+            guard !Task.isCancelled,
+                  let self,
+                  self.pollingStarted,
+                  self.monitorGenerations[sourceID] == generation
+            else { return }
             await monitor.start { [weak self] event in
                 await self?.handleMonitor(event, source: descriptor, generation: generation)
+            }
+            guard !Task.isCancelled,
+                  self.pollingStarted,
+                  self.monitorGenerations[sourceID] == generation
+            else {
+                await monitor.stop()
+                return
             }
         }
     }
@@ -594,29 +693,38 @@ final class SessionStore {
 
     func focus(_ agent: AgentInfo, in session: SessionInfo, source: SourceDescriptor = .local) {
         guard session.online else { return }
+        focusingAgentID = RecentAgentItem.ID(
+            sourceID: source.id,
+            sessionName: session.name,
+            paneID: agent.paneID
+        )
         focusRunner.submit(.agent(agent, session, source))
     }
 
     func focusSession(_ session: SessionInfo, source: SourceDescriptor = .local) {
         guard session.online else { return }
+        focusingAgentID = nil
         focusRunner.submit(.session(session, source))
     }
 
     private func performFocus(_ request: FocusRequest) async {
         focusError = nil
-        defer { onChange?() }
+        defer {
+            if !focusRunner.hasPendingRequest { focusingAgentID = nil }
+            onChange?()
+        }
 
         do {
             switch request {
             case let .agent(agent, session, source):
+                try await runHerdrFocus(source: source, session: session.name, paneID: agent.paneID)
+                guard !focusRunner.hasPendingRequest else { return }
                 try await ghostty.activateClient(
                     source: source,
                     session: session.name,
                     command: try client.attachCommand(source: source, session: session.name),
                     openBehavior: ghosttyOpenBehavior
                 )
-                guard !focusRunner.hasPendingRequest else { return }
-                try await runHerdrFocus(source: source, session: session.name, paneID: agent.paneID)
             case let .session(session, source):
                 try await ghostty.activateClient(
                     source: source,
@@ -645,8 +753,16 @@ final class SessionStore {
         let removedMonitorIDs = Set(remoteMonitors.keys).subtracting(retainedIDs)
         for id in removedMonitorIDs {
             let monitor = remoteMonitors.removeValue(forKey: id)
+            let start = monitorStartTasks.removeValue(forKey: id)
+            start?.cancel()
             monitorGenerations.removeValue(forKey: id)
-            if let monitor { Task { await monitor.stop() } }
+            if let monitor {
+                Task {
+                    await monitor.stop()
+                    await start?.value
+                    await monitor.stop()
+                }
+            }
         }
         sources = descriptors.map { old[$0.id] ?? SourceInfo(descriptor: $0, sessions: [], online: false, error: nil) }
         for descriptor in descriptors where descriptor.sshAlias != nil {

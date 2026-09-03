@@ -1,7 +1,7 @@
 import Foundation
 
 actor GitBranchResolver {
-    typealias Query = @Sendable (SourceDescriptor, [String]) -> [String: String]
+    typealias Query = @Sendable (SourceDescriptor, [String]) -> [String: String]?
 
     static let shared = GitBranchResolver()
 
@@ -39,9 +39,11 @@ actor GitBranchResolver {
         if !missing.isEmpty {
             let query = self.query
             let resolved = await Task.detached { query(source, missing) }.value
-            let checkedAt = Date()
-            for path in missing {
-                cache[Key(sourceID: source.id, path: path)] = Entry(branch: resolved[path], checkedAt: checkedAt)
+            if let resolved {
+                let checkedAt = Date()
+                for path in missing {
+                    cache[Key(sourceID: source.id, path: path)] = Entry(branch: resolved[path], checkedAt: checkedAt)
+                }
             }
         }
 
@@ -61,7 +63,7 @@ actor GitBranchResolver {
         return result
     }
 
-    private static func query(source: SourceDescriptor, paths: [String]) -> [String: String] {
+    private static func query(source: SourceDescriptor, paths: [String]) -> [String: String]? {
         do {
             let data: Data
             if let alias = source.sshAlias {
@@ -83,7 +85,7 @@ actor GitBranchResolver {
             }
             return parse(data)
         } catch {
-            return [:]
+            return nil
         }
     }
 

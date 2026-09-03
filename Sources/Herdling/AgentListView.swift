@@ -831,6 +831,11 @@ private struct WorktreeSection: View {
                 AgentDetailRow(
                     agent: agent,
                     enabled: session.online,
+                    isFocusing: store.focusingAgentID == RecentAgentItem.ID(
+                        sourceID: source.id,
+                        sessionName: session.name,
+                        paneID: agent.paneID
+                    ),
                     action: { store.focus(agent, in: session, source: source) }
                 )
                 .padding(.leading, 20)
@@ -853,6 +858,7 @@ private struct WorktreeSection: View {
 private struct AgentDetailRow: View {
     let agent: AgentInfo
     let enabled: Bool
+    let isFocusing: Bool
     let action: () -> Void
 
     var body: some View {
@@ -862,7 +868,15 @@ private struct AgentDetailRow: View {
             accessibilityText: "\(agent.title), \(agent.status.rosterLabel)",
             action: action
         ) { isHovered in
-            StatusIndicator(symbol: agent.status.indicatorSymbolName, color: agent.status.color)
+            if isFocusing {
+                ProgressView()
+                    .controlSize(.mini)
+                    .progressViewStyle(.circular)
+                    .frame(width: 12, height: 12)
+                    .accessibilityHidden(true)
+            } else {
+                StatusIndicator(symbol: agent.status.indicatorSymbolName, color: agent.status.color)
+            }
             Text(agent.title)
                 .font(.system(size: 11.5))
                 .lineLimit(1)

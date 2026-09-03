@@ -28,6 +28,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let instanceLock: SingleInstanceLock
     private var store: SessionStore?
     private var statusController: StatusItemController?
+    private var terminationPending = false
 
     init(instanceLock: SingleInstanceLock) {
         self.instanceLock = instanceLock
@@ -49,8 +50,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         store.start()
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        store?.stop()
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let store else { return .terminateNow }
+        guard !terminationPending else { return .terminateLater }
+        terminationPending = true
+        Task {
+            await store.stopAndWait()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     @objc private func activateExistingInstance() {

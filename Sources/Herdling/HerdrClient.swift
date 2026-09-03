@@ -97,7 +97,12 @@ struct HerdrClient: Sendable {
 
     func focus(source: SourceDescriptor = .local, session: String, paneID: String) throws {
         guard let executable else { throw ClientError.notInstalled }
-        _ = try run(source, executable: executable, arguments: ["--session", session, "agent", "focus", paneID])
+        _ = try run(
+            source,
+            executable: executable,
+            arguments: ["--session", session, "agent", "focus", paneID],
+            timeout: 5
+        )
     }
 
     func attachCommand(source: SourceDescriptor = .local, session: String) throws -> String {
@@ -145,6 +150,7 @@ struct HerdrClient: Sendable {
                 }
                 agentsByWorkspace[agent.workspaceID, default: []].append(AgentInfo(
                     paneID: agent.paneID,
+                    tabID: agent.tabID,
                     title: agent.name
                         ?? agent.displayAgent
                         ?? agent.title
@@ -155,6 +161,7 @@ struct HerdrClient: Sendable {
                     status: AgentStatus(rawValue: agent.agentStatus) ?? .unknown,
                     workspace: workspaces[agent.workspaceID] ?? agent.workspaceID,
                     cwd: agent.foregroundCWD ?? agent.cwd ?? "",
+                    revision: agent.revision,
                     updatedAt: refreshedAt
                 ))
             }
@@ -202,16 +209,21 @@ struct HerdrClient: Sendable {
         return arguments
     }
 
-    private func run(_ source: SourceDescriptor, executable: String, arguments: [String]) throws -> Data {
+    private func run(
+        _ source: SourceDescriptor,
+        executable: String,
+        arguments: [String],
+        timeout: TimeInterval? = nil
+    ) throws -> Data {
         do {
             if let alias = source.sshAlias {
                 return try CommandRunner.run(
                     "/usr/bin/ssh",
                     Self.sshArguments(alias: alias, command: Self.remoteCommand(arguments: arguments)),
-                    timeout: 7
+                    timeout: timeout ?? 7
                 )
             }
-            return try CommandRunner.run(executable, arguments)
+            return try CommandRunner.run(executable, arguments, timeout: timeout ?? 5)
         } catch CommandRunner.Error.timedOut {
             throw ClientError.timedOut
         } catch let CommandRunner.Error.failed(message) {
@@ -257,6 +269,8 @@ private struct SnapshotEnvelope: Decodable {
                 let foregroundCWD: String?
                 let name: String?
                 let paneID: String
+                let revision: UInt64?
+                let tabID: String?
                 let terminalTitle: String?
                 let terminalTitleStripped: String?
                 let title: String?
@@ -270,6 +284,8 @@ private struct SnapshotEnvelope: Decodable {
                     case foregroundCWD = "foreground_cwd"
                     case name
                     case paneID = "pane_id"
+                    case revision
+                    case tabID = "tab_id"
                     case terminalTitle = "terminal_title"
                     case terminalTitleStripped = "terminal_title_stripped"
                     case title

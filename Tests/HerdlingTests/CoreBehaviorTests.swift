@@ -129,20 +129,23 @@ struct CoreBehaviorTests {
     func socketSnapshotPreservesWorkspaceAndAgentOrder() throws {
         let line = Data(#"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"version":"0.8.2","protocol":1,"workspaces":[{"workspace_id":"w2","label":"Second"},{"workspace_id":"w1","label":"First"}],"tabs":[],"panes":[],"layouts":[],"agents":[{"terminal_id":"t1","agent_status":"idle","workspace_id":"w1","tab_id":"tab","pane_id":"w1:p1","focused":false,"revision":1,"name":"one","cwd":"/one"},{"terminal_id":"t2","agent_status":"blocked","workspace_id":"w2","tab_id":"tab","pane_id":"w2:p1","focused":false,"revision":1,"name":"two","cwd":"/two"}]}}}"#.utf8)
 
-        guard case let .snapshot(groups) = try HerdrSocketMessage.decode(line, refreshedAt: .distantPast) else {
+        guard case let .snapshot(id, groups) = try HerdrSocketMessage.decode(line, refreshedAt: .distantPast) else {
             Issue.record("Expected socket snapshot")
             return
         }
+
+        #expect(id == "snapshot")
         #expect(groups.map(\.name) == ["Second", "First"])
         #expect(groups[0].agents.map(\.title) == ["two"])
         #expect(groups[1].agents.map(\.title) == ["one"])
+        #expect(groups[1].agents[0].revision == 1)
         #expect(groups[1].agents[0].updatedAt == .distantPast)
     }
 
     @Test
     func socketEventIsRecognized() throws {
         let event = Data(#"{"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"working"}}"#.utf8)
-        guard case .event = try HerdrSocketMessage.decode(event, refreshedAt: .now) else {
+        guard case .event(.agentStatusChanged) = try HerdrSocketMessage.decode(event, refreshedAt: .now) else {
             Issue.record("Expected socket event")
             return
         }
@@ -175,18 +178,16 @@ struct CoreBehaviorTests {
         let params = try #require(object["params"] as? [String: Any])
         let subscriptions = try #require(params["subscriptions"] as? [[String: String]])
         let statusSubscriptions = subscriptions.filter { $0["type"] == "pane.agent_status_changed" }
+        let topologyTypes = Set(subscriptions.compactMap { subscription in
+            subscription["pane_id"] == nil ? subscription["type"] : nil
+        })
 
         #expect(statusSubscriptions == [
             ["type": "pane.agent_status_changed", "pane_id": "w1:p1"],
             ["type": "pane.agent_status_changed", "pane_id": "w2:p2"],
         ])
-
-        let snapshot = try #require(
-            JSONSerialization.jsonObject(with: Data(HerdrLocalSessionMonitor.snapshotRequest.utf8))
-                as? [String: Any]
-        )
-        #expect(snapshot["id"] as? String == "snapshot")
-        #expect(snapshot["method"] as? String == "session.snapshot")
+        #expect(topologyTypes.isSuperset(of: ["workspace.updated", "tab.closed"]))
+        #expect(!topologyTypes.contains("layout.updated"))
     }
 
     @Test
@@ -230,7 +231,10 @@ struct CoreBehaviorTests {
         )
 
         store.start()
-        for _ in 0..<1_000 where store.sources[0].sessions.first?.agents.first?.paneID != "socket-pane" {
+        for _ in 0..<1_000 where
+            store.sources[0].sessions.first?.agents.first?.paneID != "socket-pane"
+                || store.sources[0].branches != ["/socket": "main"]
+        {
             await Task.yield()
         }
         let callsBeforeRefresh = recorder.localCallCount
@@ -369,16 +373,40 @@ struct CoreBehaviorTests {
     }
 
     @Test
-    func socketBootstrapUsesSinglePersistentTransport() throws {
+    @MainActor
+    func stopWaitsForMonitorStartupAndStopsItAgainAfterTheRace() async {
+        let monitor = StartStopRaceMonitor()
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            localMonitor: monitor,
+            sourceDescriptors: [.local]
+        )
+
+        store.start()
+        await monitor.waitUntilStartEntered()
+        let stopping = Task { await store.stopAndWait() }
+        await monitor.waitUntilStopped()
+        await monitor.releaseStart()
+        await stopping.value
+
+        #expect(await !monitor.isActive)
+        #expect(await monitor.stopCount >= 2)
+    }
+
+    @Test
+    func socketEventStreamStartsWithSubscriptionAndBuffersBootstrapEvents() throws {
         let published = DispatchSemaphore(value: 0)
+        let snapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Space"}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","name":"agent","cwd":"/repo"}]}}}"#
         let connection = HerdrSocketConnection(
             endpoint: HerdrSocketEndpoint(session: "default", path: "/unused"),
             eventExecutable: "/bin/sh",
             eventArguments: [
                 "-c",
-                "read preliminary; printf '%s\\n' '{\"id\":\"snapshot\",\"result\":{\"type\":\"session_snapshot\",\"snapshot\":{\"workspaces\":[],\"agents\":[]}}}'; read subscription; printf '%s\\n' '{\"id\":\"subscription\",\"result\":{\"type\":\"subscription_started\"}}'; read authoritative; printf '%s\\n' '{\"id\":\"snapshot\",\"result\":{\"type\":\"session_snapshot\",\"snapshot\":{\"workspaces\":[],\"agents\":[]}}}'; printf '%s\\n' '{\"event\":\"workspace.updated\"}'; read refresh; printf '%s\\n' '{\"id\":\"snapshot\",\"result\":{\"type\":\"session_snapshot\",\"snapshot\":{\"workspaces\":[],\"agents\":[]}}}'; sleep 5",
+                "while IFS= read -r request; do case \"$request\" in *session.snapshot*) \(socketSnapshotReply(snapshot)) ;; *events.subscribe*) printf '%s\\n' '{\"id\":\"subscription\",\"result\":{\"type\":\"subscription_started\"}}' '{\"event\":\"pane_agent_status_changed\",\"data\":{\"type\":\"pane_agent_status_changed\",\"pane_id\":\"w1:p1\",\"workspace_id\":\"w1\",\"agent_status\":\"working\"}}' ;; esac; done",
             ],
-            onSnapshot: { _, _, _, _ in published.signal() },
+            onSnapshot: { _, _, _, groups in
+                if groups.first?.agents.first?.status == .working { published.signal() }
+            },
             onEnd: { _, _ in }
         )
         defer { connection.stop() }
@@ -386,7 +414,166 @@ struct CoreBehaviorTests {
         try connection.start()
 
         #expect(published.wait(timeout: .now() + 1) == .success)
-        #expect(published.wait(timeout: .now() + 1) == .success)
+    }
+
+    @Test
+    func closedPaneIsRemovedFromPublishedSnapshot() throws {
+        let removed = DispatchSemaphore(value: 0)
+        let snapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w6","label":"Main"}],"agents":[{"pane_id":"w6:p0","workspace_id":"w6","agent_status":"idle","name":"closed","cwd":"/repo"}]}}}"#
+        let connection = HerdrSocketConnection(
+            endpoint: HerdrSocketEndpoint(session: "default", path: "/unused"),
+            eventExecutable: "/bin/sh",
+            eventArguments: [
+                "-c",
+                "while IFS= read -r request; do case \"$request\" in *session.snapshot*) \(socketSnapshotReply(snapshot)) ;; *pane.closed*) printf '%s\\n' '{\"id\":\"subscription\",\"result\":{\"type\":\"subscription_started\"}}'; sleep 0.1; printf '%s\\n' '{\"event\":\"pane_closed\",\"data\":{\"type\":\"pane_closed\",\"pane_id\":\"w6:p0\",\"workspace_id\":\"w6\"}}' ;; esac; done",
+            ],
+            onSnapshot: { _, _, _, groups in
+                if groups.first?.agents.isEmpty == true { removed.signal() }
+            },
+            onEnd: { _, _ in }
+        )
+        defer { connection.stop() }
+
+        try connection.start()
+
+        #expect(removed.wait(timeout: .now() + 1) == .success)
+    }
+
+    @Test
+    func topologyEventPublishesFreshSnapshotWithoutWaitingForDiscovery() throws {
+        let refreshed = DispatchSemaphore(value: 0)
+        let oldSnapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Main"}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","name":"old","cwd":"/repo"}]}}}"#
+        let newSnapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Main"}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","name":"old","cwd":"/repo"},{"pane_id":"w1:p2","workspace_id":"w1","agent_status":"working","name":"new","cwd":"/repo"}]}}}"#
+        let connection = HerdrSocketConnection(
+            endpoint: HerdrSocketEndpoint(session: "default", path: "/unused"),
+            eventExecutable: "/bin/sh",
+            eventArguments: [
+                "-c",
+                "count=0; while IFS= read -r request; do case \"$request\" in *session.snapshot*) count=$((count + 1)); if [ \"$count\" -ge 3 ]; then \(socketSnapshotReply(newSnapshot)); else \(socketSnapshotReply(oldSnapshot)); fi ;; *pane.created*) printf '%s\\n' '{\"id\":\"subscription\",\"result\":{\"type\":\"subscription_started\"}}'; sleep 0.1; printf '%s\\n' '{\"event\":\"pane_created\",\"data\":{\"type\":\"pane_created\"}}' ;; esac; done",
+            ],
+            onSubscriptionChange: { _, _, groups in
+                if groups.flatMap(\.agents).contains(where: { $0.paneID == "w1:p2" }) {
+                    refreshed.signal()
+                }
+            },
+            onSnapshot: { _, _, _, groups in
+                if groups.flatMap(\.agents).contains(where: { $0.paneID == "w1:p2" }) {
+                    refreshed.signal()
+                }
+            },
+            onEnd: { _, _ in }
+        )
+        defer { connection.stop() }
+
+        try connection.start()
+
+        #expect(refreshed.wait(timeout: .now() + 1) == .success)
+    }
+
+    @Test
+    func closedTabRemovesRemoteAgentsWithoutWaitingForDiscovery() throws {
+        let refreshed = DispatchSemaphore(value: 0)
+        let populatedSnapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Main"}],"agents":[{"pane_id":"w1:p1","tab_id":"tab","workspace_id":"w1","agent_status":"idle","name":"closed","cwd":"/repo"}]}}}"#
+        let emptySnapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Main"}],"agents":[]}}}"#
+        let connection = HerdrSocketConnection(
+            endpoint: HerdrSocketEndpoint(session: "default", path: "/unused"),
+            eventExecutable: "/bin/sh",
+            eventArguments: [
+                "-c",
+                "count=0; while IFS= read -r request; do case \"$request\" in *session.snapshot*) count=$((count + 1)); if [ \"$count\" -ge 3 ]; then sleep 1; \(socketSnapshotReply(emptySnapshot)); else \(socketSnapshotReply(populatedSnapshot)); fi ;; *tab.closed*) printf '%s\\n' '{\"id\":\"subscription\",\"result\":{\"type\":\"subscription_started\"}}'; sleep 0.1; printf '%s\\n' '{\"event\":\"tab_closed\",\"data\":{\"type\":\"tab_closed\",\"tab_id\":\"tab\",\"workspace_id\":\"w1\"}}' ;; esac; done",
+            ],
+            onSubscriptionChange: { _, _, groups in
+                if groups.first?.agents.isEmpty == true { refreshed.signal() }
+            },
+            onSnapshot: { _, _, _, groups in
+                if groups.first?.agents.isEmpty == true { refreshed.signal() }
+            },
+            onEnd: { _, _ in }
+        )
+        defer { connection.stop() }
+
+        try connection.start()
+
+        #expect(refreshed.wait(timeout: .now() + 0.5) == .success)
+    }
+
+    @Test
+    func paneUpdateAppliesWithoutAnotherSnapshotProcess() throws {
+        let updated = DispatchSemaphore(value: 0)
+        let snapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Main"}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","name":"old","cwd":"/old","revision":1}]}}}"#
+        let connection = HerdrSocketConnection(
+            endpoint: HerdrSocketEndpoint(session: "default", path: "/unused"),
+            eventExecutable: "/bin/sh",
+            eventArguments: [
+                "-c",
+                "while IFS= read -r request; do case \"$request\" in *session.snapshot*) \(socketSnapshotReply(snapshot)) ;; *pane.updated*) printf '%s\\n' '{\"id\":\"subscription\",\"result\":{\"type\":\"subscription_started\"}}'; sleep 0.1; printf '%s\\n' '{\"event\":\"pane_updated\",\"data\":{\"type\":\"pane_updated\",\"pane\":{\"pane_id\":\"w1:p1\",\"workspace_id\":\"w1\",\"agent_status\":\"working\",\"display_agent\":\"new\",\"foreground_cwd\":\"/new\",\"revision\":2}}}' ;; esac; done",
+            ],
+            onSnapshot: { _, _, _, groups in
+                guard let current = groups.first?.agents.first else { return }
+                if current.title == "new", current.status == .working, current.cwd == "/new" {
+                    updated.signal()
+                }
+            },
+            onEnd: { _, _ in }
+        )
+        defer { connection.stop() }
+
+        try connection.start()
+
+        #expect(updated.wait(timeout: .now() + 1) == .success)
+    }
+
+    @Test
+    func replayedPaneUpdateOlderThanSnapshotIsIgnored() throws {
+        let staleUpdate = DispatchSemaphore(value: 0)
+        let snapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Main"}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","name":"current","cwd":"/current","revision":6}]}}}"#
+        let connection = HerdrSocketConnection(
+            endpoint: HerdrSocketEndpoint(session: "default", path: "/unused"),
+            eventExecutable: "/bin/sh",
+            eventArguments: [
+                "-c",
+                "while IFS= read -r request; do case \"$request\" in *session.snapshot*) \(socketSnapshotReply(snapshot)) ;; *pane.updated*) printf '%s\\n' '{\"id\":\"subscription\",\"result\":{\"type\":\"subscription_started\"}}' '{\"event\":\"pane_updated\",\"data\":{\"type\":\"pane_updated\",\"pane\":{\"pane_id\":\"w1:p1\",\"workspace_id\":\"w1\",\"agent_status\":\"working\",\"display_agent\":\"stale\",\"foreground_cwd\":\"/stale\",\"revision\":2}}}' ;; esac; done",
+            ],
+            onSnapshot: { _, _, _, groups in
+                if groups.first?.agents.first?.status == .working { staleUpdate.signal() }
+            },
+            onEnd: { _, _ in }
+        )
+        defer { connection.stop() }
+
+        try connection.start()
+
+        #expect(staleUpdate.wait(timeout: .now() + 0.3) == .timedOut)
+    }
+
+    @Test
+    func lateSnapshotResponseCannotSatisfyNextRequest() throws {
+        let freshPublished = DispatchSemaphore(value: 0)
+        let baseSnapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Main"}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","name":"base","cwd":"/repo"}]}}}"#
+        let staleSnapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Main"}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","name":"stale","cwd":"/repo"}]}}}"#
+        let freshSnapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Main"}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","name":"fresh","cwd":"/repo"}]}}}"#
+        let connection = HerdrSocketConnection(
+            endpoint: HerdrSocketEndpoint(session: "default", path: "/unused"),
+            eventExecutable: "/bin/sh",
+            eventArguments: [
+                "-c",
+                "count=0; while IFS= read -r request; do case \"$request\" in *session.snapshot*) count=$((count + 1)); if [ \"$count\" -le 2 ]; then \(socketSnapshotReply(baseSnapshot)); elif [ \"$count\" -eq 3 ]; then sleep 3.2; \(socketSnapshotReply(staleSnapshot)); else \(socketSnapshotReply(freshSnapshot)); fi ;; *events.subscribe*) printf '%s\\n' '{\"id\":\"subscription\",\"result\":{\"type\":\"subscription_started\"}}' ;; esac; done",
+            ],
+            onSnapshot: { _, _, _, groups in
+                if groups.first?.agents.first?.title == "fresh" { freshPublished.signal() }
+            },
+            onEnd: { _, _ in }
+        )
+        defer { connection.stop() }
+
+        try connection.start()
+        do {
+            _ = try connection.refresh()
+            Issue.record("Expected the delayed request to time out")
+        } catch CommandRunner.Error.timedOut {}
+
+        #expect(try connection.refresh())
+        #expect(freshPublished.wait(timeout: .now() + 1) == .success)
     }
 
     @Test
@@ -514,14 +701,14 @@ struct CoreBehaviorTests {
     }
 
     @Test
-    func recentAgentsKeepEveryAttentionItemInPriorityOrderAndExpireIdleAfterThirtyMinutes() {
+    func recentAgentsKeepEveryAttentionItemInPriorityOrderAndExpireIdleAfterTenMinutes() {
         let now = Date(timeIntervalSince1970: 10_000)
         let agents = [
-            recentAgent("idle-old", .idle, changedAt: now.addingTimeInterval(-1_801)),
+            recentAgent("idle-old", .idle, changedAt: now.addingTimeInterval(-601)),
             recentAgent("working-1", .working, changedAt: now.addingTimeInterval(-20)),
             recentAgent("done", .done, changedAt: now.addingTimeInterval(-30)),
             recentAgent("blocked", .blocked, changedAt: now.addingTimeInterval(-40)),
-            recentAgent("idle-recent", .idle, changedAt: now.addingTimeInterval(-1_799)),
+            recentAgent("idle-recent", .idle, changedAt: now.addingTimeInterval(-599)),
             recentAgent("unknown", .unknown, changedAt: now),
         ] + (2...7).map { recentAgent("working-\($0)", .working, changedAt: now.addingTimeInterval(Double(-$0))) }
         let source = SourceInfo(
@@ -651,7 +838,37 @@ struct CoreBehaviorTests {
             changedAt: idleAt
         )]))
         #expect(store.recentAgents(at: idleAt).map(\.agent.paneID) == ["pane"])
-        #expect(store.recentAgents(at: idleAt.addingTimeInterval(1_800)).isEmpty)
+        #expect(store.recentAgents(at: idleAt.addingTimeInterval(600)).isEmpty)
+        store.stop()
+    }
+
+    @Test
+    @MainActor
+    func statusEventDoesNotCancelPendingBranchLoad() async {
+        let monitor = ManualSessionMonitor()
+        let branchStarted = AsyncGate()
+        let releaseBranch = AsyncGate()
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            loadBranches: { _, paths in
+                await branchStarted.release()
+                await releaseBranch.wait()
+                return Dictionary(uniqueKeysWithValues: paths.map { ($0, "main") })
+            },
+            localMonitor: monitor,
+            sourceDescriptors: [.local]
+        )
+
+        store.start()
+        await monitor.waitUntilStarted()
+        await monitor.emit(.sessions([loadedSession(paneID: "pane", status: .idle)]))
+        await branchStarted.wait()
+        await monitor.emit(.sessions([loadedSession(paneID: "pane", status: .working)]))
+        await releaseBranch.release()
+        for _ in 0..<1_000 where store.sources[0].branches.isEmpty { await Task.yield() }
+
+        #expect(store.sources[0].branches == ["/remote": "main"])
+        #expect(store.sources[0].sessions.first?.agents.first?.status == .working)
         store.stop()
     }
 
@@ -721,6 +938,18 @@ struct CoreBehaviorTests {
     }
 
     @Test
+    func gitBranchResolverRetainsLastBranchWhenQueryFails() async {
+        let recorder = BranchQueryRecorder()
+        let resolver = GitBranchResolver(cacheDuration: 0) { _, paths in
+            recorder.resolve(paths)
+        }
+
+        #expect(await resolver.branches(source: .local, paths: ["/repo"]) == ["/repo": "main"])
+        recorder.failQueries()
+        #expect(await resolver.branches(source: .local, paths: ["/repo"]) == ["/repo": "main"])
+    }
+
+    @Test
     @MainActor
     func latestRequestSupersedesEarlierFocus() async {
         let gate = AsyncGate()
@@ -741,10 +970,102 @@ struct CoreBehaviorTests {
     }
 
     @Test
+    @MainActor
+    func agentFocusShowsPendingStateAndStopsBeforeGhosttyWhenHerdrFails() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("herdling-focus-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let executable = directory.appendingPathComponent("fake-herdr")
+        try "#!/bin/sh\nsleep 0.2\necho 'session stopped' >&2\nexit 1\n"
+            .write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+
+        let monitor = ManualSessionMonitor()
+        let store = SessionStore(
+            client: HerdrClient(executable: executable.path),
+            loadSource: { _ in [] },
+            localMonitor: monitor,
+            sourceDescriptors: [.local]
+        )
+        store.start()
+        await monitor.waitUntilStarted()
+        await monitor.emit(.sessions([loadedSession(paneID: "pane", status: .idle)]))
+        let session = try #require(store.sources[0].sessions.first)
+        let agent = try #require(session.agents.first)
+
+        store.focus(agent, in: session)
+
+        #expect(store.focusingAgentID == RecentAgentItem.ID(
+            sourceID: SourceDescriptor.local.id,
+            sessionName: session.name,
+            paneID: agent.paneID
+        ))
+        for _ in 0..<100 where store.focusingAgentID != nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(store.focusingAgentID == nil)
+        #expect(store.focusError?.contains("session stopped") == true)
+        await store.stopAndWait()
+    }
+
+    @Test
     func ghosttyStorageKeysCannotCollideAcrossSourceAndSession() {
         let first = GhosttyController.mappingKey(source: .remote("a"), session: "b.c")
         let second = GhosttyController.mappingKey(source: .remote("a.b"), session: "c")
         #expect(first != second)
+    }
+
+    @Test
+    func mappedGhosttyTerminalRequiresMatchingLiveClient() {
+        let mapping = GhosttyController.ClientMapping(terminalID: "terminal", tty: "ttys000")
+        let matching = GhosttyClientProcess(tty: "ttys000", sourceID: "ssh:kvm", session: "default")
+        let wrongSession = GhosttyClientProcess(tty: "ttys000", sourceID: "ssh:kvm", session: "other")
+
+        #expect(GhosttyController.reusableMappedTerminalID(
+            mapping: mapping,
+            clients: [matching],
+            sourceID: "ssh:kvm",
+            session: "default"
+        ) == "terminal")
+        #expect(GhosttyController.reusableMappedTerminalID(
+            mapping: mapping,
+            clients: [],
+            sourceID: "ssh:kvm",
+            session: "default"
+        ) == nil)
+        #expect(GhosttyController.reusableMappedTerminalID(
+            mapping: mapping,
+            clients: [wrongSession],
+            sourceID: "ssh:kvm",
+            session: "default"
+        ) == nil)
+    }
+
+    @Test
+    func createdGhosttyClientWaitsForNewMatchingTTY() {
+        let clients = [
+            GhosttyClientProcess(tty: "ttys000", sourceID: "ssh:kvm", session: "default"),
+            GhosttyClientProcess(tty: "ttys001", sourceID: "ssh:kvm", session: "default"),
+            GhosttyClientProcess(tty: "ttys002", sourceID: "local", session: "default"),
+        ]
+
+        #expect(GhosttyController.newClientTTYs(
+            clients: clients,
+            excluding: ["ttys000"],
+            sourceID: "ssh:kvm",
+            session: "default"
+        ) == ["ttys001"])
+    }
+
+    @Test
+    func legacyGhosttyMappingDecodesWithoutTTY() throws {
+        let mapping = try JSONDecoder().decode(
+            GhosttyController.ClientMapping.self,
+            from: Data(#"{"terminalID":"terminal"}"#.utf8)
+        )
+
+        #expect(mapping == GhosttyController.ClientMapping(terminalID: "terminal"))
     }
 
     @Test
@@ -763,6 +1084,14 @@ struct CoreBehaviorTests {
             targetTTYs: ["ttys000"],
             probedTerminalID: "local-terminal"
         ) == "local-terminal")
+
+        #expect(GhosttyController.adoptableTerminalID(
+            liveTerminalIDs: ["target-terminal"],
+            claimedTerminalIDs: ["target-terminal"],
+            allClientTTYs: ["ttys000"],
+            targetTTYs: ["ttys000"],
+            probedTerminalID: "target-terminal"
+        ) == "target-terminal")
     }
 
     @Test
@@ -1140,12 +1469,19 @@ private final class FlakySourceLoader: @unchecked Sendable {
 private final class BranchQueryRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var calls = 0
+    private var failing = false
 
     var callCount: Int { lock.withLock { calls } }
 
-    func resolve(_ paths: [String]) -> [String: String] {
-        lock.withLock { calls += 1 }
-        return paths.contains("/repo") ? ["/repo": "main"] : [:]
+    func resolve(_ paths: [String]) -> [String: String]? {
+        lock.withLock {
+            calls += 1
+            return failing ? nil : paths.contains("/repo") ? ["/repo": "main"] : [:]
+        }
+    }
+
+    func failQueries() {
+        lock.withLock { failing = true }
     }
 }
 
@@ -1180,6 +1516,36 @@ private actor ManualSessionMonitor: SessionMonitoring {
 
     func waitUntilStarted() async {
         while handler == nil { await Task.yield() }
+    }
+}
+
+private actor StartStopRaceMonitor: SessionMonitoring {
+    private var startEntered = false
+    private var startReleased = false
+    private(set) var isActive = false
+    private(set) var stopCount = 0
+
+    func start(handler: @escaping @Sendable (SessionMonitorEvent) async -> Void) async {
+        startEntered = true
+        while !startReleased { await Task.yield() }
+        isActive = true
+    }
+
+    func stop() {
+        stopCount += 1
+        isActive = false
+    }
+
+    func waitUntilStartEntered() async {
+        while !startEntered { await Task.yield() }
+    }
+
+    func waitUntilStopped() async {
+        while stopCount == 0 { await Task.yield() }
+    }
+
+    func releaseStart() {
+        startReleased = true
     }
 }
 
@@ -1242,4 +1608,9 @@ private final class SourceLoadRecorder: @unchecked Sendable {
         }
         return []
     }
+}
+
+private func socketSnapshotReply(_ snapshot: String) -> String {
+    "snapshot_id=${request#*\\\"id\\\":\\\"}; snapshot_id=${snapshot_id%%\\\"*}; "
+        + "printf '%s\\n' '\(snapshot)' | sed \"s/\\\"id\\\":\\\"snapshot\\\"/\\\"id\\\":\\\"$snapshot_id\\\"/\""
 }

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 struct HerdrSocketEndpoint: Equatable, Sendable {
@@ -42,6 +43,8 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
     private var snapshots: [String: HerdrClient.LoadedSession] = [:]
     private var snapshotGenerations = SnapshotGenerationLedger()
     private var endpointOrder: [String] = []
+    private var hasDiscoveredEndpoints = false
+    private var lifecycleGeneration: UInt64 = 0
 
     init(configDirectory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/herdr")) {
         self.configDirectory = configDirectory
@@ -49,18 +52,22 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
 
     func start(handler: @escaping @Sendable (SessionMonitorEvent) async -> Void) async {
         guard self.handler == nil else { return }
+        lifecycleGeneration &+= 1
+        let generation = lifecycleGeneration
         self.handler = handler
-        await discover()
+        await discover(generation: generation)
+        guard self.handler != nil, lifecycleGeneration == generation else { return }
         discoveryTask = Task { [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(15)) }
                 catch { return }
-                await self?.discover()
+                await self?.discover(generation: generation)
             }
         }
     }
 
     func stop() {
+        lifecycleGeneration &+= 1
         handler = nil
         discoveryTask?.cancel()
         discoveryTask = nil
@@ -71,6 +78,7 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
         snapshots.removeAll()
         snapshotGenerations.removeAll()
         endpointOrder.removeAll()
+        hasDiscoveredEndpoints = false
     }
 
     static func endpoints(configDirectory: URL) -> [HerdrSocketEndpoint] {
@@ -97,15 +105,15 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
     }
 
     static func subscriptionRequest(paneIDs: Set<String>) -> String {
-        let types = [
-            "workspace.created", "workspace.updated", "workspace.metadata_updated",
-            "workspace.renamed", "workspace.moved", "workspace.reordered", "workspace.closed",
+        let topologyTypes = [
+            "workspace.created", "workspace.updated", "workspace.metadata_updated", "workspace.renamed",
+            "workspace.moved", "workspace.reordered", "workspace.closed",
             "worktree.created", "worktree.opened", "worktree.removed",
             "tab.created", "tab.closed", "tab.renamed", "tab.moved",
             "pane.created", "pane.updated", "pane.closed", "pane.moved", "pane.exited",
             "pane.agent_detected",
         ]
-        var subscriptions = types.map { ["type": $0] }
+        var subscriptions = topologyTypes.map { ["type": $0] }
         subscriptions += paneIDs.sorted().map {
             ["type": "pane.agent_status_changed", "pane_id": $0]
         }
@@ -118,12 +126,17 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
         return data.map { String(decoding: $0, as: UTF8.self) } ?? ""
     }
 
-    static let snapshotRequest = #"{"id":"snapshot","method":"session.snapshot","params":{}}"#
+    static func snapshotRequest(id: String) -> String {
+        #"{"id":"\#(id)","method":"session.snapshot","params":{}}"#
+    }
 
-    private func discover() async {
-        guard handler != nil else { return }
+    private func discover(generation: UInt64) async {
+        guard handler != nil, lifecycleGeneration == generation else { return }
         let endpoints = Self.endpoints(configDirectory: configDirectory)
-        endpointOrder = endpoints.map(\.path)
+        let nextEndpointOrder = endpoints.map(\.path)
+        let topologyChanged = !hasDiscoveredEndpoints || endpointOrder != nextEndpointOrder
+        hasDiscoveredEndpoints = true
+        endpointOrder = nextEndpointOrder
         let livePaths = Set(endpointOrder)
         let removedPaths = connections.keys.filter { !livePaths.contains($0) }
         for path in removedPaths {
@@ -131,10 +144,30 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
             snapshots.removeValue(forKey: path)
             snapshotGenerations.remove(endpoint: path)
         }
+        let existingConnections = endpoints.compactMap { endpoint in
+            connections[endpoint.path].map { (endpoint, $0) }
+        }
+        let refreshResults = await HerdrSocketConnection.refreshAll(existingConnections)
+        guard handler != nil, lifecycleGeneration == generation else { return }
+        for result in refreshResults where !result.succeeded {
+            guard connections[result.path]?.id == result.connectionID else { continue }
+            connections.removeValue(forKey: result.path)?.stop()
+            snapshots.removeValue(forKey: result.path)
+            snapshotGenerations.remove(endpoint: result.path)
+        }
         var pendingConnections: [(HerdrSocketEndpoint, HerdrSocketConnection)] = []
         for endpoint in endpoints where connections[endpoint.path] == nil {
             let connection = HerdrSocketConnection(
                 endpoint: endpoint,
+                onSubscriptionChange: { [weak self] connectionID, endpoint, groups in
+                    Task {
+                        await self?.subscriptionChanged(
+                            groups,
+                            at: endpoint,
+                            connectionID: connectionID
+                        )
+                    }
+                },
                 onSnapshot: { [weak self] connectionID, endpoint, generation, groups in
                     Task {
                         await self?.received(
@@ -153,14 +186,14 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
             pendingConnections.append((endpoint, connection))
         }
         let results = await HerdrSocketConnection.startAll(pendingConnections)
-        guard handler != nil else { return }
+        guard handler != nil, lifecycleGeneration == generation else { return }
         for result in results where !result.succeeded {
             guard connections[result.path]?.id == result.connectionID else { continue }
             connections.removeValue(forKey: result.path)?.stop()
             snapshots.removeValue(forKey: result.path)
             snapshotGenerations.remove(endpoint: result.path)
         }
-        publish()
+        if topologyChanged || !pendingConnections.isEmpty { publish() }
     }
 
     private func received(
@@ -182,9 +215,31 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
         snapshots.removeValue(forKey: endpoint.path)
         snapshotGenerations.remove(endpoint: endpoint.path)
         publish()
+        let generation = lifecycleGeneration
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(200))
-            await self?.discover()
+            await self?.discover(generation: generation)
+        }
+    }
+
+    private func subscriptionChanged(
+        _ groups: [AgentGroup],
+        at endpoint: HerdrSocketEndpoint,
+        connectionID: UUID
+    ) {
+        guard connections[endpoint.path]?.id == connectionID else { return }
+        snapshots[endpoint.path] = HerdrClient.LoadedSession(
+            name: endpoint.session,
+            groups: groups,
+            error: nil
+        )
+        publish()
+        connections.removeValue(forKey: endpoint.path)?.stop()
+        snapshotGenerations.remove(endpoint: endpoint.path)
+        let generation = lifecycleGeneration
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(50))
+            await self?.discover(generation: generation)
         }
     }
 
@@ -207,22 +262,28 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
         handler: @escaping @Sendable (SessionMonitorEvent) async -> Void
     ) {
         let previous = publicationTask
-        publicationTask = Task {
-            await previous?.value
-            guard !Task.isCancelled else { return }
-            await handler(event)
+        let generation = lifecycleGeneration
+        publicationTask = Task { [weak self] in
+            await self?.deliver(event, to: handler, after: previous, generation: generation)
         }
+    }
+
+    private func deliver(
+        _ event: SessionMonitorEvent,
+        to handler: @escaping @Sendable (SessionMonitorEvent) async -> Void,
+        after previous: Task<Void, Never>?,
+        generation: UInt64
+    ) async {
+        await previous?.value
+        guard !Task.isCancelled,
+              lifecycleGeneration == generation,
+              self.handler != nil
+        else { return }
+        await handler(event)
     }
 }
 
 final class HerdrSocketConnection: @unchecked Sendable {
-    private enum BootstrapStage {
-        case preliminary
-        case subscribing
-        case authoritative
-        case complete
-    }
-
     struct StartResult: Sendable {
         let path: String
         let connectionID: UUID
@@ -233,23 +294,30 @@ final class HerdrSocketConnection: @unchecked Sendable {
     private let endpoint: HerdrSocketEndpoint
     private let eventExecutable: String
     private let eventArguments: [String]
+    private let onSubscriptionChange: @Sendable (UUID, HerdrSocketEndpoint, [AgentGroup]) -> Void
     private let onSnapshot: @Sendable (UUID, HerdrSocketEndpoint, UInt64, [AgentGroup]) -> Void
     private let onEnd: @Sendable (UUID, HerdrSocketEndpoint) -> Void
     private let queue = DispatchQueue(label: "dev.herdr.Herdling.socket")
     private let lock = NSLock()
+    private let snapshotRequestLock = NSLock()
+    private let snapshotResponseLock = NSLock()
     private let subscriptionStarted = DispatchSemaphore(value: 0)
-    private let initialSnapshotReceived = DispatchSemaphore(value: 0)
+    private let snapshotReceived = DispatchSemaphore(value: 0)
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
     private var buffer = Data()
-    private var snapshotWorkItem: DispatchWorkItem?
-    private var snapshotRefreshPending = false
-    private var snapshotRequestInFlight = false
-    private var bootstrapStage = BootstrapStage.preliminary
-    private var initialSnapshotSucceeded = false
     private var snapshotGeneration: UInt64 = 0
+    private var groups: [AgentGroup] = []
+    private var pendingEvents: [HerdrSocketEvent] = []
+    private var bootstrapComplete = false
+    private var resyncPending = false
+    private var resyncInFlight = false
+    private var resyncScheduleGeneration: UInt64 = 0
     private var subscribedPaneIDs: Set<String> = []
+    private var snapshotRequestSequence: UInt64 = 0
+    private var awaitingSnapshotID: String?
+    private var snapshotResponse: [AgentGroup]?
     private var finished = false
     private var stopped = false
 
@@ -257,12 +325,14 @@ final class HerdrSocketConnection: @unchecked Sendable {
         endpoint: HerdrSocketEndpoint,
         eventExecutable: String? = nil,
         eventArguments: [String]? = nil,
+        onSubscriptionChange: @escaping @Sendable (UUID, HerdrSocketEndpoint, [AgentGroup]) -> Void = { _, _, _ in },
         onSnapshot: @escaping @Sendable (UUID, HerdrSocketEndpoint, UInt64, [AgentGroup]) -> Void,
         onEnd: @escaping @Sendable (UUID, HerdrSocketEndpoint) -> Void
     ) {
         self.endpoint = endpoint
         self.eventExecutable = eventExecutable ?? "/usr/bin/nc"
         self.eventArguments = eventArguments ?? ["-U", endpoint.path]
+        self.onSubscriptionChange = onSubscriptionChange
         self.onSnapshot = onSnapshot
         self.onEnd = onEnd
     }
@@ -288,6 +358,24 @@ final class HerdrSocketConnection: @unchecked Sendable {
                             succeeded: false
                         )
                     }
+                }
+            }
+            return await group.reduce(into: []) { $0.append($1) }
+        }
+    }
+
+    static func refreshAll(
+        _ connections: [(HerdrSocketEndpoint, HerdrSocketConnection)]
+    ) async -> [StartResult] {
+        await withTaskGroup(of: StartResult.self, returning: [StartResult].self) { group in
+            for (endpoint, connection) in connections {
+                group.addTask {
+                    let succeeded = (try? connection.refresh()) == true
+                    return StartResult(
+                        path: endpoint.path,
+                        connectionID: connection.id,
+                        succeeded: succeeded
+                    )
                 }
             }
             return await group.reduce(into: []) { $0.append($1) }
@@ -325,27 +413,43 @@ final class HerdrSocketConnection: @unchecked Sendable {
             throw CancellationError()
         }
 
-        queue.sync { snapshotRequestInFlight = true }
-        try send(HerdrLocalSessionMonitor.snapshotRequest)
-        guard initialSnapshotReceived.wait(timeout: .now() + 3) == .success else {
-            throw CommandRunner.Error.timedOut
+        let preliminaryGroups = try requestSnapshot()
+        let paneIDs = Set(preliminaryGroups.flatMap(\.agents).map(\.paneID))
+        queue.sync {
+            groups = preliminaryGroups
+            subscribedPaneIDs = paneIDs
         }
-        guard !lock.withLock({ stopped }) else { throw CancellationError() }
-
-        let paneIDs = lock.withLock { subscribedPaneIDs }
         try send(HerdrLocalSessionMonitor.subscriptionRequest(paneIDs: paneIDs))
         guard subscriptionStarted.wait(timeout: .now() + 3) == .success else {
             throw CommandRunner.Error.timedOut
         }
         guard !lock.withLock({ stopped }) else { throw CancellationError() }
 
-        lock.withLock { bootstrapStage = .authoritative }
-        queue.sync { snapshotRequestInFlight = true }
-        try send(HerdrLocalSessionMonitor.snapshotRequest)
-        guard initialSnapshotReceived.wait(timeout: .now() + 3) == .success else {
-            throw CommandRunner.Error.timedOut
+        let authoritativeGroups = try requestSnapshot()
+        let authoritativePaneIDs = Set(authoritativeGroups.flatMap(\.agents).map(\.paneID))
+        var bootstrapSucceeded = false
+        queue.sync {
+            groups = authoritativeGroups
+            guard authoritativePaneIDs == subscribedPaneIDs else { return }
+            var needsResync = false
+            for event in pendingEvents where !shouldIgnore(event) {
+                switch event {
+                case .paneClosed, .tabClosed:
+                    _ = apply(event)
+                    needsResync = true
+                case .resyncRequired:
+                    needsResync = true
+                case .agentStatusChanged, .paneUpdated:
+                    if !apply(event) { needsResync = true }
+                }
+            }
+            pendingEvents.removeAll()
+            bootstrapSucceeded = true
+            bootstrapComplete = true
+            publish(groups)
+            if needsResync { scheduleResync() }
         }
-        guard lock.withLock({ initialSnapshotSucceeded }) else {
+        guard bootstrapSucceeded else {
             throw CommandRunner.Error.failed("Herdr subscription changed during startup.")
         }
     }
@@ -357,15 +461,37 @@ final class HerdrSocketConnection: @unchecked Sendable {
             return (process, input)
         }
         subscriptionStarted.signal()
-        initialSnapshotReceived.signal()
+        snapshotReceived.signal()
         try? values.1?.close()
-        if values.0?.isRunning == true { values.0?.terminate() }
-        queue.async { [weak self] in
-            self?.snapshotWorkItem?.cancel()
-            self?.snapshotWorkItem = nil
-            self?.snapshotRefreshPending = false
-            self?.snapshotRequestInFlight = false
+        if let process = values.0, process.isRunning {
+            process.terminate()
+            let deadline = Date().addingTimeInterval(0.5)
+            while process.isRunning, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            process.waitUntilExit()
         }
+        queue.async { [weak self] in
+            guard let self else { return }
+            resyncScheduleGeneration &+= 1
+            resyncPending = false
+        }
+    }
+
+    func refresh() throws -> Bool {
+        guard !lock.withLock({ stopped }) else { throw CancellationError() }
+        let mutationAtStart = queue.sync { snapshotGeneration }
+        let refreshedGroups = try requestSnapshot()
+        let paneIDs = Set(refreshedGroups.flatMap(\.agents).map(\.paneID))
+        var subscriptionStillValid = false
+        queue.sync {
+            subscriptionStillValid = paneIDs == subscribedPaneIDs
+            guard subscriptionStillValid, mutationAtStart == snapshotGeneration else { return }
+            groups = refreshedGroups
+            publish(groups)
+        }
+        return subscriptionStillValid
     }
 
     private func consume(_ data: Data) {
@@ -381,12 +507,18 @@ final class HerdrSocketConnection: @unchecked Sendable {
         guard !line.isEmpty else { return }
         do {
             switch try HerdrSocketMessage.decode(line, refreshedAt: .now) {
-            case .event:
-                scheduleSnapshot(delay: 0.05)
+            case let .event(event):
+                handle(event)
             case .subscriptionStarted:
                 subscriptionStarted.signal()
-            case let .snapshot(groups):
-                receivedSnapshot(groups)
+            case let .snapshot(id: responseID, groups: groups):
+                let shouldSignal = snapshotResponseLock.withLock { () -> Bool in
+                    guard responseID == awaitingSnapshotID else { return false }
+                    snapshotResponse = groups
+                    awaitingSnapshotID = nil
+                    return true
+                }
+                if shouldSignal { snapshotReceived.signal() }
             case .other:
                 break
             }
@@ -395,57 +527,190 @@ final class HerdrSocketConnection: @unchecked Sendable {
         }
     }
 
-    private func scheduleSnapshot(delay: TimeInterval) {
+    private func handle(_ event: HerdrSocketEvent) {
         guard !lock.withLock({ stopped }) else { return }
-        snapshotRefreshPending = true
-        guard !snapshotRequestInFlight, snapshotWorkItem == nil else { return }
-        let workItem = DispatchWorkItem { [weak self] in self?.requestSnapshot() }
-        snapshotWorkItem = workItem
-        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
-    }
-
-    private func requestSnapshot() {
-        snapshotWorkItem = nil
-        guard !lock.withLock({ stopped }) else {
-            snapshotRefreshPending = false
+        guard bootstrapComplete else {
+            pendingEvents.append(event)
             return
         }
-        guard snapshotRefreshPending, !snapshotRequestInFlight else { return }
-        snapshotRefreshPending = false
-        snapshotRequestInFlight = true
-        do {
-            try send(HerdrLocalSessionMonitor.snapshotRequest)
-        } catch {
-            snapshotRequestInFlight = false
-            fail()
+        guard !shouldIgnore(event) else { return }
+        if case let .paneClosed(paneID, workspaceID) = event {
+            if removeAgent(paneID: paneID, workspaceID: workspaceID) { publish(groups) }
+            scheduleResync()
+            return
+        }
+        if case let .tabClosed(tabID, workspaceID) = event {
+            if removeAgents(tabID: tabID, workspaceID: workspaceID) { publish(groups) }
+            scheduleResync()
+            return
+        }
+        if case .resyncRequired = event {
+            scheduleResync()
+        } else if apply(event) {
+            publish(groups)
+        } else {
+            scheduleResync()
         }
     }
 
-    private func receivedSnapshot(_ groups: [AgentGroup]) {
-        snapshotRequestInFlight = false
-        let paneIDs = Set(groups.flatMap(\.agents).map(\.paneID))
-        let stage = lock.withLock { bootstrapStage }
-        if stage == .preliminary {
-            lock.withLock {
-                subscribedPaneIDs = paneIDs
-                bootstrapStage = .subscribing
-            }
-            initialSnapshotReceived.signal()
-            return
+    private func apply(_ event: HerdrSocketEvent) -> Bool {
+        switch event {
+        case .resyncRequired:
+            return false
+        case let .paneClosed(paneID, workspaceID):
+            _ = removeAgent(paneID: paneID, workspaceID: workspaceID)
+            return true
+        case let .tabClosed(tabID, workspaceID):
+            _ = removeAgents(tabID: tabID, workspaceID: workspaceID)
+            return true
+        case let .agentStatusChanged(data):
+            return updateAgent(data, fullPane: false)
+        case let .paneUpdated(data):
+            return updateAgent(data, fullPane: true)
         }
-        if stage == .subscribing { return }
+    }
 
-        publish(groups)
-        let paneIDsMatch = paneIDs == lock.withLock { subscribedPaneIDs }
-        if stage == .authoritative {
-            lock.withLock {
-                bootstrapStage = .complete
-                initialSnapshotSucceeded = paneIDsMatch
-            }
-            initialSnapshotReceived.signal()
+    private func shouldIgnore(_ event: HerdrSocketEvent) -> Bool {
+        guard case let .paneUpdated(data) = event,
+              let paneID = data.paneID,
+              let revision = data.revision,
+              let currentRevision = groups.lazy.flatMap(\.agents).first(where: { $0.paneID == paneID })?.revision
+        else { return false }
+        return revision <= currentRevision
+    }
+
+    private func scheduleResync(delay: TimeInterval = 0.2) {
+        guard !lock.withLock({ stopped }) else { return }
+        resyncPending = true
+        guard !resyncInFlight else { return }
+        resyncScheduleGeneration &+= 1
+        let generation = resyncScheduleGeneration
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.beginResync(generation: generation)
         }
-        guard paneIDsMatch else { fail(); return }
-        if snapshotRefreshPending { scheduleSnapshot(delay: 0) }
+    }
+
+    private func beginResync(generation: UInt64) {
+        queue.async { [weak self] in
+            guard let self,
+                  generation == resyncScheduleGeneration,
+                  resyncPending,
+                  !resyncInFlight,
+                  !lock.withLock({ stopped })
+            else { return }
+            resyncPending = false
+            resyncInFlight = true
+            let mutationAtStart = snapshotGeneration
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                guard let self else { return }
+                let result = Result { try requestSnapshot() }
+                queue.async { [weak self] in
+                    self?.finishResync(result, mutationAtStart: mutationAtStart)
+                }
+            }
+        }
+    }
+
+    private func finishResync(
+        _ result: Result<[AgentGroup], Error>,
+        mutationAtStart: UInt64
+    ) {
+        resyncInFlight = false
+        guard !lock.withLock({ stopped }) else { return }
+        if case let .success(refreshedGroups) = result {
+            if mutationAtStart == snapshotGeneration {
+                groups = refreshedGroups
+                let paneIDs = Set(groups.flatMap(\.agents).map(\.paneID))
+                if paneIDs == subscribedPaneIDs {
+                    publish(groups)
+                } else {
+                    onSubscriptionChange(id, endpoint, groups)
+                    return
+                }
+            } else {
+                resyncPending = true
+            }
+        }
+        if resyncPending { scheduleResync(delay: 0.05) }
+    }
+
+    private func removeAgent(paneID: String, workspaceID: String?) -> Bool {
+        let candidateIndices = groups.indices.filter { workspaceID == nil || groups[$0].id == workspaceID }
+        for groupIndex in candidateIndices {
+            guard let agentIndex = groups[groupIndex].agents.firstIndex(where: { $0.paneID == paneID }) else {
+                continue
+            }
+            groups[groupIndex].agents.remove(at: agentIndex)
+            return true
+        }
+        return false
+    }
+
+    private func removeAgents(tabID: String, workspaceID: String?) -> Bool {
+        var removed = false
+        for groupIndex in groups.indices where workspaceID == nil || groups[groupIndex].id == workspaceID {
+            let originalCount = groups[groupIndex].agents.count
+            groups[groupIndex].agents.removeAll { $0.tabID == tabID }
+            removed = removed || groups[groupIndex].agents.count != originalCount
+        }
+        return removed
+    }
+
+    private func updateAgent(_ data: EventData, fullPane: Bool) -> Bool {
+        guard let paneID = data.paneID,
+              let workspaceID = data.workspaceID,
+              let groupIndex = groups.firstIndex(where: { $0.id == workspaceID }),
+              let agentIndex = groups[groupIndex].agents.firstIndex(where: { $0.paneID == paneID })
+        else { return false }
+        let current = groups[groupIndex].agents[agentIndex]
+        let status = data.agentStatus.flatMap(AgentStatus.init(rawValue:)) ?? current.status
+        let title = data.label
+            ?? data.displayAgent
+            ?? data.title
+            ?? data.terminalTitleStripped
+            ?? data.terminalTitle
+            ?? data.agent
+            ?? current.title
+        let cwd = fullPane ? (data.foregroundCWD ?? data.cwd ?? current.cwd) : current.cwd
+        groups[groupIndex].agents[agentIndex] = AgentInfo(
+            paneID: current.paneID,
+            tabID: fullPane ? (data.tabID ?? current.tabID) : current.tabID,
+            title: title,
+            status: status,
+            workspace: groups[groupIndex].name,
+            cwd: cwd,
+            revision: fullPane ? (data.revision ?? current.revision) : current.revision,
+            updatedAt: .now
+        )
+        return true
+    }
+
+    private func requestSnapshot() throws -> [AgentGroup] {
+        snapshotRequestLock.lock()
+        defer { snapshotRequestLock.unlock() }
+        guard !lock.withLock({ stopped }) else { throw CancellationError() }
+        while snapshotReceived.wait(timeout: .now()) == .success {}
+        snapshotRequestSequence &+= 1
+        let requestID = "snapshot-\(id.uuidString)-\(snapshotRequestSequence)"
+        snapshotResponseLock.withLock {
+            awaitingSnapshotID = requestID
+            snapshotResponse = nil
+        }
+        defer {
+            snapshotResponseLock.withLock {
+                awaitingSnapshotID = nil
+                snapshotResponse = nil
+            }
+        }
+        try send(HerdrLocalSessionMonitor.snapshotRequest(id: requestID))
+        guard snapshotReceived.wait(timeout: .now() + 3) == .success else {
+            throw CommandRunner.Error.timedOut
+        }
+        guard !lock.withLock({ stopped }) else { throw CancellationError() }
+        guard let response = snapshotResponseLock.withLock({ snapshotResponse }) else {
+            throw CommandRunner.Error.failed("Herdr snapshot response is missing.")
+        }
+        return response
     }
 
     private func publish(_ groups: [AgentGroup]) {
