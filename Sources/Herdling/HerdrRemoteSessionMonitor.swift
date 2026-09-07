@@ -95,10 +95,12 @@ actor HerdrRemoteSessionMonitor: SessionMonitoring {
         guard handler != nil, lifecycleGeneration == generation, !isDiscovering else { return }
         isDiscovering = true
         defer {
-            isDiscovering = false
-            if immediateRetryRequested, handler != nil, lifecycleGeneration == generation {
-                immediateRetryRequested = false
-                scheduleDiscovery(after: .zero, generation: generation)
+            if lifecycleGeneration == generation {
+                isDiscovering = false
+                if immediateRetryRequested, handler != nil {
+                    immediateRetryRequested = false
+                    scheduleDiscovery(after: .zero, generation: generation)
+                }
             }
         }
         let result = await discoverSessions()

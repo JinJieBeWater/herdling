@@ -785,7 +785,6 @@ final class SessionStore {
             switch request {
             case let .agent(_, session, source), let .workspace(_, session, source):
                 let focusedExistingClient = try await focusExistingClient(source, session.name)
-                if focusedExistingClient { onClientActivated?() }
                 guard !focusRunner.hasPendingRequest else { return }
                 if case let .agent(agent, _, _) = request {
                     try await runHerdrFocus(source: source, session: session.name, paneID: agent.paneID)
@@ -803,8 +802,8 @@ final class SessionStore {
                         command: try client.attachCommand(source: source, session: session.name),
                         openBehavior: ghosttyOpenBehavior
                     )
-                    onClientActivated?()
                 }
+                onClientActivated?()
             case let .session(session, source):
                 try await ghostty.activateClient(
                     source: source,

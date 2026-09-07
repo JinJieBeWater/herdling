@@ -490,6 +490,40 @@ struct CoreBehaviorTests {
         #expect(await !monitor.isDiscoveryScheduled)
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func oldRemoteDiscoveryCannotClearRestartedDiscoveryGuard() async {
+        let firstStarted = AsyncGate()
+        let releaseFirst = AsyncGate()
+        let secondStarted = AsyncGate()
+        let releaseSecond = AsyncGate()
+        let probe = DiscoveryProbe()
+        let monitor = HerdrRemoteSessionMonitor(source: .remote("test"), discoverSessions: {
+            let call = await probe.begin()
+            if call == 1 {
+                await firstStarted.release()
+                await releaseFirst.wait()
+            } else if call == 2 {
+                await secondStarted.release()
+                await releaseSecond.wait()
+            }
+            await probe.end()
+            return .sessions([])
+        })
+        let oldStart = Task { await monitor.start { _ in } }
+        await firstStarted.wait()
+        await monitor.stop()
+        let newStart = Task { await monitor.start { _ in } }
+        await secondStarted.wait()
+        await releaseFirst.release()
+        await oldStart.value
+        await monitor.retry()
+        #expect(await probe.callCount == 2)
+        await monitor.stop()
+        await releaseSecond.release()
+        await newStart.value
+        #expect(await !monitor.isDiscoveryScheduled)
+    }
+
     @Test
     func immediateRemoteRetryCoalescesWhileDiscoveryIsRunning() async {
         let now = Date(timeIntervalSince1970: 10_000)
@@ -1167,7 +1201,7 @@ struct CoreBehaviorTests {
         var activations = 0
         store.onClientActivated = {
             activations += 1
-            #expect(!FileManager.default.fileExists(atPath: argumentsURL.path))
+            #expect(FileManager.default.fileExists(atPath: argumentsURL.path))
         }
 
         store.focusWorkspace(target.group, in: session)
@@ -1463,6 +1497,34 @@ struct CoreBehaviorTests {
         #expect(GhosttyController.automationPermissionFailureStatus(
             NSError(domain: "test", code: -1743, userInfo: [NSLocalizedDescriptionKey: "secret=value -1743"])
         ) == "Unavailable")
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    @MainActor
+    func failedTargetFocusDoesNotDismissPanelAfterClientReuse() async {
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            focusExistingClient: { _, _ in true },
+            sourceDescriptors: [.local]
+        )
+        var panelVisible = true
+        store.onClientActivated = { panelVisible = false }
+        let completion = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        store.onChange = {
+            completion.continuation.yield(())
+            completion.continuation.finish()
+        }
+        defer { store.onChange = nil; completion.continuation.finish() }
+        store.focusWorkspace(
+            AgentGroup(id: "workspace", name: "Main", agents: []),
+            in: SessionInfo(name: "default", groups: [], online: true)
+        )
+        var events = completion.stream.makeAsyncIterator()
+        let completed: Void? = await events.next()
+        #expect(completed != nil)
+        #expect(panelVisible)
+        #expect(store.focusError != nil)
+        #expect(store.pendingFocusWorkspaceID == nil)
     }
 
     @Test
