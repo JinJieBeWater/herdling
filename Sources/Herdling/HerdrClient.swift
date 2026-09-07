@@ -105,6 +105,20 @@ struct HerdrClient: Sendable {
         )
     }
 
+    func focusWorkspace(source: SourceDescriptor = .local, session: String, workspaceID: String) throws {
+        guard let executable else { throw ClientError.notInstalled }
+        _ = try run(
+            source,
+            executable: executable,
+            arguments: Self.workspaceFocusArguments(session: session, workspaceID: workspaceID),
+            timeout: 5
+        )
+    }
+
+    static func workspaceFocusArguments(session: String, workspaceID: String) -> [String] {
+        ["--session", session, "workspace", "focus", workspaceID]
+    }
+
     func attachCommand(source: SourceDescriptor = .local, session: String) throws -> String {
         guard let executable else { throw ClientError.notInstalled }
         let cleanEnvironment = ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"]

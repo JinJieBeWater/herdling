@@ -50,6 +50,8 @@ final class StatusItemController: NSObject {
     static let panelWidth: CGFloat = 420
     static let panelTopMargin: CGFloat = 0
     static let panelBottomMargin: CGFloat = 16
+    static let panelMinHeight: CGFloat = 100
+    static let panelScreenFraction: CGFloat = 0.85
     private let store: SessionStore
     private let menuBarItem = MenuBarStatusItem()
     private let panel = MenuBarPanel()
@@ -73,12 +75,30 @@ final class StatusItemController: NSObject {
 
         menuBarItem.onClick = { [weak self] in self?.statusButtonClicked() }
 
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(screenGeometryChanged(_:)),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(screenGeometryChanged(_:)),
+            name: NSWindow.didChangeScreenNotification,
+            object: nil
+        )
+
         hostingController.sizingOptions = []
         panel.contentViewController = hostingController
         panel.setContentSize(NSSize(width: Self.panelWidth, height: preferredPanelHeight))
 
         store.onChange = { [weak self] in self?.updateStatus() }
+        store.onClientActivated = { [weak self] in self?.closePanel() }
         updateStatus()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     private func statusButtonClicked() {
@@ -144,6 +164,20 @@ final class StatusItemController: NSObject {
         } else {
             openPanel()
         }
+    }
+
+    @objc private func screenGeometryChanged(_ notification: Notification) {
+        if notification.name == NSWindow.didChangeScreenNotification,
+           notification.object as? NSWindow !== menuBarItem.item.button?.window
+        {
+            return
+        }
+        guard panel.isVisible,
+              let button = menuBarItem.item.button,
+              let window = button.window,
+              let screen = window.screen ?? panel.screen ?? NSScreen.main
+        else { return }
+        resizePanel(button: button, window: window, screen: screen)
     }
 
     private func closePanel() {
@@ -234,7 +268,17 @@ final class StatusItemController: NSObject {
     }
 
     static func clampedContentHeight(_ height: CGFloat) -> CGFloat {
-        max(ceil(height), 100)
+        max(ceil(height), panelMinHeight)
+    }
+
+    static func maximumPanelHeight(topY: CGFloat, visibleFrame: NSRect) -> CGFloat {
+        max(
+            1,
+            min(
+                topY - visibleFrame.minY - panelBottomMargin,
+                floor(visibleFrame.height * panelScreenFraction)
+            )
+        )
     }
 
     static func resizedVisiblePanelFrame(
@@ -244,7 +288,7 @@ final class StatusItemController: NSObject {
     ) -> NSRect {
         let height = min(
             preferredHeight,
-            max(1, currentFrame.maxY - visibleFrame.minY - panelBottomMargin)
+            maximumPanelHeight(topY: currentFrame.maxY, visibleFrame: visibleFrame)
         )
         return NSRect(
             x: currentFrame.minX,
@@ -267,15 +311,6 @@ final class StatusItemController: NSObject {
         return NSPoint(x: x, y: y)
     }
 
-    static func availablePanelHeight(buttonRect: NSRect, visibleFrame: NSRect) -> CGFloat {
-        max(
-            1,
-            panelTopY(buttonRect: buttonRect, visibleFrame: visibleFrame)
-                - visibleFrame.minY
-                - panelBottomMargin
-        )
-    }
-
     static func panelTopY(buttonRect: NSRect, visibleFrame: NSRect) -> CGFloat {
         min(buttonRect.minY - panelTopMargin, visibleFrame.maxY - panelTopMargin)
     }
@@ -286,7 +321,10 @@ final class StatusItemController: NSObject {
             width: min(preferred.width, max(1, visibleFrame.width - margin * 2)),
             height: min(
                 preferred.height,
-                availablePanelHeight(buttonRect: buttonRect, visibleFrame: visibleFrame)
+                maximumPanelHeight(
+                    topY: panelTopY(buttonRect: buttonRect, visibleFrame: visibleFrame),
+                    visibleFrame: visibleFrame
+                )
             )
         )
     }

@@ -71,13 +71,7 @@ actor GitBranchResolver {
                     + paths.map(HerdrClient.shellQuote).joined(separator: " ")
                 data = try CommandRunner.run(
                     "/usr/bin/ssh",
-                    [
-                        "-o", "BatchMode=yes",
-                        "-o", "NumberOfPasswordPrompts=0",
-                        "-o", "ConnectTimeout=4",
-                        alias,
-                        command,
-                    ],
+                    HerdrClient.sshArguments(alias: alias, command: command),
                     timeout: 7
                 )
             } else {

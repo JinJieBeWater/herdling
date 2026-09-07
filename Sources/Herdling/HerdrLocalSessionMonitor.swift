@@ -26,12 +26,17 @@ struct SnapshotGenerationLedger {
 
 enum SessionMonitorEvent: Sendable {
     case sessions([HerdrClient.LoadedSession])
-    case unavailable
+    case unavailable(reason: String? = nil, retryAt: Date? = nil)
 }
 
 protocol SessionMonitoring: Sendable {
     func start(handler: @escaping @Sendable (SessionMonitorEvent) async -> Void) async
     func stop() async
+    func retry() async
+}
+
+extension SessionMonitoring {
+    func retry() async {}
 }
 
 actor HerdrLocalSessionMonitor: SessionMonitoring {
@@ -140,9 +145,7 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
         let livePaths = Set(endpointOrder)
         let removedPaths = connections.keys.filter { !livePaths.contains($0) }
         for path in removedPaths {
-            connections.removeValue(forKey: path)?.stop()
-            snapshots.removeValue(forKey: path)
-            snapshotGenerations.remove(endpoint: path)
+            removeConnection(at: path)
         }
         let existingConnections = endpoints.compactMap { endpoint in
             connections[endpoint.path].map { (endpoint, $0) }
@@ -151,9 +154,7 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
         guard handler != nil, lifecycleGeneration == generation else { return }
         for result in refreshResults where !result.succeeded {
             guard connections[result.path]?.id == result.connectionID else { continue }
-            connections.removeValue(forKey: result.path)?.stop()
-            snapshots.removeValue(forKey: result.path)
-            snapshotGenerations.remove(endpoint: result.path)
+            removeConnection(at: result.path)
         }
         var pendingConnections: [(HerdrSocketEndpoint, HerdrSocketConnection)] = []
         for endpoint in endpoints where connections[endpoint.path] == nil {
@@ -189,11 +190,15 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
         guard handler != nil, lifecycleGeneration == generation else { return }
         for result in results where !result.succeeded {
             guard connections[result.path]?.id == result.connectionID else { continue }
-            connections.removeValue(forKey: result.path)?.stop()
-            snapshots.removeValue(forKey: result.path)
-            snapshotGenerations.remove(endpoint: result.path)
+            removeConnection(at: result.path)
         }
         if topologyChanged || !pendingConnections.isEmpty { publish() }
+    }
+
+    private func removeConnection(at path: String) {
+        connections.removeValue(forKey: path)?.stop()
+        snapshots.removeValue(forKey: path)
+        snapshotGenerations.remove(endpoint: path)
     }
 
     private func received(
@@ -249,7 +254,7 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
         guard !endpointOrder.isEmpty,
               endpointOrder.allSatisfy({ connections[$0] != nil && snapshots[$0] != nil })
         else {
-            event = .unavailable
+            event = .unavailable()
             enqueue(event, handler: handler)
             return
         }
@@ -288,21 +293,21 @@ final class HerdrSocketConnection: @unchecked Sendable {
         let path: String
         let connectionID: UUID
         let succeeded: Bool
+        let failureReason: String?
     }
 
     let id = UUID()
     private let endpoint: HerdrSocketEndpoint
     private let eventExecutable: String
     private let eventArguments: [String]
+    private let loadSnapshot: @Sendable (@Sendable () -> Bool) throws -> [AgentGroup]
     private let onSubscriptionChange: @Sendable (UUID, HerdrSocketEndpoint, [AgentGroup]) -> Void
     private let onSnapshot: @Sendable (UUID, HerdrSocketEndpoint, UInt64, [AgentGroup]) -> Void
     private let onEnd: @Sendable (UUID, HerdrSocketEndpoint) -> Void
     private let queue = DispatchQueue(label: "dev.herdr.Herdling.socket")
     private let lock = NSLock()
     private let snapshotRequestLock = NSLock()
-    private let snapshotResponseLock = NSLock()
     private let subscriptionStarted = DispatchSemaphore(value: 0)
-    private let snapshotReceived = DispatchSemaphore(value: 0)
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
@@ -315,9 +320,6 @@ final class HerdrSocketConnection: @unchecked Sendable {
     private var resyncInFlight = false
     private var resyncScheduleGeneration: UInt64 = 0
     private var subscribedPaneIDs: Set<String> = []
-    private var snapshotRequestSequence: UInt64 = 0
-    private var awaitingSnapshotID: String?
-    private var snapshotResponse: [AgentGroup]?
     private var finished = false
     private var stopped = false
 
@@ -325,13 +327,31 @@ final class HerdrSocketConnection: @unchecked Sendable {
         endpoint: HerdrSocketEndpoint,
         eventExecutable: String? = nil,
         eventArguments: [String]? = nil,
+        loadSnapshot: (@Sendable () throws -> [AgentGroup])? = nil,
         onSubscriptionChange: @escaping @Sendable (UUID, HerdrSocketEndpoint, [AgentGroup]) -> Void = { _, _, _ in },
         onSnapshot: @escaping @Sendable (UUID, HerdrSocketEndpoint, UInt64, [AgentGroup]) -> Void,
         onEnd: @escaping @Sendable (UUID, HerdrSocketEndpoint) -> Void
     ) {
+        let executable = eventExecutable ?? "/usr/bin/nc"
+        let arguments = eventArguments ?? ["-U", endpoint.path]
         self.endpoint = endpoint
-        self.eventExecutable = eventExecutable ?? "/usr/bin/nc"
-        self.eventArguments = eventArguments ?? ["-U", endpoint.path]
+        self.eventExecutable = executable
+        self.eventArguments = arguments
+        if let loadSnapshot {
+            self.loadSnapshot = { _ in try loadSnapshot() }
+        } else {
+            self.loadSnapshot = { isCancelled in
+                let request = HerdrLocalSessionMonitor.snapshotRequest(id: "snapshot-\(UUID().uuidString)") + "\n"
+                let data = try CommandRunner.run(
+                    executable,
+                    arguments,
+                    timeout: 7,
+                    standardInput: Data(request.utf8),
+                    isCancelled: isCancelled
+                )
+                return try HerdrClient.parseGroups(data)
+            }
+        }
         self.onSubscriptionChange = onSubscriptionChange
         self.onSnapshot = onSnapshot
         self.onEnd = onEnd
@@ -348,14 +368,16 @@ final class HerdrSocketConnection: @unchecked Sendable {
                         return StartResult(
                             path: endpoint.path,
                             connectionID: connection.id,
-                            succeeded: true
+                            succeeded: true,
+                            failureReason: nil
                         )
                     } catch {
                         connection.stop()
                         return StartResult(
                             path: endpoint.path,
                             connectionID: connection.id,
-                            succeeded: false
+                            succeeded: false,
+                            failureReason: error.localizedDescription
                         )
                     }
                 }
@@ -374,7 +396,8 @@ final class HerdrSocketConnection: @unchecked Sendable {
                     return StartResult(
                         path: endpoint.path,
                         connectionID: connection.id,
-                        succeeded: succeeded
+                        succeeded: succeeded,
+                        failureReason: succeeded ? nil : "Herdr snapshot refresh failed."
                     )
                 }
             }
@@ -384,6 +407,13 @@ final class HerdrSocketConnection: @unchecked Sendable {
 
     func start() throws {
         guard !lock.withLock({ stopped }) else { throw CancellationError() }
+        let preliminaryGroups = try requestSnapshot()
+        let paneIDs = Set(preliminaryGroups.flatMap(\.agents).map(\.paneID))
+        queue.sync {
+            groups = preliminaryGroups
+            subscribedPaneIDs = paneIDs
+        }
+
         let process = Process()
         let inputPipe = Pipe()
         let outputPipe = Pipe()
@@ -413,14 +443,8 @@ final class HerdrSocketConnection: @unchecked Sendable {
             throw CancellationError()
         }
 
-        let preliminaryGroups = try requestSnapshot()
-        let paneIDs = Set(preliminaryGroups.flatMap(\.agents).map(\.paneID))
-        queue.sync {
-            groups = preliminaryGroups
-            subscribedPaneIDs = paneIDs
-        }
         try send(HerdrLocalSessionMonitor.subscriptionRequest(paneIDs: paneIDs))
-        guard subscriptionStarted.wait(timeout: .now() + 3) == .success else {
+        guard subscriptionStarted.wait(timeout: .now() + 7) == .success else {
             throw CommandRunner.Error.timedOut
         }
         guard !lock.withLock({ stopped }) else { throw CancellationError() }
@@ -461,7 +485,6 @@ final class HerdrSocketConnection: @unchecked Sendable {
             return (process, input)
         }
         subscriptionStarted.signal()
-        snapshotReceived.signal()
         try? values.1?.close()
         if let process = values.0, process.isRunning {
             process.terminate()
@@ -505,25 +528,13 @@ final class HerdrSocketConnection: @unchecked Sendable {
 
     private func handle(_ line: Data) {
         guard !line.isEmpty else { return }
-        do {
-            switch try HerdrSocketMessage.decode(line, refreshedAt: .now) {
-            case let .event(event):
-                handle(event)
-            case .subscriptionStarted:
-                subscriptionStarted.signal()
-            case let .snapshot(id: responseID, groups: groups):
-                let shouldSignal = snapshotResponseLock.withLock { () -> Bool in
-                    guard responseID == awaitingSnapshotID else { return false }
-                    snapshotResponse = groups
-                    awaitingSnapshotID = nil
-                    return true
-                }
-                if shouldSignal { snapshotReceived.signal() }
-            case .other:
-                break
-            }
-        } catch {
-            // A malformed line must not tear down an otherwise healthy event stream.
+        switch HerdrSocketMessage.decode(line) {
+        case let .event(event):
+            handle(event)
+        case .subscriptionStarted:
+            subscriptionStarted.signal()
+        case .other:
+            break
         }
     }
 
@@ -689,27 +700,11 @@ final class HerdrSocketConnection: @unchecked Sendable {
         snapshotRequestLock.lock()
         defer { snapshotRequestLock.unlock() }
         guard !lock.withLock({ stopped }) else { throw CancellationError() }
-        while snapshotReceived.wait(timeout: .now()) == .success {}
-        snapshotRequestSequence &+= 1
-        let requestID = "snapshot-\(id.uuidString)-\(snapshotRequestSequence)"
-        snapshotResponseLock.withLock {
-            awaitingSnapshotID = requestID
-            snapshotResponse = nil
-        }
-        defer {
-            snapshotResponseLock.withLock {
-                awaitingSnapshotID = nil
-                snapshotResponse = nil
-            }
-        }
-        try send(HerdrLocalSessionMonitor.snapshotRequest(id: requestID))
-        guard snapshotReceived.wait(timeout: .now() + 3) == .success else {
-            throw CommandRunner.Error.timedOut
+        let response = try loadSnapshot { [weak self] in
+            guard let self else { return true }
+            return self.lock.withLock { self.stopped }
         }
         guard !lock.withLock({ stopped }) else { throw CancellationError() }
-        guard let response = snapshotResponseLock.withLock({ snapshotResponse }) else {
-            throw CommandRunner.Error.failed("Herdr snapshot response is missing.")
-        }
         return response
     }
 
@@ -736,12 +731,6 @@ final class HerdrSocketConnection: @unchecked Sendable {
             return !stopped
         }
         if shouldNotify { onEnd(id, endpoint) }
-    }
-
-    private func fail() {
-        let process = lock.withLock { self.process }
-        if process?.isRunning == true { process?.terminate() }
-        finish()
     }
 
     // ponytail: one persistent system transport process per session avoids a custom socket client;

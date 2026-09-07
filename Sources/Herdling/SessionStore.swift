@@ -92,7 +92,14 @@ final class LatestRequestRunner<Request> {
 
 private enum FocusRequest: Sendable {
     case agent(AgentInfo, SessionInfo, SourceDescriptor)
+    case workspace(String, SessionInfo, SourceDescriptor)
     case session(SessionInfo, SourceDescriptor)
+
+    var source: SourceDescriptor {
+        switch self {
+        case let .agent(_, _, source), let .workspace(_, _, source), let .session(_, source): source
+        }
+    }
 }
 
 struct SessionInfo: Identifiable, Sendable {
@@ -144,6 +151,7 @@ struct SourceInfo: Identifiable, Sendable {
     var sessions: [SessionInfo]
     var online: Bool
     var error: String?
+    var retryAt: Date? = nil
     var branches: [String: String] = [:]
 }
 
@@ -162,7 +170,7 @@ enum RecentAgentList {
     static let idleLifetime: TimeInterval = 10 * 60
 
     private struct SessionSelection {
-        var workspaceNames: Set<String> = []
+        var rankByGroupName: [String: Int] = [:]
         var rankByPaneID: [String: Int] = [:]
     }
 
@@ -226,7 +234,14 @@ enum RecentAgentList {
             }
 
             var sessionSelection = sourceSelection.sessions[sessionName]!
-            sessionSelection.workspaceNames.insert(item.agent.workspace)
+            let components = item.agent.workspace.split(separator: "/")
+            for end in components.indices {
+                let name = components[...end].joined(separator: "/")
+                sessionSelection.rankByGroupName[name] = min(
+                    sessionSelection.rankByGroupName[name] ?? rank,
+                    rank
+                )
+            }
             if sessionSelection.rankByPaneID[item.id.paneID] == nil {
                 sessionSelection.rankByPaneID[item.id.paneID] = rank
             }
@@ -243,19 +258,18 @@ enum RecentAgentList {
                       let sessionSelection = selection.sessions[sessionName]
                 else { return nil }
 
-                let groups = session.groups.compactMap { group -> AgentGroup? in
+                let groups = session.groups.enumerated().compactMap { index, group -> (Int, Int, AgentGroup)? in
                     let agents = group.agents
                         .filter { sessionSelection.rankByPaneID[$0.paneID] != nil }
                         .sorted {
                             sessionSelection.rankByPaneID[$0.paneID, default: .max]
                                 < sessionSelection.rankByPaneID[$1.paneID, default: .max]
                         }
-                    let isAncestor = sessionSelection.workspaceNames.contains {
-                        $0.hasPrefix(group.name + "/")
-                    }
-                    guard !agents.isEmpty || isAncestor else { return nil }
-                    return AgentGroup(id: group.id, name: group.name, agents: agents)
-                }
+                    guard let rank = sessionSelection.rankByGroupName[group.name] else { return nil }
+                    return (rank, index, AgentGroup(id: group.id, name: group.name, agents: agents))
+                }.sorted {
+                    $0.0 == $1.0 ? $0.1 < $1.1 : $0.0 < $1.0
+                }.map(\.2)
 
                 return SessionInfo(
                     name: session.name,
@@ -271,6 +285,7 @@ enum RecentAgentList {
                 sessions: sessions,
                 online: source.online,
                 error: source.error,
+                retryAt: source.retryAt,
                 branches: source.branches
             )
         }
@@ -314,6 +329,12 @@ struct MenuStatus: Equatable {
 @Observable
 @MainActor
 final class SessionStore {
+    struct WorkspaceFocusID: Equatable {
+        let sourceID: String
+        let sessionName: String
+        let workspaceID: String
+    }
+
     typealias SourceLoader = @Sendable (SourceDescriptor) async throws -> [HerdrClient.LoadedSession]
     typealias BranchLoader = @Sendable (SourceDescriptor, [String]) async -> [String: String]
     typealias RemoteMonitorFactory = @Sendable (SourceDescriptor) -> any SessionMonitoring
@@ -322,6 +343,7 @@ final class SessionStore {
     private let loadSource: SourceLoader
     private let loadBranches: BranchLoader
     private let ghostty: GhosttyController
+    private let focusExistingClient: @Sendable (SourceDescriptor, String) async throws -> Bool
     private let defaults: UserDefaults
     private let sleep: @Sendable (Duration) async throws -> Void
     private let localMonitor: (any SessionMonitoring)?
@@ -337,6 +359,7 @@ final class SessionStore {
     private var refreshRequested = false
     private var sourceFailureCounts: [String: Int] = [:]
     @ObservationIgnored var onChange: (() -> Void)?
+    @ObservationIgnored var onClientActivated: (() -> Void)?
     @ObservationIgnored private lazy var focusRunner = LatestRequestRunner<FocusRequest> { [weak self] request in
         await self?.performFocus(request)
     }
@@ -345,7 +368,8 @@ final class SessionStore {
     private(set) var availableSSHAliases: [String]
     private(set) var selectedSSHAliases: [String]
     private(set) var focusError: String?
-    private(set) var focusingAgentID: RecentAgentItem.ID?
+    private(set) var pendingFocusAgentID: RecentAgentItem.ID?
+    private(set) var pendingFocusWorkspaceID: WorkspaceFocusID?
     private(set) var settingsError: String?
     private(set) var automationStatus = "Not checked"
     private(set) var ghosttyOpenBehavior: GhosttyOpenBehavior
@@ -375,6 +399,7 @@ final class SessionStore {
         loadBranches: BranchLoader? = nil,
         localMonitor: (any SessionMonitoring)? = nil,
         remoteMonitorFactory: RemoteMonitorFactory? = nil,
+        focusExistingClient: (@Sendable (SourceDescriptor, String) async throws -> Bool)? = nil,
         sourceDescriptors: [SourceDescriptor]? = nil,
         defaults: UserDefaults = .standard
     ) {
@@ -391,6 +416,9 @@ final class SessionStore {
         self.localMonitor = localMonitor
         self.remoteMonitorFactory = remoteMonitorFactory
         self.ghostty = ghostty
+        self.focusExistingClient = focusExistingClient ?? { source, session in
+            try await ghostty.focusExistingClient(source: source, session: session)
+        }
         self.defaults = defaults
         availableSSHAliases = aliases
         selectedSSHAliases = selected
@@ -547,6 +575,7 @@ final class SessionStore {
                 sourceFailureCounts[load.descriptor.id] = 0
                 updated.online = true
                 updated.error = nil
+                updated.retryAt = nil
                 updated.sessions = loaded
                 updated.branches = load.branches
             } else {
@@ -591,6 +620,7 @@ final class SessionStore {
             updated.branches = updated.branches.filter { branchPathSet.contains($0.key) }
             updated.online = true
             updated.error = nil
+            updated.retryAt = nil
             sources[index] = updated
             if leftFallback { scheduleNextPoll() }
             onChange?()
@@ -607,13 +637,13 @@ final class SessionStore {
                     branchGeneration: branchGeneration
                 )
             }
-        case .unavailable:
+        case let .unavailable(reason, retryAt):
             if descriptor == .local {
                 let enteredFallback = pollFallbackSourceIDs.insert(descriptor.id).inserted
                 if enteredFallback { scheduleNextPoll() }
                 if enteredFallback { await refresh() }
             } else {
-                markRemoteMonitorUnavailable(descriptor)
+                markRemoteMonitorUnavailable(descriptor, reason: reason, retryAt: retryAt)
             }
         }
     }
@@ -673,7 +703,11 @@ final class SessionStore {
         }
     }
 
-    private func markRemoteMonitorUnavailable(_ descriptor: SourceDescriptor) {
+    private func markRemoteMonitorUnavailable(
+        _ descriptor: SourceDescriptor,
+        reason: String?,
+        retryAt: Date?
+    ) {
         guard monitorGenerations[descriptor.id] != nil,
               let index = sources.firstIndex(where: { $0.descriptor == descriptor })
         else { return }
@@ -686,45 +720,91 @@ final class SessionStore {
             stale.online = false
             return stale
         }
-        source.error = failureCount == 1 ? nil : "Unable to subscribe to Herdr on \(descriptor.name)."
+        source.error = reason ?? (failureCount == 1 ? nil : "Unable to subscribe to Herdr on \(descriptor.name).")
+        source.retryAt = retryAt
         sources[index] = source
         onChange?()
     }
 
+    func retryRemoteSource(_ descriptor: SourceDescriptor) {
+        guard descriptor.sshAlias != nil,
+              monitorGenerations[descriptor.id] != nil,
+              let monitor = remoteMonitors[descriptor.id],
+              let index = sources.firstIndex(where: { $0.descriptor == descriptor })
+        else { return }
+        sources[index].error = nil
+        sources[index].retryAt = .now
+        onChange?()
+        Task { await monitor.retry() }
+    }
+
     func focus(_ agent: AgentInfo, in session: SessionInfo, source: SourceDescriptor = .local) {
         guard session.online else { return }
-        focusingAgentID = RecentAgentItem.ID(
+        focusError = nil
+        let id = RecentAgentItem.ID(
             sourceID: source.id,
             sessionName: session.name,
             paneID: agent.paneID
         )
+        pendingFocusAgentID = id
+        pendingFocusWorkspaceID = nil
         focusRunner.submit(.agent(agent, session, source))
+    }
+
+    func focusWorkspace(_ group: AgentGroup, in session: SessionInfo, source: SourceDescriptor = .local) {
+        guard session.online else { return }
+        focusError = nil
+        pendingFocusAgentID = nil
+        pendingFocusWorkspaceID = WorkspaceFocusID(
+            sourceID: source.id,
+            sessionName: session.name,
+            workspaceID: group.id
+        )
+        focusRunner.submit(.workspace(group.id, session, source))
     }
 
     func focusSession(_ session: SessionInfo, source: SourceDescriptor = .local) {
         guard session.online else { return }
-        focusingAgentID = nil
+        focusError = nil
+        pendingFocusAgentID = nil
+        pendingFocusWorkspaceID = nil
         focusRunner.submit(.session(session, source))
     }
 
     private func performFocus(_ request: FocusRequest) async {
         focusError = nil
         defer {
-            if !focusRunner.hasPendingRequest { focusingAgentID = nil }
+            if !focusRunner.hasPendingRequest {
+                pendingFocusAgentID = nil
+                pendingFocusWorkspaceID = nil
+            }
             onChange?()
         }
 
         do {
             switch request {
-            case let .agent(agent, session, source):
-                try await runHerdrFocus(source: source, session: session.name, paneID: agent.paneID)
+            case let .agent(_, session, source), let .workspace(_, session, source):
+                let focusedExistingClient = try await focusExistingClient(source, session.name)
+                if focusedExistingClient { onClientActivated?() }
                 guard !focusRunner.hasPendingRequest else { return }
-                try await ghostty.activateClient(
-                    source: source,
-                    session: session.name,
-                    command: try client.attachCommand(source: source, session: session.name),
-                    openBehavior: ghosttyOpenBehavior
-                )
+                if case let .agent(agent, _, _) = request {
+                    try await runHerdrFocus(source: source, session: session.name, paneID: agent.paneID)
+                } else if case let .workspace(workspaceID, _, _) = request {
+                    let client = self.client
+                    try await Task.detached {
+                        try client.focusWorkspace(source: source, session: session.name, workspaceID: workspaceID)
+                    }.value
+                }
+                guard !focusRunner.hasPendingRequest else { return }
+                if !focusedExistingClient {
+                    try await ghostty.activateClient(
+                        source: source,
+                        session: session.name,
+                        command: try client.attachCommand(source: source, session: session.name),
+                        openBehavior: ghosttyOpenBehavior
+                    )
+                    onClientActivated?()
+                }
             case let .session(session, source):
                 try await ghostty.activateClient(
                     source: source,
@@ -732,10 +812,38 @@ final class SessionStore {
                     command: try client.attachCommand(source: source, session: session.name),
                     openBehavior: ghosttyOpenBehavior
                 )
+                onClientActivated?()
             }
         } catch {
-            if !focusRunner.hasPendingRequest { focusError = error.localizedDescription }
+            if !focusRunner.hasPendingRequest {
+                focusError = Self.focusErrorMessage(error, remote: request.source.sshAlias != nil)
+            }
         }
+    }
+
+    nonisolated static func focusErrorMessage(_ error: Error, remote: Bool = false) -> String {
+        if let error = error as? GhosttyController.GhosttyError {
+            return error.localizedDescription
+        }
+        if let error = error as? HerdrClient.ClientError {
+            return switch error {
+            case .notInstalled:
+                "Herdr is not installed. Install Herdr or set HERDR_BIN_PATH, then retry."
+            case .timedOut:
+                remote
+                    ? "Remote Herdr focus timed out. Check the session and SSH connection, then retry."
+                    : "Herdr focus timed out. Check the session, then retry."
+            case let .failed(message):
+                if remote {
+                    "Remote Herdr focus failed. Check the session and SSH connection, then retry."
+                } else {
+                    message.isEmpty ? "Herdr focus failed. Check the session, then retry." : "Herdr focus failed: \(message)"
+                }
+            case .invalidResponse:
+                "Herdr returned an invalid response. Update Herdr, then retry."
+            }
+        }
+        return "Could not open this item in Ghostty. Try again."
     }
 
     func setRemoteAlias(_ alias: String, enabled: Bool) {

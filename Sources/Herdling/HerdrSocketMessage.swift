@@ -1,12 +1,11 @@
 import Foundation
 
 enum HerdrSocketMessage {
-    case snapshot(id: String, groups: [AgentGroup])
     case event(HerdrSocketEvent)
     case subscriptionStarted
     case other
 
-    static func decode(_ data: Data, refreshedAt: Date) throws -> Self {
+    static func decode(_ data: Data) -> Self {
         let decoder = JSONDecoder()
         if let envelope = try? decoder.decode(EventEnvelope.self, from: data) {
             return .event(envelope.socketEvent)
@@ -17,13 +16,7 @@ enum HerdrSocketMessage {
         {
             return .subscriptionStarted
         }
-        guard let response = try? decoder.decode(ResponseTypeProbe.self, from: data),
-              response.result.type == "session_snapshot"
-        else { return .other }
-        return .snapshot(
-            id: response.id,
-            groups: try HerdrClient.parseGroups(data, refreshedAt: refreshedAt)
-        )
+        return .other
     }
 }
 
@@ -104,15 +97,6 @@ private struct EventEnvelope: Decodable {
 }
 
 private struct AcknowledgementResponse: Decodable {
-    struct Result: Decodable {
-        let type: String
-    }
-
-    let id: String
-    let result: Result
-}
-
-private struct ResponseTypeProbe: Decodable {
     struct Result: Decodable {
         let type: String
     }

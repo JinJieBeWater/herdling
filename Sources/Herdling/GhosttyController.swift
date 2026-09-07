@@ -14,19 +14,38 @@ actor GhosttyController {
         case clientLaunchFailed
         case operationInProgress
 
+        var isAutomationPermissionDenied: Bool {
+            guard case let .automationFailed(message) = self else { return false }
+            let normalized = message.lowercased()
+            return normalized.contains("-1743") || normalized.contains("not authorized to send apple events")
+        }
+
         var errorDescription: String? {
             switch self {
             case .notInstalled:
-                "Ghostty is not installed."
+                "Ghostty is not installed. Install Ghostty, then retry."
             case let .automationFailed(message):
-                message.isEmpty ? "Ghostty automation failed." : message
+                isAutomationPermissionDenied
+                    ? "Ghostty Automation denied. Allow Herdling in System Settings → Privacy & Security → Automation."
+                    : Self.automationFailureDescription(message)
             case .clientCreationFailed:
-                "Ghostty did not return a client terminal."
+                "Ghostty did not create a usable terminal. Try again or switch new clients to Window in Settings."
             case .clientLaunchFailed:
-                "Herdr client did not start in Ghostty."
+                "Herdr client did not start in Ghostty. Check Herdr and the SSH connection, then retry."
             case .operationInProgress:
-                "Another Ghostty focus operation is still running."
+                "Another Ghostty action is finishing. Try again."
             }
+        }
+
+        static func automationFailureDescription(_ message: String) -> String {
+            let message = message.lowercased()
+            if message.contains("new_tab") {
+                return "Ghostty could not open a new tab. Switch new clients to Window in Settings, then retry."
+            }
+            if message.contains("timed out") || message.contains("timeout") {
+                return "Ghostty Automation timed out. Open Ghostty, then retry."
+            }
+            return "Ghostty Automation failed. Check Automation permission in System Settings, then retry."
         }
     }
 
@@ -58,8 +77,12 @@ actor GhosttyController {
             _ = try await runAppleScript("tell application \"Ghostty\" to return count of windows as text")
             return "Allowed"
         } catch {
-            return error.localizedDescription.contains("-1743") ? "Denied" : "Unavailable"
+            return Self.automationPermissionFailureStatus(error)
         }
+    }
+
+    nonisolated static func automationPermissionFailureStatus(_ error: Error) -> String {
+        (error as? GhosttyError)?.isAutomationPermissionDenied == true ? "Denied" : "Unavailable"
     }
 
     func activateClient(
@@ -74,38 +97,14 @@ actor GhosttyController {
 
         let key = Self.mappingKey(source: source, session: session)
         let applications = await runningApplications()
-        var existingTargetTTYs: Set<String> = []
-        if let application = applications.first {
-            let existingMapping = loadMapping(forKey: key)
-            let clients = try await Task.detached {
-                try GhosttyProcessCatalog.load(ghosttyPID: Int(application.processIdentifier))
-            }.value
-            existingTargetTTYs = Set(clients.lazy.filter {
-                $0.sourceID == source.id && $0.session == session
-            }.map(\.tty))
-            if let existingMapping,
-               let terminalID = Self.reusableMappedTerminalID(
-                   mapping: existingMapping,
-                   clients: clients,
-                   sourceID: source.id,
-                   session: session
-               ),
-               try await focusTerminal(id: terminalID)
-            {
-                return
-            }
-            if existingMapping != nil { defaults.removeObject(forKey: key) }
-
-            if let mapping = try await adoptExistingClient(
-                source: source,
-                session: session,
-                clients: clients,
-                preferredMapping: existingMapping
-            ), try await focusTerminal(id: mapping.terminalID) {
-                saveMapping(mapping, forKey: key)
-                return
-            }
-        }
+        let existing = try await reuseExistingClient(
+            source: source,
+            session: session,
+            key: key,
+            application: applications.first,
+            allowAdoption: true
+        )
+        if existing.focused { return }
 
         try await ensureGhosttyRunning(existing: applications.first)
         let pendingMapping = switch openBehavior {
@@ -118,9 +117,69 @@ actor GhosttyController {
             pendingMapping,
             source: source,
             session: session,
-            excluding: existingTargetTTYs
+            excluding: existing.targetTTYs
         )
         saveMapping(mapping, forKey: key)
+    }
+
+    func focusExistingClient(
+        source: SourceDescriptor = .local,
+        session: String
+    ) async throws -> Bool {
+        guard !activationInProgress else { throw GhosttyError.operationInProgress }
+        activationInProgress = true
+        defer { activationInProgress = false }
+
+        let key = Self.mappingKey(source: source, session: session)
+        return try await reuseExistingClient(
+            source: source,
+            session: session,
+            key: key,
+            application: await runningApplications().first,
+            allowAdoption: true
+        ).focused
+    }
+
+    private func reuseExistingClient(
+        source: SourceDescriptor,
+        session: String,
+        key: String,
+        application: NSRunningApplication?,
+        allowAdoption: Bool
+    ) async throws -> (focused: Bool, targetTTYs: Set<String>) {
+        guard let application else { return (false, []) }
+        let existingMapping = loadMapping(forKey: key)
+        let clients = try await Task.detached {
+            try GhosttyProcessCatalog.load(ghosttyPID: Int(application.processIdentifier))
+        }.value
+        let targetTTYs = Set(clients.lazy.filter {
+            $0.sourceID == source.id && $0.session == session
+        }.map(\.tty))
+
+        if let existingMapping,
+           let terminalID = Self.reusableMappedTerminalID(
+               mapping: existingMapping,
+               clients: clients,
+               sourceID: source.id,
+               session: session
+           ),
+           try await focusTerminal(id: terminalID)
+        {
+            return (true, targetTTYs)
+        }
+        if existingMapping != nil { defaults.removeObject(forKey: key) }
+        guard allowAdoption, !targetTTYs.isEmpty else { return (false, targetTTYs) }
+
+        if let mapping = try await adoptExistingClient(
+            source: source,
+            session: session,
+            clients: clients,
+            preferredMapping: existingMapping
+        ), try await focusTerminal(id: mapping.terminalID) {
+            saveMapping(mapping, forKey: key)
+            return (true, targetTTYs)
+        }
+        return (false, targetTTYs)
     }
 
     private func confirmCreatedClient(

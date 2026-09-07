@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import Testing
 @testable import Herdling
@@ -82,9 +83,29 @@ struct CoreBehaviorTests {
         #expect(HerdrRemoteSessionMonitor.reconnectDelay(attempt: 1) == 1)
         #expect(HerdrRemoteSessionMonitor.reconnectDelay(attempt: 2) == 2)
         #expect(HerdrRemoteSessionMonitor.reconnectDelay(attempt: 7) == 60)
+        #expect(HerdrClient.sshArguments(alias: "kvm", command: "query") == [
+            "-T",
+            "-o", "BatchMode=yes",
+            "-o", "NumberOfPasswordPrompts=0",
+            "-o", "ConnectTimeout=4",
+            "kvm", "query",
+        ])
         let streamArguments = HerdrClient.sshArguments(alias: "kvm", command: "stream", keepAlive: true)
         #expect(streamArguments.contains("ServerAliveInterval=15"))
         #expect(streamArguments.contains("ServerAliveCountMax=2"))
+    }
+
+    @Test
+    func remoteDiagnosticsAreClassifiedWithoutEchoingSSHOutput() {
+        #expect(HerdrRemoteSessionMonitor.safeDiagnostic(
+            "Permission denied (publickey). secret-token"
+        ) == "SSH authentication failed.")
+        #expect(HerdrRemoteSessionMonitor.safeDiagnostic(
+            "remote stderr included password=hunter2"
+        ) == "SSH command failed.")
+        #expect(HerdrRemoteSessionMonitor.safeDiagnostic(
+            "zsh: command not found: herdr"
+        ) == "Herdr was not found in remote login shell.")
     }
 
     @Test
@@ -126,26 +147,94 @@ struct CoreBehaviorTests {
     }
 
     @Test
-    func socketSnapshotPreservesWorkspaceAndAgentOrder() throws {
-        let line = Data(#"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"version":"0.8.2","protocol":1,"workspaces":[{"workspace_id":"w2","label":"Second"},{"workspace_id":"w1","label":"First"}],"tabs":[],"panes":[],"layouts":[],"agents":[{"terminal_id":"t1","agent_status":"idle","workspace_id":"w1","tab_id":"tab","pane_id":"w1:p1","focused":false,"revision":1,"name":"one","cwd":"/one"},{"terminal_id":"t2","agent_status":"blocked","workspace_id":"w2","tab_id":"tab","pane_id":"w2:p1","focused":false,"revision":1,"name":"two","cwd":"/two"}]}}}"#.utf8)
+    func commandRunnerPreservesOutputAndFailure() throws {
+        let input = Data(repeating: 0x41, count: 262_144)
+        #expect(try CommandRunner.run("/bin/cat", [], standardInput: input) == input)
+        do {
+            _ = try CommandRunner.run("/bin/sh", ["-c", "printf 'failure detail' >&2; exit 7"])
+            Issue.record("Expected command failure")
+        } catch CommandRunner.Error.failed(let message) {
+            #expect(message == "failure detail")
+        }
+    }
 
-        guard case let .snapshot(id, groups) = try HerdrSocketMessage.decode(line, refreshedAt: .distantPast) else {
-            Issue.record("Expected socket snapshot")
-            return
+    @Test(arguments: [false, true])
+    func commandRunnerStillTimesOutAndCancels(cancel: Bool) throws {
+        do {
+            _ = try CommandRunner.run(
+                "/bin/sleep", ["10"], timeout: 0.1, isCancelled: { cancel }
+            )
+            Issue.record("Expected interrupted command")
+        } catch is CancellationError {
+            #expect(cancel)
+        } catch CommandRunner.Error.timedOut {
+            #expect(!cancel)
+        }
+    }
+
+    @Test
+    func commandRunnerStopsProcessWhenStandardInputWriteFails() throws {
+        let pidURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("herdling-command-runner-\(UUID()).pid")
+        defer { try? FileManager.default.removeItem(at: pidURL) }
+        var childPID: pid_t?
+        defer {
+            if let childPID, kill(childPID, 0) == 0 { kill(childPID, SIGKILL) }
+        }
+        let script = "echo $$ > \(HerdrClient.shellQuote(pidURL.path)); exec 0<&-; trap '' TERM; while :; do :; done"
+
+        do {
+            _ = try CommandRunner.run(
+                "/bin/sh",
+                ["-c", script],
+                timeout: 5,
+                standardInput: Data(repeating: 0x41, count: 1_048_576)
+            )
+            Issue.record("Expected standard input write to fail")
+        } catch CommandRunner.Error.timedOut {
+            Issue.record("Standard input write blocked until timeout")
+        } catch {
+            let error = error as NSError
+            let underlying = (error.userInfo[NSUnderlyingErrorKey] as? NSError) ?? error
+            #expect(underlying.domain == NSPOSIXErrorDomain)
+            #expect(underlying.code == Int(EPIPE))
         }
 
-        #expect(id == "snapshot")
-        #expect(groups.map(\.name) == ["Second", "First"])
-        #expect(groups[0].agents.map(\.title) == ["two"])
-        #expect(groups[1].agents.map(\.title) == ["one"])
-        #expect(groups[1].agents[0].revision == 1)
-        #expect(groups[1].agents[0].updatedAt == .distantPast)
+        childPID = try pid_t(#require(Int32(
+            String(contentsOf: pidURL, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        )))
+        #expect(kill(childPID!, 0) == -1)
+        #expect(errno == ESRCH)
+    }
+
+    @Test(arguments: [false, true])
+    func commandRunnerInterruptsBlockedInput(cancel: Bool) throws {
+        let pidURL = FileManager.default.temporaryDirectory.appendingPathComponent("blocked-input-\(UUID()).pid")
+        defer { try? FileManager.default.removeItem(at: pidURL) }
+        let script = "echo $$ > \(HerdrClient.shellQuote(pidURL.path)); exec /bin/sleep 1"
+        do {
+            _ = try CommandRunner.run(
+                "/bin/sh", ["-c", script], timeout: cancel ? 5 : 0.2,
+                standardInput: Data(repeating: 65, count: 1_048_576),
+                isCancelled: { cancel && FileManager.default.fileExists(atPath: pidURL.path) }
+            )
+            Issue.record("Expected blocked input to be interrupted")
+        } catch is CancellationError {
+            #expect(cancel)
+        } catch CommandRunner.Error.timedOut {
+            #expect(!cancel)
+        }
+        let pid = try #require(Int32(String(contentsOf: pidURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)))
+        #expect(kill(pid, 0) == -1)
+        #expect(errno == ESRCH)
     }
 
     @Test
     func socketEventIsRecognized() throws {
         let event = Data(#"{"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"working"}}"#.utf8)
-        guard case .event(.agentStatusChanged) = try HerdrSocketMessage.decode(event, refreshedAt: .now) else {
+        guard case .event(.agentStatusChanged) = HerdrSocketMessage.decode(event) else {
             Issue.record("Expected socket event")
             return
         }
@@ -154,7 +243,7 @@ struct CoreBehaviorTests {
     @Test
     func socketSubscriptionAcknowledgementIsRecognized() throws {
         let acknowledgement = Data(#"{"id":"subscription","result":{"type":"subscription_started"}}"#.utf8)
-        guard case .subscriptionStarted = try HerdrSocketMessage.decode(acknowledgement, refreshedAt: .now) else {
+        guard case .subscriptionStarted = HerdrSocketMessage.decode(acknowledgement) else {
             Issue.record("Expected subscription acknowledgement")
             return
         }
@@ -288,7 +377,7 @@ struct CoreBehaviorTests {
     @MainActor
     func unavailableRemoteMonitorReconnectsWithoutPolling() async {
         let descriptor = SourceDescriptor.remote("kvm")
-        let monitor = ImmediateSessionMonitor(event: .unavailable)
+        let monitor = ImmediateSessionMonitor(event: .unavailable())
         let recorder = SourceLoadRecorder()
         let sleepRecorder = SleepRecorder()
         let store = SessionStore(
@@ -306,6 +395,35 @@ struct CoreBehaviorTests {
         #expect(recorder.remoteCallCount == 0)
         #expect(await sleepRecorder.durations.isEmpty)
         store.stop()
+    }
+
+    @Test
+    @MainActor
+    func remoteFailureCanRetryImmediatelyAndRecoveryClearsDiagnostic() async {
+        let descriptor = SourceDescriptor.remote("kvm")
+        let monitor = ManualSessionMonitor()
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            remoteMonitorFactory: { _ in monitor },
+            sourceDescriptors: [descriptor]
+        )
+        let retryAt = Date().addingTimeInterval(30)
+
+        store.start()
+        await monitor.waitUntilStarted()
+        await monitor.emit(.unavailable(reason: "SSH authentication failed.", retryAt: retryAt))
+        #expect(store.sources[0].error == "SSH authentication failed.")
+        #expect(store.sources[0].retryAt == retryAt)
+
+        store.retryRemoteSource(descriptor)
+        await monitor.waitForRetryCount(1)
+        #expect(store.sources[0].error == nil)
+
+        await monitor.emit(.sessions([loadedSession(paneID: "recovered")]))
+        #expect(store.sources[0].online)
+        #expect(store.sources[0].error == nil)
+        #expect(store.sources[0].retryAt == nil)
+        await store.stopAndWait()
     }
 
     @Test
@@ -359,7 +477,7 @@ struct CoreBehaviorTests {
             discoverSessions: {
                 await discoveryStarted.release()
                 await releaseDiscovery.wait()
-                return []
+                return .sessions([])
             }
         )
         let start = Task { await monitor.start { _ in } }
@@ -370,6 +488,59 @@ struct CoreBehaviorTests {
         await start.value
 
         #expect(await !monitor.isDiscoveryScheduled)
+    }
+
+    @Test
+    func immediateRemoteRetryCoalescesWhileDiscoveryIsRunning() async {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let firstStarted = AsyncGate()
+        let releaseFirst = AsyncGate()
+        let secondStarted = AsyncGate()
+        let releaseSecond = AsyncGate()
+        let probe = DiscoveryProbe()
+        let events = RemoteUnavailableRecorder()
+        let monitor = HerdrRemoteSessionMonitor(
+            source: .remote("kvm"),
+            discoverSessions: {
+                let call = await probe.begin()
+                if call == 1 {
+                    await firstStarted.release()
+                    await releaseFirst.wait()
+                } else if call == 2 {
+                    await secondStarted.release()
+                    await releaseSecond.wait()
+                }
+                await probe.end()
+                return .failure("Permission denied (publickey). private=value")
+            },
+            now: { now }
+        )
+        let start = Task {
+            await monitor.start { event in await events.record(event) }
+        }
+
+        await firstStarted.wait()
+        await monitor.retry()
+        await monitor.retry()
+        #expect(await probe.callCount == 1)
+        #expect(await probe.maximumActive == 1)
+
+        await releaseFirst.release()
+        await start.value
+        await secondStarted.wait()
+
+        #expect(await events.reasons.isEmpty)
+        #expect(await events.retryDates.isEmpty)
+
+        await releaseSecond.release()
+        await events.waitForCount(1)
+
+        #expect(await probe.callCount == 2)
+        #expect(await probe.maximumActive == 1)
+        #expect(await events.reasons == ["SSH authentication failed."])
+        #expect(await events.retryDates == [now.addingTimeInterval(1)])
+        #expect(await monitor.isDiscoveryScheduled)
+        await monitor.stop()
     }
 
     @Test
@@ -417,6 +588,56 @@ struct CoreBehaviorTests {
     }
 
     @Test
+    func socketSnapshotAndSubscriptionUseSeparateConnections() throws {
+        let published = DispatchSemaphore(value: 0)
+        let snapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Space"}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","name":"agent","cwd":"/repo"}]}}}"#
+        let connection = HerdrSocketConnection(
+            endpoint: HerdrSocketEndpoint(session: "default", path: "/unused"),
+            eventExecutable: "/bin/sh",
+            eventArguments: [
+                "-c",
+                "IFS= read -r request; case \"$request\" in *session.snapshot*) \(socketSnapshotReply(snapshot)) ;; *events.subscribe*) printf '%s\\n' '{\"id\":\"subscription\",\"result\":{\"type\":\"subscription_started\"}}'; sleep 2 ;; esac",
+            ],
+            onSnapshot: { _, _, _, _ in published.signal() },
+            onEnd: { _, _ in }
+        )
+        defer { connection.stop() }
+
+        try connection.start()
+
+        #expect(published.wait(timeout: .now() + 1) == .success)
+    }
+
+    @Test
+    func stoppingConnectionCancelsSnapshotProcess() throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("herdling-snapshot-\(UUID()).started")
+        defer { try? FileManager.default.removeItem(at: marker) }
+        let completed = DispatchSemaphore(value: 0)
+        let connection = HerdrSocketConnection(
+            endpoint: HerdrSocketEndpoint(session: "default", path: "/unused"),
+            eventExecutable: "/bin/sh",
+            eventArguments: ["-c", "touch \(HerdrClient.shellQuote(marker.path)); sleep 30"],
+            onSnapshot: { _, _, _, _ in },
+            onEnd: { _, _ in }
+        )
+        Task.detached {
+            _ = try? connection.start()
+            completed.signal()
+        }
+
+        let deadline = Date().addingTimeInterval(1)
+        while !FileManager.default.fileExists(atPath: marker.path), Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        #expect(FileManager.default.fileExists(atPath: marker.path))
+
+        connection.stop()
+
+        #expect(completed.wait(timeout: .now() + 1) == .success)
+    }
+
+    @Test
     func closedPaneIsRemovedFromPublishedSnapshot() throws {
         let removed = DispatchSemaphore(value: 0)
         let snapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w6","label":"Main"}],"agents":[{"pane_id":"w6:p0","workspace_id":"w6","agent_status":"idle","name":"closed","cwd":"/repo"}]}}}"#
@@ -444,13 +665,19 @@ struct CoreBehaviorTests {
         let refreshed = DispatchSemaphore(value: 0)
         let oldSnapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Main"}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","name":"old","cwd":"/repo"}]}}}"#
         let newSnapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Main"}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","name":"old","cwd":"/repo"},{"pane_id":"w1:p2","workspace_id":"w1","agent_status":"working","name":"new","cwd":"/repo"}]}}}"#
+        let snapshots = LockedSnapshotSequence([
+            try HerdrClient.parseGroups(Data(oldSnapshot.utf8)),
+            try HerdrClient.parseGroups(Data(oldSnapshot.utf8)),
+            try HerdrClient.parseGroups(Data(newSnapshot.utf8)),
+        ])
         let connection = HerdrSocketConnection(
             endpoint: HerdrSocketEndpoint(session: "default", path: "/unused"),
             eventExecutable: "/bin/sh",
             eventArguments: [
                 "-c",
-                "count=0; while IFS= read -r request; do case \"$request\" in *session.snapshot*) count=$((count + 1)); if [ \"$count\" -ge 3 ]; then \(socketSnapshotReply(newSnapshot)); else \(socketSnapshotReply(oldSnapshot)); fi ;; *pane.created*) printf '%s\\n' '{\"id\":\"subscription\",\"result\":{\"type\":\"subscription_started\"}}'; sleep 0.1; printf '%s\\n' '{\"event\":\"pane_created\",\"data\":{\"type\":\"pane_created\"}}' ;; esac; done",
+                "while IFS= read -r request; do case \"$request\" in *pane.created*) printf '%s\\n' '{\"id\":\"subscription\",\"result\":{\"type\":\"subscription_started\"}}'; sleep 0.1; printf '%s\\n' '{\"event\":\"pane_created\",\"data\":{\"type\":\"pane_created\"}}' ;; esac; done",
             ],
+            loadSnapshot: { snapshots.next() },
             onSubscriptionChange: { _, _, groups in
                 if groups.flatMap(\.agents).contains(where: { $0.paneID == "w1:p2" }) {
                     refreshed.signal()
@@ -547,36 +774,6 @@ struct CoreBehaviorTests {
     }
 
     @Test
-    func lateSnapshotResponseCannotSatisfyNextRequest() throws {
-        let freshPublished = DispatchSemaphore(value: 0)
-        let baseSnapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Main"}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","name":"base","cwd":"/repo"}]}}}"#
-        let staleSnapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Main"}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","name":"stale","cwd":"/repo"}]}}}"#
-        let freshSnapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Main"}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","name":"fresh","cwd":"/repo"}]}}}"#
-        let connection = HerdrSocketConnection(
-            endpoint: HerdrSocketEndpoint(session: "default", path: "/unused"),
-            eventExecutable: "/bin/sh",
-            eventArguments: [
-                "-c",
-                "count=0; while IFS= read -r request; do case \"$request\" in *session.snapshot*) count=$((count + 1)); if [ \"$count\" -le 2 ]; then \(socketSnapshotReply(baseSnapshot)); elif [ \"$count\" -eq 3 ]; then sleep 3.2; \(socketSnapshotReply(staleSnapshot)); else \(socketSnapshotReply(freshSnapshot)); fi ;; *events.subscribe*) printf '%s\\n' '{\"id\":\"subscription\",\"result\":{\"type\":\"subscription_started\"}}' ;; esac; done",
-            ],
-            onSnapshot: { _, _, _, groups in
-                if groups.first?.agents.first?.title == "fresh" { freshPublished.signal() }
-            },
-            onEnd: { _, _ in }
-        )
-        defer { connection.stop() }
-
-        try connection.start()
-        do {
-            _ = try connection.refresh()
-            Issue.record("Expected the delayed request to time out")
-        } catch CommandRunner.Error.timedOut {}
-
-        #expect(try connection.refresh())
-        #expect(freshPublished.wait(timeout: .now() + 1) == .success)
-    }
-
-    @Test
     func rosterNestsWorktreesUnderExistingSpaceWithoutReordering() {
         let groups = [
             AgentGroup(id: "my", name: "my", agents: []),
@@ -591,8 +788,9 @@ struct CoreBehaviorTests {
         #expect(spaces.map(\.name) == ["my", "Engineer", "v5", "unknown/path"])
         #expect(spaces[1].worktrees.map(\.name) == ["Engineer/investigate-inft-50"])
         #expect(spaces[1].worktreeName(spaces[1].worktrees[0]) == "investigate-inft-50")
-        #expect(spaces[1].displayedWorktrees.map(\.name) == ["investigate-inft-50"])
-        #expect(spaces[1].displayedWorktrees.map(\.group.name) == ["Engineer/investigate-inft-50"])
+        #expect(spaces[1].displayedWorktrees().map(\.name) == ["Main", "investigate-inft-50"])
+        #expect(spaces[1].displayedWorktrees().map(\.id) == ["engineer", "engineer-wt"])
+        #expect(spaces[1].displayedWorktrees().map(\.group.name) == ["Engineer", "Engineer/investigate-inft-50"])
         #expect(spaces[2].worktrees.map(\.name) == ["v5/leap-309"])
 
         let primaryAgent = AgentInfo(
@@ -603,9 +801,13 @@ struct CoreBehaviorTests {
             primary: AgentGroup(id: "engineer", name: "Engineer", agents: [primaryAgent]),
             worktrees: [groups[2]]
         )
-        #expect(populated.displayedWorktrees.map(\.name) == [
+        #expect(populated.displayedWorktrees().map(\.name) == [
             "Main",
             "investigate-inft-50",
+        ])
+        #expect(populated.displayedWorktrees(showEmptyMain: false).map(\.id) == ["engineer", "engineer-wt"])
+        #expect(AgentStatusCount.summarize(populated.displayedWorktrees()[0].group.agents) == [
+            AgentStatusCount(status: .idle, count: 1),
         ])
 
         let nestedBranch = RosterLayout.spaces(from: [
@@ -779,6 +981,8 @@ struct CoreBehaviorTests {
                         name: "Unrelated",
                         agents: [item("unknown", .unknown, workspace: "Unrelated", changedAt: now)]
                     ),
+                    AgentGroup(id: "empty-root", name: "Empty", agents: []),
+                    AgentGroup(id: "empty-worktree", name: "Project/empty", agents: []),
                 ],
                 online: true
             )],
@@ -793,9 +997,53 @@ struct CoreBehaviorTests {
         let session = try #require(outline.first?.sessions.first)
 
         #expect(session.groups.map(\.name) == ["Project", "Project/feature"])
+        #expect(session.groups.map(\.id) == ["project", "feature"])
         #expect(session.groups[0].agents.isEmpty)
         #expect(session.groups[1].agents.map(\.title) == ["active"])
         #expect(outline.first?.branches == ["/active": "feature"])
+        let space = try #require(RosterLayout.spaces(from: session.groups).first)
+        #expect(space.name == "Project")
+        #expect(space.primary.id == "project")
+        #expect(space.displayedWorktrees(showEmptyMain: false).map(\.id) == ["feature"])
+        #expect(source.sessions[0].groups[0].agents.map(\.paneID) == ["old"])
+    }
+
+    @Test
+    func recentOutlineOrdersSpacesByHighestPriorityAgent() throws {
+        let now = Date(timeIntervalSince1970: 10_000)
+        func item(_ title: String, _ status: AgentStatus, workspace: String) -> AgentInfo {
+            AgentInfo(
+                paneID: title,
+                title: title,
+                status: status,
+                workspace: workspace,
+                cwd: "/\(title)",
+                updatedAt: now
+            )
+        }
+        let source = SourceInfo(
+            descriptor: .local,
+            sessions: [SessionInfo(
+                name: "default",
+                groups: [
+                    AgentGroup(id: "a", name: "A", agents: []),
+                    AgentGroup(id: "a-work", name: "A/work", agents: [item("working", .working, workspace: "A/work")]),
+                    AgentGroup(id: "b", name: "B", agents: []),
+                    AgentGroup(id: "b-work", name: "B/work", agents: [item("blocked", .blocked, workspace: "B/work")]),
+                ],
+                online: true
+            )],
+            online: true
+        )
+
+        let outline = RecentAgentList.outlineSources(
+            from: [source],
+            items: RecentAgentList.items(from: [source], at: now)
+        )
+
+        #expect(try #require(outline.first?.sessions.first).groups.map(\.name) == [
+            "B", "B/work", "A", "A/work",
+        ])
     }
 
     @Test
@@ -872,20 +1120,94 @@ struct CoreBehaviorTests {
         store.stop()
     }
 
-    @Test
-    func emptyGroupsAreNotFocusTargets() {
-        let agent = AgentInfo(
-            paneID: "pane",
-            title: "agent",
-            status: .idle,
-            workspace: "Space",
-            cwd: "/repo",
-            updatedAt: .now
+    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    @MainActor
+    func emptyWorkspaceFocusUsesRealIDAndRejectsOfflineSession(isNamedWorktree: Bool) async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("herdling-workspace-focus-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("fake-herdr")
+        let argumentsURL = directory.appendingPathComponent("arguments")
+        try "#!/bin/sh\nprintf '%s\\n' \"$@\" > \(HerdrClient.shellQuote(argumentsURL.path))\n"
+            .write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let client = HerdrClient(executable: executable.path)
+        let group = AgentGroup(
+            id: "w-real-id",
+            name: isNamedWorktree ? "Engineer/my/feature" : "Engineer/my",
+            agents: []
         )
+        let groups = isNamedWorktree
+            ? [AgentGroup(id: "w-root", name: "Engineer/my", agents: []), group]
+            : [group]
+        let space = try #require(RosterLayout.spaces(from: groups).first)
+        #expect(space.displayedWorktrees().map(\.id) == (isNamedWorktree ? ["w-root", "w-real-id"] : ["w-real-id"]))
+        let target = try #require(space.displayedWorktrees().last)
+        #expect(target.name == (isNamedWorktree ? "feature" : "Main"))
+        #expect(target.group.agents.isEmpty)
+        #expect(AgentStatusCount.summarize(target.group.agents).isEmpty)
+        var session = SessionInfo(name: "workspace session", groups: groups, online: false)
+        let store = SessionStore(
+            client: client,
+            focusExistingClient: { source, name in
+                #expect(source == .local)
+                #expect(name == "workspace session")
+                #expect(!FileManager.default.fileExists(atPath: argumentsURL.path))
+                return true
+            },
+            sourceDescriptors: [.local]
+        )
+        let completion = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        store.onChange = {
+            completion.continuation.yield(())
+            completion.continuation.finish()
+        }
+        defer { store.onChange = nil; completion.continuation.finish() }
+        var activations = 0
+        store.onClientActivated = {
+            activations += 1
+            #expect(!FileManager.default.fileExists(atPath: argumentsURL.path))
+        }
 
-        #expect(!RosterLayout.canFocusGroup(agents: [], sessionOnline: true))
-        #expect(!RosterLayout.canFocusGroup(agents: [agent], sessionOnline: false))
-        #expect(RosterLayout.canFocusGroup(agents: [agent], sessionOnline: true))
+        store.focusWorkspace(target.group, in: session)
+        #expect(store.pendingFocusWorkspaceID == nil)
+        #expect(store.pendingFocusAgentID == nil)
+        #expect(activations == 0)
+
+        session.online = true
+        store.focusWorkspace(target.group, in: session)
+        #expect(store.pendingFocusWorkspaceID == SessionStore.WorkspaceFocusID(
+            sourceID: SourceDescriptor.local.id,
+            sessionName: session.name,
+            workspaceID: "w-real-id"
+        ))
+        var events = completion.stream.makeAsyncIterator()
+        let completed: Void? = await events.next()
+        #expect(completed != nil)
+        #expect(store.pendingFocusWorkspaceID == nil)
+        #expect(store.focusError == nil)
+        #expect(activations == 1)
+        #expect(try String(contentsOf: argumentsURL, encoding: .utf8) ==
+            "--session\nworkspace session\nworkspace\nfocus\nw-real-id\n")
+
+        try client.focus(session: session.name, paneID: "p-agent")
+        #expect(try String(contentsOf: argumentsURL, encoding: .utf8) ==
+            "--session\nworkspace session\nagent\nfocus\np-agent\n")
+    }
+
+    @Test
+    func workspaceFocusKeepsExactArgumentsThroughRemoteShellWrapping() {
+        let arguments = HerdrClient.workspaceFocusArguments(session: "work's session", workspaceID: "w42")
+        #expect(arguments == ["--session", "work's session", "workspace", "focus", "w42"])
+        let command = HerdrClient.remoteCommand(arguments: arguments)
+        #expect(command == HerdrClient.remoteShellCommand(
+            "'herdr' '--session' 'work'\\''s session' 'workspace' 'focus' 'w42'"
+        ))
+        #expect(HerdrClient.sshArguments(alias: "kvm", command: command) == [
+            "-T", "-o", "BatchMode=yes", "-o", "NumberOfPasswordPrompts=0",
+            "-o", "ConnectTimeout=4", "kvm", command,
+        ])
     }
 
     @Test
@@ -969,44 +1291,197 @@ struct CoreBehaviorTests {
         #expect(completed == [1, 3])
     }
 
-    @Test
+    @Test(.timeLimit(.minutes(1)))
     @MainActor
-    func agentFocusShowsPendingStateAndStopsBeforeGhosttyWhenHerdrFails() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("herdling-focus-\(UUID())")
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let executable = directory.appendingPathComponent("fake-herdr")
-        try "#!/bin/sh\nsleep 0.2\necho 'session stopped' >&2\nexit 1\n"
-            .write(to: executable, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
-
-        let monitor = ManualSessionMonitor()
+    func workspaceFocusSharesLatestQueueAndOldAgentCannotClearItsIndicator() async throws {
+        let releaseFirst = AsyncGate()
+        let releaseLatest = AsyncGate()
+        let calls = AsyncStream<String>.makeStream()
+        let changes = AsyncStream<String>.makeStream()
         let store = SessionStore(
-            client: HerdrClient(executable: executable.path),
-            loadSource: { _ in [] },
-            localMonitor: monitor,
+            client: HerdrClient(executable: nil),
+            focusExistingClient: { _, session in
+                calls.continuation.yield(session)
+                if session == "first" { await releaseFirst.wait() }
+                if session == "latest" { await releaseLatest.wait() }
+                return true
+            },
             sourceDescriptors: [.local]
         )
-        store.start()
-        await monitor.waitUntilStarted()
-        await monitor.emit(.sessions([loadedSession(paneID: "pane", status: .idle)]))
-        let session = try #require(store.sources[0].sessions.first)
-        let agent = try #require(session.agents.first)
+        store.onChange = { [weak store] in
+            changes.continuation.yield(store?.pendingFocusWorkspaceID?.workspaceID ?? "none")
+        }
+        defer {
+            store.onChange = nil
+            calls.continuation.finish()
+            changes.continuation.finish()
+            Task { await releaseFirst.release(); await releaseLatest.release() }
+        }
+        let agent = recentAgent("pane", .idle, changedAt: .now)
+        store.focus(agent, in: SessionInfo(name: "first", agents: [agent], online: true))
+        var callEvents = calls.stream.makeAsyncIterator()
+        #expect(await callEvents.next() == "first")
+
+        let middle = AgentGroup(id: "w-middle", name: "same label", agents: [])
+        let latest = AgentGroup(id: "w-latest", name: "same label", agents: [])
+        store.focusWorkspace(middle, in: SessionInfo(name: "middle", groups: [middle], online: true))
+        store.focusWorkspace(latest, in: SessionInfo(name: "latest", groups: [latest], online: true))
+        #expect(store.pendingFocusAgentID == nil)
+        #expect(store.pendingFocusWorkspaceID?.workspaceID == "w-latest")
+
+        await releaseFirst.release()
+        var changeEvents = changes.stream.makeAsyncIterator()
+        #expect(await changeEvents.next() == "w-latest")
+        #expect(await callEvents.next() == "latest")
+        #expect(store.pendingFocusWorkspaceID?.workspaceID == "w-latest")
+
+        await releaseLatest.release()
+        #expect(await changeEvents.next() == "none")
+        #expect(store.pendingFocusAgentID == nil)
+        #expect(store.pendingFocusWorkspaceID == nil)
+        #expect(store.focusError == "Herdr is not installed. Install Herdr or set HERDR_BIN_PATH, then retry.")
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    @MainActor
+    func agentFocusKeepsLatestPendingUntilQueueFinishes() async {
+        let releaseFirst = AsyncGate()
+        let releaseLatest = AsyncGate()
+        let calls = AsyncStream<String>.makeStream()
+        let changes = AsyncStream<String>.makeStream()
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            focusExistingClient: { _, session in
+                calls.continuation.yield(session)
+                if session == "first" { await releaseFirst.wait() }
+                if session == "latest" { await releaseLatest.wait() }
+                throw HerdrClient.ClientError.failed("session stopped")
+            },
+            sourceDescriptors: [.local]
+        )
+        store.onChange = { [weak store] in
+            changes.continuation.yield(store?.pendingFocusAgentID?.paneID ?? "none")
+        }
+        defer {
+            store.onChange = nil
+            calls.continuation.finish()
+            changes.continuation.finish()
+        }
+        let first = recentAgent("first", .idle, changedAt: .now)
+        let middle = recentAgent("middle", .idle, changedAt: .now)
+        let latest = recentAgent("latest", .idle, changedAt: .now)
+        store.focus(first, in: SessionInfo(name: "first", agents: [first], online: true))
+        #expect(store.pendingFocusAgentID == RecentAgentItem.ID(
+            sourceID: SourceDescriptor.local.id,
+            sessionName: "first",
+            paneID: first.paneID
+        ))
+        var callEvents = calls.stream.makeAsyncIterator()
+        #expect(await callEvents.next() == "first")
+
+        store.focus(middle, in: SessionInfo(name: "middle", agents: [middle], online: true))
+        store.focus(latest, in: SessionInfo(name: "latest", agents: [latest], online: true))
+        let latestID = RecentAgentItem.ID(
+            sourceID: SourceDescriptor.local.id,
+            sessionName: "latest",
+            paneID: latest.paneID
+        )
+        #expect(store.pendingFocusAgentID == latestID)
+
+        await releaseFirst.release()
+        var changeEvents = changes.stream.makeAsyncIterator()
+        #expect(await changeEvents.next() == "latest")
+        #expect(await callEvents.next() == "latest")
+        #expect(store.pendingFocusAgentID == latestID)
+        #expect(store.focusError == nil)
+
+        await releaseLatest.release()
+        #expect(await changeEvents.next() == "none")
+        #expect(store.pendingFocusAgentID == nil)
+        #expect(store.focusError == "Herdr focus failed: session stopped")
+        calls.continuation.finish()
+        #expect(await callEvents.next() == nil)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    @MainActor
+    func failedFocusClearsPendingState() async throws {
+        let releaseFailure = AsyncGate()
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            focusExistingClient: { _, _ in
+                await releaseFailure.wait()
+                throw GhosttyController.GhosttyError.automationFailed("-1743")
+            },
+            sourceDescriptors: [.local]
+        )
+        let agent = recentAgent("pane", .idle, changedAt: .now)
+        let session = SessionInfo(name: "focus-failure", agents: [agent], online: true)
+        let completion = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        store.onChange = {
+            completion.continuation.yield(())
+            completion.continuation.finish()
+        }
+        defer {
+            store.onChange = nil
+            completion.continuation.finish()
+        }
 
         store.focus(agent, in: session)
-
-        #expect(store.focusingAgentID == RecentAgentItem.ID(
+        #expect(store.pendingFocusAgentID == RecentAgentItem.ID(
             sourceID: SourceDescriptor.local.id,
             sessionName: session.name,
             paneID: agent.paneID
         ))
-        for _ in 0..<100 where store.focusingAgentID != nil {
-            try await Task.sleep(for: .milliseconds(10))
+
+        await releaseFailure.release()
+        var events = completion.stream.makeAsyncIterator()
+        let completed: Void? = await events.next()
+        #expect(completed != nil)
+
+        #expect(store.pendingFocusAgentID == nil)
+        #expect(store.focusError ==
+            "Ghostty Automation denied. Allow Herdling in System Settings → Privacy & Security → Automation.")
+    }
+
+    @Test
+    func automationPermissionFailureUsesRawErrorAndKeepsDetailsPrivate() {
+        for message in ["Apple event failed (-1743) secret=value", "NOT AUTHORIZED TO SEND APPLE EVENTS secret=value"] {
+            let error = GhosttyController.GhosttyError.automationFailed(message)
+            #expect(GhosttyController.automationPermissionFailureStatus(error) == "Denied")
+            #expect(error.localizedDescription ==
+                "Ghostty Automation denied. Allow Herdling in System Settings → Privacy & Security → Automation.")
+            #expect(!error.localizedDescription.contains("secret"))
+            #expect(!error.localizedDescription.contains("-1743"))
         }
-        #expect(store.focusingAgentID == nil)
-        #expect(store.focusError?.contains("session stopped") == true)
-        await store.stopAndWait()
+        let failure = GhosttyController.GhosttyError.automationFailed("command failed secret=value")
+        #expect(GhosttyController.automationPermissionFailureStatus(failure) == "Unavailable")
+        #expect(!failure.localizedDescription.contains("secret"))
+        #expect(GhosttyController.automationPermissionFailureStatus(
+            GhosttyController.GhosttyError.notInstalled
+        ) == "Unavailable")
+        #expect(GhosttyController.automationPermissionFailureStatus(
+            NSError(domain: "test", code: -1743, userInfo: [NSLocalizedDescriptionKey: "secret=value -1743"])
+        ) == "Unavailable")
+    }
+
+    @Test
+    func focusErrorsGiveActionsWithoutEchoingRemoteOrAutomationDetails() {
+        let denied = GhosttyController.GhosttyError.automationFailed(
+            "Not authorized to send Apple events. secret=value (-1743)"
+        )
+        let tabFailed = GhosttyController.GhosttyError.automationFailed(
+            "Ghostty rejected action new_tab. secret=value"
+        )
+
+        #expect(denied.localizedDescription.contains("System Settings → Privacy & Security → Automation"))
+        #expect(!denied.localizedDescription.contains("secret"))
+        #expect(tabFailed.localizedDescription.contains("Window in Settings"))
+        #expect(!tabFailed.localizedDescription.contains("secret"))
+        #expect(SessionStore.focusErrorMessage(
+            HerdrClient.ClientError.failed("password=hunter2"),
+            remote: true
+        ) == "Remote Herdr focus failed. Check the session and SSH connection, then retry.")
     }
 
     @Test
@@ -1275,13 +1750,9 @@ struct CoreBehaviorTests {
             panelSize: panelSize,
             visibleFrame: visibleFrame
         )
-        #expect(panelSize == NSSize(width: 900, height: 264))
-        #expect(origin == NSPoint(x: 92, y: 16))
+        #expect(panelSize == NSSize(width: 900, height: 255))
+        #expect(origin == NSPoint(x: 92, y: 25))
         #expect(origin.y + panelSize.height <= visibleFrame.maxY)
-        #expect(StatusItemController.availablePanelHeight(
-            buttonRect: buttonRect,
-            visibleFrame: visibleFrame
-        ) == 264)
 
         let narrowPanel = StatusItemController.panelSize(
             preferred: NSSize(width: 900, height: 340),
@@ -1299,6 +1770,18 @@ struct CoreBehaviorTests {
         #expect(StatusItemController.clampedContentHeight(20) == 100)
         #expect(StatusItemController.clampedContentHeight(245.2) == 246)
         #expect(StatusItemController.clampedContentHeight(900) == 900)
+        #expect(StatusItemController.maximumPanelHeight(
+            topY: 800,
+            visibleFrame: NSRect(x: 0, y: 0, width: 1000, height: 800)
+        ) == 680)
+        #expect(StatusItemController.maximumPanelHeight(
+            topY: 700,
+            visibleFrame: NSRect(x: 0, y: 0, width: 1000, height: 700)
+        ) == 595)
+        #expect(StatusItemController.maximumPanelHeight(
+            topY: 200,
+            visibleFrame: NSRect(x: 0, y: 0, width: 1000, height: 800)
+        ) == 184)
 
         let visibleFrame = NSRect(x: 0, y: 0, width: 1000, height: 800)
         let buttonRect = NSRect(x: 900, y: 780, width: 20, height: 20)
@@ -1307,7 +1790,7 @@ struct CoreBehaviorTests {
             buttonRect: NSRect(x: 900, y: 800, width: 20, height: 20),
             visibleFrame: visibleFrame
         )
-        #expect(fullHeightSize.height == 784)
+        #expect(fullHeightSize.height == 680)
         #expect(StatusItemController.panelTopY(
             buttonRect: NSRect(x: 900, y: 800, width: 20, height: 20),
             visibleFrame: visibleFrame
@@ -1345,7 +1828,8 @@ struct CoreBehaviorTests {
 
         #expect(expanded.minX == collapsed.minX)
         #expect(expanded.maxY == collapsed.maxY)
-        #expect(expanded.minY == visibleFrame.minY + StatusItemController.panelBottomMargin)
+        #expect(expanded.height == floor(visibleFrame.height * StatusItemController.panelScreenFraction))
+        #expect(expanded.minY == collapsed.maxY - expanded.height)
         #expect(collapsedAgain.minX == collapsed.minX)
         #expect(collapsedAgain.maxY == collapsed.maxY)
     }
@@ -1448,6 +1932,39 @@ private actor AsyncGate {
     }
 }
 
+private actor DiscoveryProbe {
+    private(set) var callCount = 0
+    private(set) var maximumActive = 0
+    private var active = 0
+
+    func begin() -> Int {
+        callCount += 1
+        active += 1
+        maximumActive = max(maximumActive, active)
+        return callCount
+    }
+
+    func end() {
+        active -= 1
+    }
+
+}
+
+private actor RemoteUnavailableRecorder {
+    private(set) var reasons: [String] = []
+    private(set) var retryDates: [Date] = []
+
+    func record(_ event: SessionMonitorEvent) {
+        guard case let .unavailable(reason, retryAt) = event else { return }
+        if let reason { reasons.append(reason) }
+        if let retryAt { retryDates.append(retryAt) }
+    }
+
+    func waitForCount(_ count: Int) async {
+        while retryDates.count < count { await Task.yield() }
+    }
+}
+
 private final class FlakySourceLoader: @unchecked Sendable {
     private let lock = NSLock()
     private var calls = 0
@@ -1501,6 +2018,7 @@ private actor ImmediateSessionMonitor: SessionMonitoring {
 
 private actor ManualSessionMonitor: SessionMonitoring {
     private var handler: (@Sendable (SessionMonitorEvent) async -> Void)?
+    private var retryCount = 0
 
     func start(handler: @escaping @Sendable (SessionMonitorEvent) async -> Void) async {
         self.handler = handler
@@ -1510,12 +2028,20 @@ private actor ManualSessionMonitor: SessionMonitoring {
         // Deliberately retain the handler to simulate an already queued stale event.
     }
 
+    func retry() {
+        retryCount += 1
+    }
+
     func emit(_ event: SessionMonitorEvent) async {
         await handler?(event)
     }
 
     func waitUntilStarted() async {
         while handler == nil { await Task.yield() }
+    }
+
+    func waitForRetryCount(_ count: Int) async {
+        while retryCount < count { await Task.yield() }
     }
 }
 
@@ -1563,6 +2089,7 @@ private final class MonitorFactoryQueue: @unchecked Sendable {
 }
 
 private func loadedSession(
+    name: String = "default",
     paneID: String,
     status: AgentStatus = .idle,
     changedAt: Date = .now
@@ -1576,7 +2103,7 @@ private func loadedSession(
         updatedAt: changedAt
     )
     return HerdrClient.LoadedSession(
-        name: "default",
+        name: name,
         groups: [AgentGroup(id: "remote", name: "Remote", agents: [agent])],
         error: nil
     )
@@ -1607,6 +2134,22 @@ private final class SourceLoadRecorder: @unchecked Sendable {
             else { remoteCalls += 1 }
         }
         return []
+    }
+}
+
+private final class LockedSnapshotSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var snapshots: [[AgentGroup]]
+
+    init(_ snapshots: [[AgentGroup]]) {
+        self.snapshots = snapshots
+    }
+
+    func next() -> [AgentGroup] {
+        lock.withLock {
+            guard snapshots.count > 1 else { return snapshots[0] }
+            return snapshots.removeFirst()
+        }
     }
 }
 
