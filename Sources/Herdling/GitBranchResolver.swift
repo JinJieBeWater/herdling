@@ -15,10 +15,16 @@ actor GitBranchResolver {
         let checkedAt: Date
     }
 
+    private struct PendingQuery {
+        let id = UUID()
+        let task: Task<[String: String]?, Never>
+    }
+
     private static let script = #"for path do branch=$(git -C "$path" branch --show-current 2>/dev/null || true); printf '%s\t%s\n' "$path" "$branch"; done"#
     private let cacheDuration: TimeInterval
     private let query: Query
     private var cache: [Key: Entry] = [:]
+    private var pending: [Key: PendingQuery] = [:]
 
     init(
         cacheDuration: TimeInterval = 15,
@@ -36,14 +42,22 @@ actor GitBranchResolver {
             return now.timeIntervalSince(entry.checkedAt) >= cacheDuration
         }
 
-        if !missing.isEmpty {
+        let unqueried = missing.filter { pending[Key(sourceID: source.id, path: $0)] == nil }
+        if !unqueried.isEmpty {
             let query = self.query
-            let resolved = await Task.detached { query(source, missing) }.value
+            let request = PendingQuery(task: Task.detached { query(source, unqueried) })
+            for path in unqueried { pending[Key(sourceID: source.id, path: path)] = request }
+        }
+        let requests = missing.compactMap { path in
+            pending[Key(sourceID: source.id, path: path)].map { (path, $0) }
+        }
+        for (path, request) in requests {
+            let resolved = await request.task.value
+            let key = Key(sourceID: source.id, path: path)
+            guard pending[key]?.id == request.id else { continue }
+            pending.removeValue(forKey: key)
             if let resolved {
-                let checkedAt = Date()
-                for path in missing {
-                    cache[Key(sourceID: source.id, path: path)] = Entry(branch: resolved[path], checkedAt: checkedAt)
-                }
+                cache[key] = Entry(branch: resolved[path], checkedAt: Date())
             }
         }
 

@@ -14,11 +14,11 @@ enum GhosttyProcessCatalog {
         let command: String
     }
 
-    static func load(ghosttyPID: Int) throws -> [GhosttyClientProcess] {
+    static func load(ghosttyPID: Int, timeout: TimeInterval = 1) throws -> [GhosttyClientProcess] {
         let data = try CommandRunner.run(
             "/bin/ps",
             ["-axo", "pid=,ppid=,tty=,command="],
-            timeout: 1
+            timeout: timeout
         )
         return clients(from: String(decoding: data, as: UTF8.self), ghosttyPID: ghosttyPID)
     }

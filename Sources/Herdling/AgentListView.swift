@@ -1009,6 +1009,7 @@ private struct SettingsView: View {
             .contentMargins(.vertical, 8, for: .scrollIndicators)
         }
         .task { await store.refreshPermissionStatus() }
+        .task { await store.refreshSSHAliases() }
     }
 
     private func settingsGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {

@@ -493,7 +493,13 @@ final class SessionStore {
         panelOpen = open
         guard pollingStarted else { return }
         scheduleNextPoll(reset: true)
-        if open { Task { await refresh() } }
+        if open {
+            for source in sources where source.online && !pollFallbackSourceIDs.contains(source.id) {
+                guard let generation = monitorGenerations[source.id] else { continue }
+                refreshBranches(for: source.descriptor, sessions: source.sessions, generation: generation)
+            }
+            Task { await refresh() }
+        }
     }
 
     func setShowingSettings(_ showing: Bool) {
@@ -624,19 +630,8 @@ final class SessionStore {
             sources[index] = updated
             if leftFallback { scheduleNextPoll() }
             onChange?()
-            guard !branchPathSet.isSubset(of: previousBranchPaths),
-                  let branchGeneration = branchLoadGenerations[descriptor.id]
-            else { return }
-            let loadBranches = self.loadBranches
-            Task { [weak self] in
-                let branches = await loadBranches(descriptor, branchPaths)
-                self?.applyBranches(
-                    branches,
-                    to: descriptor,
-                    monitorGeneration: generation,
-                    branchGeneration: branchGeneration
-                )
-            }
+            guard !branchPathSet.isSubset(of: previousBranchPaths) else { return }
+            refreshBranches(for: descriptor, sessions: sessions, generation: generation)
         case let .unavailable(reason, retryAt):
             if descriptor == .local {
                 let enteredFallback = pollFallbackSourceIDs.insert(descriptor.id).inserted
@@ -645,6 +640,23 @@ final class SessionStore {
             } else {
                 markRemoteMonitorUnavailable(descriptor, reason: reason, retryAt: retryAt)
             }
+        }
+    }
+
+    private func refreshBranches(for descriptor: SourceDescriptor, sessions: [SessionInfo], generation: UUID) {
+        let paths = Self.branchPaths(from: sessions)
+        guard !paths.isEmpty else { return }
+        let branchGeneration = UUID()
+        branchLoadGenerations[descriptor.id] = branchGeneration
+        let loadBranches = self.loadBranches
+        Task { [weak self] in
+            let branches = await loadBranches(descriptor, paths)
+            self?.applyBranches(
+                branches,
+                to: descriptor,
+                monitorGeneration: generation,
+                branchGeneration: branchGeneration
+            )
         }
     }
 
@@ -781,6 +793,8 @@ final class SessionStore {
             onChange?()
         }
 
+        guard sources.contains(where: { $0.descriptor == request.source }) else { return }
+
         do {
             switch request {
             case let .agent(_, session, source), let .workspace(_, session, source):
@@ -843,6 +857,12 @@ final class SessionStore {
             }
         }
         return "Could not open this item in Ghostty. Try again."
+    }
+
+    func refreshSSHAliases(at url: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/config")) async {
+        let aliases = await Task.detached { SSHConfig.aliases(at: url) }.value
+        guard !Task.isCancelled else { return }
+        availableSSHAliases = aliases + selectedSSHAliases.filter { !aliases.contains($0) }
     }
 
     func setRemoteAlias(_ alias: String, enabled: Bool) {

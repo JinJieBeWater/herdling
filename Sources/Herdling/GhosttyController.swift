@@ -59,7 +59,7 @@ actor GhosttyController {
         }
     }
 
-    private struct TerminalSnapshot {
+    struct TerminalSnapshot: Sendable {
         let id: String
         let name: String
     }
@@ -188,30 +188,57 @@ actor GhosttyController {
         session: String,
         excluding existingTTYs: Set<String>
     ) async throws -> ClientMapping {
-        for _ in 0..<40 {
-            if let application = await runningApplications().first,
-               let clients = try? await Task.detached(operation: {
-                   try GhosttyProcessCatalog.load(ghosttyPID: Int(application.processIdentifier))
-               }).value
-            {
-                let targetTTYs = Self.newClientTTYs(
+        let deadline = ContinuousClock.now + .seconds(10)
+        return try await Self.confirmCreatedClient(
+            mapping,
+            deadline: deadline,
+            newTTYs: {
+                guard let application = await self.runningApplications().first,
+                      let clients = try? await Task.detached(operation: {
+                          try GhosttyProcessCatalog.load(
+                              ghosttyPID: Int(application.processIdentifier),
+                              timeout: Self.remainingTime(until: deadline, maximum: 1)
+                          )
+                      }).value
+                else { return [] }
+                return Self.newClientTTYs(
                     clients: clients,
                     excluding: existingTTYs,
                     sourceID: source.id,
                     session: session
                 )
-                if !targetTTYs.isEmpty {
-                    let terminals = try await terminalSnapshots()
-                    for tty in targetTTYs where
-                        try await probeTerminal(tty: tty, terminals: terminals) == mapping.terminalID
-                    {
-                        return ClientMapping(terminalID: mapping.terminalID, tty: tty)
-                    }
+            },
+            probe: { tty in
+                let terminals = try await self.terminalSnapshots(deadline: deadline)
+                return try await self.probeTerminal(tty: tty, terminals: terminals, deadline: deadline)
+            }
+        )
+    }
+
+    nonisolated static func confirmCreatedClient(
+        _ mapping: ClientMapping,
+        deadline: ContinuousClock.Instant,
+        newTTYs: @Sendable () async throws -> [String],
+        probe: @Sendable (String) async throws -> String?
+    ) async throws -> ClientMapping {
+        while ContinuousClock.now < deadline {
+            for tty in try await newTTYs() {
+                guard ContinuousClock.now < deadline else { throw GhosttyError.clientLaunchFailed }
+                if try await probe(tty) == mapping.terminalID, ContinuousClock.now < deadline {
+                    return ClientMapping(terminalID: mapping.terminalID, tty: tty)
                 }
             }
-            try await Task.sleep(for: .milliseconds(50))
+            let remaining = ContinuousClock.now.duration(to: deadline)
+            guard remaining > .zero else { break }
+            try await Task.sleep(for: min(.milliseconds(50), remaining))
         }
         throw GhosttyError.clientLaunchFailed
+    }
+
+    nonisolated static func remainingTime(until deadline: ContinuousClock.Instant, maximum: TimeInterval) throws -> TimeInterval {
+        let remaining = ContinuousClock.now.duration(to: deadline)
+        guard remaining > .zero else { throw GhosttyError.clientLaunchFailed }
+        return min(maximum, Double(remaining.components.seconds) + Double(remaining.components.attoseconds) / 1e18)
     }
 
     private func createTabOrWindow(initialInput: String) async throws -> ClientMapping {
@@ -335,7 +362,7 @@ actor GhosttyController {
         return nil
     }
 
-    private func terminalSnapshots() async throws -> [TerminalSnapshot] {
+    private func terminalSnapshots(deadline: ContinuousClock.Instant? = nil) async throws -> [TerminalSnapshot] {
         let script = """
         tell application "Ghostty"
           set output to ""
@@ -351,7 +378,7 @@ actor GhosttyController {
           return output
         end tell
         """
-        return try await runAppleScript(script)
+        return try await runAppleScript(script, deadline: deadline)
             .split(separator: "\u{1e}")
             .compactMap { record in
                 let fields = record.split(separator: "\u{1f}", maxSplits: 1, omittingEmptySubsequences: false)
@@ -360,30 +387,49 @@ actor GhosttyController {
             }
     }
 
-    private func probeTerminal(tty: String, terminals: [TerminalSnapshot]) async throws -> String? {
+    private func probeTerminal(
+        tty: String,
+        terminals: [TerminalSnapshot],
+        deadline: ContinuousClock.Instant? = nil
+    ) async throws -> String? {
         guard tty.range(of: #"^ttys[0-9]+$"#, options: .regularExpression) != nil else { return nil }
-        let marker = "herdling-\(UUID().uuidString)"
-        do { try Self.writeTitle(marker, tty: tty) }
-        catch { return nil }
+        return try await Self.probeTerminal(
+            terminals: terminals,
+            deadline: deadline,
+            writeTitle: { try Self.writeTitle($0, tty: tty) },
+            readTerminals: { try await self.terminalSnapshots(deadline: deadline) }
+        )
+    }
 
+    nonisolated static func probeTerminal(
+        terminals: [TerminalSnapshot],
+        deadline: ContinuousClock.Instant? = nil,
+        writeTitle: @Sendable (String) throws -> Void,
+        readTerminals: @Sendable () async throws -> [TerminalSnapshot]
+    ) async throws -> String? {
+        let marker = "herdling-\(UUID().uuidString)"
+        let retryDeadline = min(deadline ?? .now + .seconds(1), .now + .seconds(1))
         var matched: TerminalSnapshot?
-        for _ in 0..<40 {
-            let candidates = try await terminalSnapshots().filter { $0.name == marker }
+        while ContinuousClock.now < retryDeadline {
+            // Client startup output can overwrite an earlier marker.
+            do { try writeTitle(marker) }
+            catch { return nil }
+            let candidates = try await readTerminals().filter { $0.name == marker }
             if candidates.count > 1 { break }
             if let candidate = candidates.first {
                 matched = candidate
                 break
             }
-            try await Task.sleep(for: .milliseconds(25))
+            let remaining = ContinuousClock.now.duration(to: retryDeadline)
+            guard remaining > .zero else { break }
+            try await Task.sleep(for: min(.milliseconds(25), remaining))
         }
 
         if let matched,
            let previous = terminals.first(where: { $0.id == matched.id })?.name,
-           try await terminalSnapshots().first(where: { $0.id == matched.id })?.name == marker
+           try await readTerminals().first(where: { $0.id == matched.id })?.name == marker
         {
-            try? Self.writeTitle(Self.safeTerminalTitle(previous), tty: tty)
-        } else if matched == nil {
-            try? Self.writeTitle("", tty: tty)
+            try? writeTitle(Self.safeTerminalTitle(previous))
         }
         return matched?.id
     }
@@ -410,12 +456,15 @@ actor GhosttyController {
         })
     }
 
-    private func runAppleScript(_ script: String) async throws -> String {
+    private func runAppleScript(_ script: String, deadline: ContinuousClock.Instant? = nil) async throws -> String {
         do {
             let data = try await Task.detached {
-                try CommandRunner.run("/usr/bin/osascript", ["-e", script], timeout: 5)
+                let timeout = try deadline.map { try Self.remainingTime(until: $0, maximum: 5) } ?? 5
+                return try CommandRunner.run("/usr/bin/osascript", ["-e", script], timeout: timeout)
             }.value
             return String(decoding: data, as: UTF8.self)
+        } catch GhosttyError.clientLaunchFailed {
+            throw GhosttyError.clientLaunchFailed
         } catch {
             throw GhosttyError.automationFailed(error.localizedDescription)
         }

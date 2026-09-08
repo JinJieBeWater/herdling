@@ -1126,6 +1126,67 @@ struct CoreBehaviorTests {
 
     @Test
     @MainActor
+    func sshAliasesRefreshIncludesWithoutRemovingEnabledSources() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let config = directory.appendingPathComponent("config")
+        let included = directory.appendingPathComponent("hosts")
+        try "Include hosts\nHost first\n".write(to: config, atomically: true, encoding: .utf8)
+        try "Host added\n".write(to: included, atomically: true, encoding: .utf8)
+        let suite = "herdling-test-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            sourceDescriptors: [.local, .remote("enabled")],
+            defaults: defaults
+        )
+        await store.refreshSSHAliases(at: config)
+        #expect(store.availableSSHAliases == ["added", "first", "enabled"])
+        try "Host replacement\n".write(to: included, atomically: true, encoding: .utf8)
+        await store.refreshSSHAliases(at: config)
+        #expect(store.availableSSHAliases == ["replacement", "first", "enabled"])
+        #expect(store.selectedSSHAliases == ["enabled"])
+        #expect(store.sources.map(\.descriptor) == [.local, .remote("enabled")])
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    @MainActor
+    func openingPanelRefreshesBranchAfterGitSwitchInSameDirectory() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = try CommandRunner.run("/usr/bin/git", ["-C", directory.path, "init", "-b", "main"], timeout: 3)
+        let resolver = GitBranchResolver(cacheDuration: 0)
+        let monitor = ManualSessionMonitor()
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            loadBranches: { source, paths in await resolver.branches(source: source, paths: paths) },
+            localMonitor: monitor,
+            sourceDescriptors: [.local]
+        )
+        let changes = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        store.onChange = { changes.continuation.yield(()) }
+        defer { changes.continuation.finish(); store.stop() }
+        var iterator = changes.stream.makeAsyncIterator()
+        store.start()
+        await monitor.waitUntilStarted()
+        let agent = AgentInfo(paneID: "pane", title: "pane", status: .idle, workspace: "repo", cwd: directory.path, updatedAt: .now)
+        await monitor.emit(.sessions([HerdrClient.LoadedSession(
+            name: "default", groups: [AgentGroup(id: "repo", name: "repo", agents: [agent])], error: nil
+        )]))
+        while store.sources[0].branches[directory.path] != "main" { try #require(await iterator.next() != nil) }
+        store.setPanelOpen(true)
+        store.setPanelOpen(false)
+        _ = try CommandRunner.run("/usr/bin/git", ["-C", directory.path, "switch", "--orphan", "feature"], timeout: 3)
+        store.setPanelOpen(true)
+        while store.sources[0].branches[directory.path] != "feature" { try #require(await iterator.next() != nil) }
+        #expect(store.sources[0].branches == [directory.path: "feature"])
+    }
+
+    @Test
+    @MainActor
     func statusEventDoesNotCancelPendingBranchLoad() async {
         let monitor = ManualSessionMonitor()
         let branchStarted = AsyncGate()
@@ -1277,6 +1338,39 @@ struct CoreBehaviorTests {
         ]
 
         #expect(SessionStore.branchPaths(from: sessions) == ["/repo", "/worktree", "/other"])
+    }
+
+    @Test
+    func gitBranchResolverCoalescesOverlappingPaths() async throws {
+        let recorder = GatedBranchQueries()
+        defer { recorder.releaseFirst.signal(); recorder.started.continuation.finish() }
+        let resolver = GitBranchResolver(query: { _, paths in recorder.query(paths) })
+        var starts = recorder.started.stream.makeAsyncIterator()
+        let first = Task { await resolver.branches(source: .local, paths: ["/repo"]) }
+        #expect(await starts.next() == ["/repo"])
+        let second = Task { await resolver.branches(source: .local, paths: ["/repo", "/other"]) }
+        let secondQuery = await starts.next()
+        recorder.releaseFirst.signal()
+        let firstResult = await first.value
+        let secondResult = await second.value
+        #expect(secondQuery == ["/other"])
+        #expect(firstResult["/repo"] == "first")
+        #expect(secondResult == ["/repo": "first", "/other": "second"])
+        #expect(await resolver.branches(source: .local, paths: ["/repo", "/other"]) == secondResult)
+    }
+
+    @Test
+    func gitBranchResolverKeepsDifferentSourcesIndependent() async {
+        let recorder = GatedBranchQueries()
+        defer { recorder.releaseFirst.signal(); recorder.started.continuation.finish() }
+        let resolver = GitBranchResolver(query: { _, paths in recorder.query(paths) })
+        var starts = recorder.started.stream.makeAsyncIterator()
+        let first = Task { await resolver.branches(source: .local, paths: ["/repo"]) }
+        _ = await starts.next()
+        let remote = await resolver.branches(source: .remote("remote"), paths: ["/repo"])
+        recorder.releaseFirst.signal()
+        #expect(await first.value == ["/repo": "first"])
+        #expect(remote == ["/repo": "second"])
     }
 
     @Test
@@ -1439,6 +1533,55 @@ struct CoreBehaviorTests {
 
     @Test(.timeLimit(.minutes(1)))
     @MainActor
+    func disabledSourceDoesNotRunQueuedFocus() async throws {
+        let started = AsyncGate()
+        let release = AsyncGate()
+        let changes = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let suite = "herdling-test-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            changes.continuation.finish()
+            Task { await release.release() }
+        }
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            loadSource: { _ in [loadedSession(paneID: "pane")] },
+            loadBranches: { _, _ in [:] },
+            focusExistingClient: { source, _ in
+                if source == .local {
+                    await started.release()
+                    await release.wait()
+                    return true
+                }
+                Issue.record("Disabled source reached focus")
+                throw GhosttyController.GhosttyError.clientLaunchFailed
+            },
+            sourceDescriptors: [.local, .remote("disabled")],
+            defaults: defaults
+        )
+        await store.refresh()
+        let local = try #require(store.sources.first?.sessions.first)
+        let remote = try #require(store.sources.last?.sessions.first)
+        let agent = try #require(local.agents.first)
+        var activated = false
+        store.onClientActivated = { activated = true }
+        store.onChange = { changes.continuation.yield(()) }
+        store.focus(agent, in: local)
+        await started.wait()
+        store.focus(agent, in: remote, source: .remote("disabled"))
+        store.setRemoteAlias("disabled", enabled: false)
+        await release.release()
+        var events = changes.stream.makeAsyncIterator()
+        while store.pendingFocusAgentID != nil { try #require(await events.next() != nil) }
+        #expect(store.selectedSSHAliases.isEmpty)
+        #expect(store.focusError == nil)
+        #expect(!activated)
+        await store.stopAndWait()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    @MainActor
     func failedFocusClearsPendingState() async throws {
         let releaseFailure = AsyncGate()
         let store = SessionStore(
@@ -1577,6 +1720,109 @@ struct CoreBehaviorTests {
             sourceID: "ssh:kvm",
             session: "default"
         ) == nil)
+    }
+
+    @Test
+    func ghosttyConfirmationBudgetCapsCommandTimeouts() throws {
+        #expect(try GhosttyController.remainingTime(until: .now + .seconds(60), maximum: 1) == 1)
+        let shortened = try GhosttyController.remainingTime(until: .now + .seconds(1), maximum: 5)
+        #expect(shortened > 0 && shortened <= 1)
+        do {
+            _ = try GhosttyController.remainingTime(until: .now - .seconds(1), maximum: 5)
+            Issue.record("Expired budget allowed another command")
+        } catch GhosttyController.GhosttyError.clientLaunchFailed {
+        }
+    }
+
+    @Test
+    func ghosttyConfirmationKeepsExactTerminalIdentity() async throws {
+        let mapping = try await GhosttyController.confirmCreatedClient(
+            .init(terminalID: "created"),
+            deadline: .now + .seconds(1),
+            newTTYs: { ["wrong", "right"] },
+            probe: { $0 == "right" ? "created" : "another-terminal" }
+        )
+        #expect(mapping == .init(terminalID: "created", tty: "right"))
+    }
+
+    @Test(arguments: [false, true])
+    func ghosttyConfirmationRejectsCompletionAfterBudget(slowProbe: Bool) async throws {
+        do {
+            _ = try await GhosttyController.confirmCreatedClient(
+                .init(terminalID: "created"),
+                deadline: .now + .milliseconds(20),
+                newTTYs: {
+                    if !slowProbe { try await Task.sleep(for: .milliseconds(50)) }
+                    return ["new"]
+                },
+                probe: { _ in
+                    if slowProbe { try await Task.sleep(for: .milliseconds(50)) }
+                    else { Issue.record("Probe started after discovery exhausted the budget") }
+                    return "created"
+                }
+            )
+            Issue.record("Confirmation accepted a result after its deadline")
+        } catch GhosttyController.GhosttyError.clientLaunchFailed {
+        }
+    }
+
+    @Test
+    func ghosttyProbeRecoversWhenStartupOverwritesMarker() async throws {
+        let probe = TerminalProbeFixture(overwritesFirstRead: true)
+        let terminal = try await GhosttyController.probeTerminal(
+            terminals: [.init(id: "target", name: "original")],
+            writeTitle: { probe.write($0) },
+            readTerminals: { probe.read() }
+        )
+        #expect(terminal == "target")
+        #expect(probe.readCount == 3)
+        #expect(probe.title == "original")
+    }
+
+    @Test
+    func expiredGhosttyProbeDoesNotTouchTitle() async throws {
+        let probe = TerminalProbeFixture()
+        let terminal = try await GhosttyController.probeTerminal(
+            terminals: [.init(id: "target", name: "original")],
+            deadline: .now - .seconds(1),
+            writeTitle: { probe.write($0) },
+            readTerminals: { probe.read() }
+        )
+        #expect(terminal == nil)
+        #expect(probe.readCount == 0)
+        #expect(probe.writeCount == 0)
+        #expect(probe.title == "original")
+    }
+
+    @Test
+    func ghosttyProbeDoesNotRetryAfterSlowQueryExhaustsBudget() async throws {
+        let probe = TerminalProbeFixture(overwritesFirstRead: true)
+        let terminal = try await GhosttyController.probeTerminal(
+            terminals: [.init(id: "target", name: "original")],
+            writeTitle: { probe.write($0) },
+            readTerminals: {
+                guard probe.readCount == 0 else {
+                    throw NSError(domain: "Probe retried after its time budget", code: 1)
+                }
+                try await Task.sleep(for: .seconds(1))
+                return probe.read()
+            }
+        )
+        #expect(terminal == nil)
+        #expect(probe.readCount == 1)
+        #expect(probe.title == "startup")
+    }
+
+    @Test
+    func ghosttyProbeRejectsAmbiguousTerminalIdentity() async throws {
+        let probe = TerminalProbeFixture(duplicate: true)
+        let terminal = try await GhosttyController.probeTerminal(
+            terminals: [.init(id: "target", name: "original")],
+            writeTitle: { probe.write($0) },
+            readTerminals: { probe.read() }
+        )
+        #expect(terminal == nil)
+        #expect(probe.readCount == 1)
     }
 
     @Test
@@ -2045,6 +2291,20 @@ private final class FlakySourceLoader: @unchecked Sendable {
     }
 }
 
+private final class GatedBranchQueries: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    let releaseFirst = DispatchSemaphore(value: 0)
+    let started = AsyncStream<[String]>.makeStream()
+
+    func query(_ paths: [String]) -> [String: String] {
+        let first = lock.withLock { count += 1; return count == 1 }
+        started.continuation.yield(paths)
+        if first { #expect(releaseFirst.wait(timeout: .now() + 5) == .success) }
+        return Dictionary(uniqueKeysWithValues: paths.map { ($0, first ? "first" : "second") })
+    }
+}
+
 private final class BranchQueryRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var calls = 0
@@ -2147,6 +2407,35 @@ private final class MonitorFactoryQueue: @unchecked Sendable {
 
     func next() -> any SessionMonitoring {
         lock.withLock { monitors.removeFirst() }
+    }
+}
+
+private final class TerminalProbeFixture: @unchecked Sendable {
+    private let lock = NSLock()
+    private let overwritesFirstRead: Bool
+    private let duplicate: Bool
+    private var currentTitle = "original"
+    private var reads = 0
+    private var writes = 0
+
+    init(overwritesFirstRead: Bool = false, duplicate: Bool = false) {
+        self.overwritesFirstRead = overwritesFirstRead
+        self.duplicate = duplicate
+    }
+
+    var readCount: Int { lock.withLock { reads } }
+    var writeCount: Int { lock.withLock { writes } }
+    var title: String { lock.withLock { currentTitle } }
+
+    func write(_ title: String) { lock.withLock { writes += 1; currentTitle = title } }
+
+    func read() -> [GhosttyController.TerminalSnapshot] {
+        lock.withLock {
+            reads += 1
+            if overwritesFirstRead && reads == 1 { currentTitle = "startup" }
+            let target = GhosttyController.TerminalSnapshot(id: "target", name: currentTitle)
+            return duplicate ? [target, .init(id: "other", name: currentTitle)] : [target]
+        }
     }
 }
 
