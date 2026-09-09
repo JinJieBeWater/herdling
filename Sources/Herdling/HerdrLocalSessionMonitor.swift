@@ -41,27 +41,20 @@ extension SessionMonitoring {
 
 actor HerdrLocalSessionMonitor: SessionMonitoring {
     private let configDirectory: URL
-    private var handler: (@Sendable (SessionMonitorEvent) async -> Void)?
+    private let roster = HerdrSocketRoster()
     private var discoveryTask: Task<Void, Never>?
-    private var publicationTask: Task<Void, Never>?
-    private var connections: [String: HerdrSocketConnection] = [:]
-    private var snapshots: [String: HerdrClient.LoadedSession] = [:]
-    private var snapshotGenerations = SnapshotGenerationLedger()
-    private var endpointOrder: [String] = []
-    private var hasDiscoveredEndpoints = false
-    private var lifecycleGeneration: UInt64 = 0
+    private var lifecycleGeneration: UInt64?
 
     init(configDirectory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/herdr")) {
         self.configDirectory = configDirectory
     }
 
     func start(handler: @escaping @Sendable (SessionMonitorEvent) async -> Void) async {
-        guard self.handler == nil else { return }
-        lifecycleGeneration &+= 1
-        let generation = lifecycleGeneration
-        self.handler = handler
+        guard lifecycleGeneration == nil else { return }
+        let generation = await roster.start(handler: handler)
+        lifecycleGeneration = generation
         await discover(generation: generation)
-        guard self.handler != nil, lifecycleGeneration == generation else { return }
+        guard await roster.isActive(generation) else { return }
         discoveryTask = Task { [weak self] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(15)) }
@@ -71,19 +64,11 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
         }
     }
 
-    func stop() {
-        lifecycleGeneration &+= 1
-        handler = nil
+    func stop() async {
+        lifecycleGeneration = nil
         discoveryTask?.cancel()
         discoveryTask = nil
-        publicationTask?.cancel()
-        publicationTask = nil
-        connections.values.forEach { $0.stop() }
-        connections.removeAll()
-        snapshots.removeAll()
-        snapshotGenerations.removeAll()
-        endpointOrder.removeAll()
-        hasDiscoveredEndpoints = false
+        await roster.stop()
     }
 
     static func endpoints(configDirectory: URL) -> [HerdrSocketEndpoint] {
@@ -136,69 +121,56 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
     }
 
     private func discover(generation: UInt64) async {
-        guard handler != nil, lifecycleGeneration == generation else { return }
+        guard await roster.isActive(generation) else { return }
         let endpoints = Self.endpoints(configDirectory: configDirectory)
-        let nextEndpointOrder = endpoints.map(\.path)
-        let topologyChanged = !hasDiscoveredEndpoints || endpointOrder != nextEndpointOrder
-        hasDiscoveredEndpoints = true
-        endpointOrder = nextEndpointOrder
-        let livePaths = Set(endpointOrder)
-        let removedPaths = connections.keys.filter { !livePaths.contains($0) }
-        for path in removedPaths {
-            removeConnection(at: path)
-        }
-        let existingConnections = endpoints.compactMap { endpoint in
-            connections[endpoint.path].map { (endpoint, $0) }
-        }
-        let refreshResults = await HerdrSocketConnection.refreshAll(existingConnections)
-        guard handler != nil, lifecycleGeneration == generation else { return }
+        let topologyChanged = await roster.reconcileEndpoints(endpoints)
+        let existing = await roster.existingConnections(endpoints)
+        let refreshResults = await HerdrSocketConnection.refreshAll(existing)
+        guard await roster.isActive(generation) else { return }
         for result in refreshResults where !result.succeeded {
-            guard connections[result.path]?.id == result.connectionID else { continue }
-            removeConnection(at: result.path)
+            await roster.removeConnection(at: result.path, connectionID: result.connectionID)
         }
-        var pendingConnections: [(HerdrSocketEndpoint, HerdrSocketConnection)] = []
-        for endpoint in endpoints where connections[endpoint.path] == nil {
-            let connection = HerdrSocketConnection(
-                endpoint: endpoint,
-                onSubscriptionChange: { [weak self] connectionID, endpoint, groups in
-                    Task {
-                        await self?.subscriptionChanged(
-                            groups,
-                            at: endpoint,
-                            connectionID: connectionID
-                        )
-                    }
-                },
-                onSnapshot: { [weak self] connectionID, endpoint, generation, groups in
-                    Task {
-                        await self?.received(
-                            groups,
-                            from: endpoint,
-                            connectionID: connectionID,
-                            generation: generation
-                        )
-                    }
-                },
-                onEnd: { [weak self] connectionID, endpoint in
-                    Task { await self?.ended(endpoint: endpoint, connectionID: connectionID) }
-                }
-            )
-            connections[endpoint.path] = connection
-            pendingConnections.append((endpoint, connection))
+        var pending: [(HerdrSocketEndpoint, HerdrSocketConnection)] = []
+        for endpoint in endpoints {
+            guard await !roster.hasConnection(at: endpoint.path) else { continue }
+            let connection = makeConnection(endpoint)
+            await roster.addConnection(connection, for: endpoint)
+            pending.append((endpoint, connection))
         }
-        let results = await HerdrSocketConnection.startAll(pendingConnections)
-        guard handler != nil, lifecycleGeneration == generation else { return }
+        let results = await HerdrSocketConnection.startAll(pending)
+        guard await roster.isActive(generation) else { return }
         for result in results where !result.succeeded {
-            guard connections[result.path]?.id == result.connectionID else { continue }
-            removeConnection(at: result.path)
+            await roster.removeConnection(at: result.path, connectionID: result.connectionID)
         }
-        if topologyChanged || !pendingConnections.isEmpty { publish() }
+        if topologyChanged || !pending.isEmpty { await roster.publishSessions() }
     }
 
-    private func removeConnection(at path: String) {
-        connections.removeValue(forKey: path)?.stop()
-        snapshots.removeValue(forKey: path)
-        snapshotGenerations.remove(endpoint: path)
+    private func makeConnection(_ endpoint: HerdrSocketEndpoint) -> HerdrSocketConnection {
+        HerdrSocketConnection(
+            endpoint: endpoint,
+            onSubscriptionChange: { [weak self] connectionID, endpoint, groups in
+                Task {
+                    await self?.subscriptionChanged(
+                        groups,
+                        at: endpoint,
+                        connectionID: connectionID
+                    )
+                }
+            },
+            onSnapshot: { [weak self] connectionID, endpoint, generation, groups in
+                Task {
+                    await self?.received(
+                        groups,
+                        from: endpoint,
+                        connectionID: connectionID,
+                        generation: generation
+                    )
+                }
+            },
+            onEnd: { [weak self] connectionID, endpoint in
+                Task { await self?.ended(endpoint: endpoint, connectionID: connectionID) }
+            }
+        )
     }
 
     private func received(
@@ -206,21 +178,19 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
         from endpoint: HerdrSocketEndpoint,
         connectionID: UUID,
         generation: UInt64
-    ) {
-        guard connections[endpoint.path]?.id == connectionID,
-              snapshotGenerations.accept(endpoint: endpoint.path, generation: generation)
-        else { return }
-        snapshots[endpoint.path] = HerdrClient.LoadedSession(name: endpoint.session, groups: groups, error: nil)
-        publish()
+    ) async {
+        await roster.receive(
+            groups,
+            from: endpoint,
+            connectionID: connectionID,
+            snapshotGeneration: generation
+        )
     }
 
-    private func ended(endpoint: HerdrSocketEndpoint, connectionID: UUID) {
-        guard connections[endpoint.path]?.id == connectionID else { return }
-        connections.removeValue(forKey: endpoint.path)
-        snapshots.removeValue(forKey: endpoint.path)
-        snapshotGenerations.remove(endpoint: endpoint.path)
-        publish()
-        let generation = lifecycleGeneration
+    private func ended(endpoint: HerdrSocketEndpoint, connectionID: UUID) async {
+        guard await roster.connectionEnded(at: endpoint, connectionID: connectionID) else { return }
+        await roster.publishSessions()
+        guard let generation = lifecycleGeneration else { return }
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(200))
             await self?.discover(generation: generation)
@@ -231,60 +201,17 @@ actor HerdrLocalSessionMonitor: SessionMonitoring {
         _ groups: [AgentGroup],
         at endpoint: HerdrSocketEndpoint,
         connectionID: UUID
-    ) {
-        guard connections[endpoint.path]?.id == connectionID else { return }
-        snapshots[endpoint.path] = HerdrClient.LoadedSession(
-            name: endpoint.session,
-            groups: groups,
-            error: nil
-        )
-        publish()
-        connections.removeValue(forKey: endpoint.path)?.stop()
-        snapshotGenerations.remove(endpoint: endpoint.path)
-        let generation = lifecycleGeneration
+    ) async {
+        guard await roster.applySubscriptionChange(
+            groups,
+            at: endpoint,
+            connectionID: connectionID
+        ) else { return }
+        guard let generation = lifecycleGeneration else { return }
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(50))
             await self?.discover(generation: generation)
         }
-    }
-
-    private func publish() {
-        guard let handler else { return }
-        let event: SessionMonitorEvent
-        guard !endpointOrder.isEmpty,
-              endpointOrder.allSatisfy({ connections[$0] != nil && snapshots[$0] != nil })
-        else {
-            event = .unavailable()
-            enqueue(event, handler: handler)
-            return
-        }
-        event = .sessions(endpointOrder.compactMap { snapshots[$0] })
-        enqueue(event, handler: handler)
-    }
-
-    private func enqueue(
-        _ event: SessionMonitorEvent,
-        handler: @escaping @Sendable (SessionMonitorEvent) async -> Void
-    ) {
-        let previous = publicationTask
-        let generation = lifecycleGeneration
-        publicationTask = Task { [weak self] in
-            await self?.deliver(event, to: handler, after: previous, generation: generation)
-        }
-    }
-
-    private func deliver(
-        _ event: SessionMonitorEvent,
-        to handler: @escaping @Sendable (SessionMonitorEvent) async -> Void,
-        after previous: Task<Void, Never>?,
-        generation: UInt64
-    ) async {
-        await previous?.value
-        guard !Task.isCancelled,
-              lifecycleGeneration == generation,
-              self.handler != nil
-        else { return }
-        await handler(event)
     }
 }
 

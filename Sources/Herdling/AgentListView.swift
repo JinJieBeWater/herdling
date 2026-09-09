@@ -23,11 +23,84 @@ private struct DisclosureChevron: View {
     }
 }
 
+private struct AccordionHeader<Trailing: View>: View {
+    let icon: String
+    let iconHelp: String?
+    let title: String
+    let isExpanded: Bool
+    let accessibilityLabel: String
+    let accessibilityHint: String
+    let action: () -> Void
+    let trailing: () -> Trailing
+    @State private var isHovered = false
+
+    init(
+        icon: String,
+        iconHelp: String? = nil,
+        title: String,
+        isExpanded: Bool,
+        accessibilityLabel: String,
+        accessibilityHint: String,
+        action: @escaping () -> Void,
+        @ViewBuilder trailing: @escaping () -> Trailing
+    ) {
+        self.icon = icon
+        self.iconHelp = iconHelp
+        self.title = title
+        self.isExpanded = isExpanded
+        self.accessibilityLabel = accessibilityLabel
+        self.accessibilityHint = accessibilityHint
+        self.action = action
+        self.trailing = trailing
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                DisclosureChevron(isExpanded: isExpanded)
+                iconView
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                trailing()
+            }
+            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+            .padding(.horizontal, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint(accessibilityHint)
+        .background {
+            AccordionHeaderBackground(isExpanded: isExpanded, isHovered: isHovered)
+        }
+        .onHover { isHovered = $0 }
+    }
+
+    private var iconView: some View {
+        let image = Image(systemName: icon)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.secondary)
+            .frame(width: 15, height: 16)
+            .drawingGroup()
+            .accessibilityHidden(true)
+        return Group {
+            if let iconHelp {
+                image.help(iconHelp)
+            } else {
+                image
+            }
+        }
+    }
+}
+
 private struct AccordionContentHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+        // max, not last-wins: the content's own default preference is reduced after the
+        // measured background value and would otherwise overwrite it with 0.
+        value = max(value, nextValue())
     }
 }
 
@@ -153,7 +226,8 @@ private struct AgentRoster: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if let error = store.focusError {
-                        ErrorRow(message: error).padding(.bottom, 6)
+                        ErrorRow(message: error, onDismiss: store.dismissFocusError)
+                            .padding(.bottom, 6)
                     }
                     RecentSection(
                         store: store,
@@ -250,7 +324,6 @@ private struct RecentSection: View {
     let items: [RecentAgentItem]
     let isExpanded: Bool
     let onToggle: () -> Void
-    @State private var isHovered = false
 
     private var outlineSources: [SourceInfo] {
         RecentAgentList.outlineSources(from: store.sources, items: items)
@@ -288,31 +361,17 @@ private struct RecentSection: View {
                 }
                 .padding(.bottom, 2)
             } header: {
-                Button(action: onToggle) {
-                    HStack(spacing: 6) {
-                        DisclosureChevron(isExpanded: isExpanded)
-                        Image(systemName: "clock")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 15, height: 16)
-                            .drawingGroup()
-                            .accessibilityHidden(true)
-                        Text("Recent")
-                            .font(.system(size: 13, weight: .semibold))
-                        Spacer(minLength: 8)
-                        GroupActivitySummary(counts: AgentStatusCount.summarize(items.map(\.agent)))
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
-                    .padding(.horizontal, 8)
-                    .contentShape(Rectangle())
+                AccordionHeader(
+                    icon: "clock",
+                    title: "Recent",
+                    isExpanded: isExpanded,
+                    accessibilityLabel: "Recent, \(isExpanded ? "expanded" : "collapsed")",
+                    accessibilityHint: "Expands or collapses recent agents",
+                    action: onToggle
+                ) {
+                    Spacer(minLength: 8)
+                    GroupActivitySummary(counts: AgentStatusCount.summarize(items.map(\.agent)))
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Recent, \(isExpanded ? "expanded" : "collapsed")")
-                .accessibilityHint("Expands or collapses recent agents")
-                .background {
-                    AccordionHeaderBackground(isExpanded: isExpanded, isHovered: isHovered)
-                }
-                .onHover { isHovered = $0 }
                 .padding(.top, 4)
                 .padding(.bottom, 2)
             }
@@ -593,7 +652,6 @@ private struct SourceFocusRow: View {
     let source: SourceInfo
     let isExpanded: Bool
     let onToggle: () -> Void
-    @State private var isHovered = false
 
     private var counts: [AgentStatusCount] {
         AgentStatusCount.summarize(source.sessions.flatMap(\.agents))
@@ -612,52 +670,34 @@ private struct SourceFocusRow: View {
     private var isLoading: Bool { !source.online && source.error == nil }
     private var sourceKind: String { source.descriptor.sshAlias == nil ? "Local source" : "SSH source" }
     var body: some View {
-        Button(action: onToggle) {
-            HStack(spacing: 6) {
-                DisclosureChevron(isExpanded: isExpanded)
-
-                Image(systemName: source.descriptor.sshAlias == nil ? "desktopcomputer" : "network")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 15, height: 16)
-                    .drawingGroup()
-                    .help(sourceKind)
+        AccordionHeader(
+            icon: source.descriptor.sshAlias == nil ? "desktopcomputer" : "network",
+            iconHelp: sourceKind,
+            title: source.descriptor.name,
+            isExpanded: isExpanded,
+            accessibilityLabel: "\(source.descriptor.name), \(sourceKind), \(accessibilitySummary.isEmpty ? summaryText : accessibilitySummary), \(isExpanded ? "expanded" : "collapsed")",
+            accessibilityHint: "Expands or collapses this source",
+            action: onToggle
+        ) {
+            if isLoading {
+                ProgressView()
+                    .controlSize(.mini)
+                    .progressViewStyle(.circular)
+                    .frame(width: 12, height: 12)
                     .accessibilityHidden(true)
-                Text(source.descriptor.name)
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-                if isLoading {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .progressViewStyle(.circular)
-                        .frame(width: 12, height: 12)
-                        .accessibilityHidden(true)
-                    Text(source.retryAt == nil ? "Loading" : "Retrying")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                } else if let retryAt = source.retryAt {
-                    Text("Retry \(retryAt.formatted(date: .omitted, time: .standard))")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 8)
-                if !counts.isEmpty {
-                    GroupActivitySummary(counts: counts)
-                }
+                Text(source.retryAt == nil ? "Loading" : "Retrying")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            } else if let retryAt = source.retryAt {
+                Text("Retry \(retryAt.formatted(date: .omitted, time: .standard))")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 8)
-            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
-            .contentShape(Rectangle())
+            Spacer(minLength: 8)
+            if !counts.isEmpty {
+                GroupActivitySummary(counts: counts)
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(
-            "\(source.descriptor.name), \(sourceKind), \(accessibilitySummary.isEmpty ? summaryText : accessibilitySummary), \(isExpanded ? "expanded" : "collapsed")"
-        )
-        .accessibilityHint("Expands or collapses this source")
-        .background {
-            AccordionHeaderBackground(isExpanded: isExpanded, isHovered: isHovered)
-        }
-        .onHover { isHovered = $0 }
     }
 }
 
@@ -968,196 +1008,18 @@ private struct FocusIndicator: View {
     }
 }
 
-private struct SettingsView: View {
-    let store: SessionStore
-
-    var body: some View {
-        VStack(spacing: 0) {
-            VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    Button { store.setShowingSettings(false) } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 12, weight: .medium))
-                            .frame(width: 28, height: 28)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Back to agents")
-                    .accessibilityLabel("Back to agents")
-                    Spacer()
-                    Text("Settings")
-                        .font(.system(size: 12, weight: .semibold))
-                    Spacer()
-                    Color.clear.frame(width: 28, height: 28)
-                }
-                .padding(.horizontal, 8)
-                .frame(height: 42)
-
-                Divider()
-            }
-            .background {
-                GeometryReader { geometry in
-                    Color.clear.preference(
-                        key: PanelContentHeightKey.self,
-                        value: PanelHeightMeasurement(header: geometry.size.height)
-                    )
-                }
-            }
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    settingsGroup("SSH Sources") {
-                        if store.availableSSHAliases.isEmpty {
-                            Text("No aliases found in ~/.ssh/config").foregroundStyle(.secondary)
-                        }
-                        ForEach(store.availableSSHAliases, id: \.self) { alias in
-                            Toggle(alias, isOn: Binding(
-                                get: { store.selectedSSHAliases.contains(alias) },
-                                set: { store.setRemoteAlias(alias, enabled: $0) }
-                            ))
-                        }
-                    }
-
-                    settingsGroup("Ghostty") {
-                        Picker("Open new clients in", selection: Binding(
-                            get: { store.ghosttyOpenBehavior },
-                            set: { store.setGhosttyOpenBehavior($0) }
-                        )) {
-                            Text("Window").tag(GhosttyOpenBehavior.window)
-                            Text("Tab").tag(GhosttyOpenBehavior.tab)
-                        }
-                        .pickerStyle(.segmented)
-                    }
-
-                    settingsGroup("General") {
-                        Toggle("Launch at Login", isOn: Binding(
-                            get: { store.launchAtLoginEnabled },
-                            set: { store.setLaunchAtLogin($0) }
-                        ))
-                    }
-
-                    settingsGroup("Permissions") {
-                        permissionRow("Ghostty Automation", value: store.automationStatus)
-                    }
-
-                    if let error = store.settingsError { ErrorRow(message: error) }
-                }
-                .padding(16)
-                .frame(maxWidth: 540, alignment: .leading)
-                .frame(maxWidth: .infinity)
-                .background {
-                    GeometryReader { geometry in
-                        Color.clear.preference(
-                            key: PanelContentHeightKey.self,
-                            value: PanelHeightMeasurement(body: geometry.size.height)
-                        )
-                    }
-                }
-            }
-            .scrollBounceBehavior(.basedOnSize)
-            .scrollIndicators(.automatic)
-            .contentMargins(.vertical, 8, for: .scrollIndicators)
-        }
-        .task { await store.refreshPermissionStatus() }
-        .task { await store.refreshSSHAliases() }
-    }
-
-    private func settingsGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title.uppercased())
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func permissionRow(_ name: String, value: String) -> some View {
-        HStack {
-            Text(name)
-            Spacer()
-            Text(value).foregroundStyle(.secondary)
-        }
-    }
-}
-
 struct PanelHeightMeasurement: Equatable {
     var header: CGFloat = 0
     var body: CGFloat = 0
     var total: CGFloat { header + body }
 }
 
-private struct PanelContentHeightKey: PreferenceKey {
+struct PanelContentHeightKey: PreferenceKey {
     static let defaultValue = PanelHeightMeasurement()
 
     static func reduce(value: inout PanelHeightMeasurement, nextValue: () -> PanelHeightMeasurement) {
         let next = nextValue()
         value.header = max(value.header, next.header)
         value.body = max(value.body, next.body)
-    }
-}
-
-
-private struct ErrorRow: View {
-    let message: String
-
-    var body: some View {
-        Label {
-            Text(message).foregroundStyle(.primary)
-        } icon: {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-        }
-            .font(.system(size: 11))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
-    }
-}
-
-extension AgentStatus {
-    var indicatorSymbolName: String {
-        switch self {
-        case .blocked: "xmark.circle.fill"
-        case .working: "circle.lefthalf.filled"
-        case .done: "checkmark.circle.fill"
-        case .idle: "circle"
-        case .unknown: "questionmark.circle"
-        }
-    }
-
-    var rosterLabel: String {
-        switch self {
-        case .blocked: "needs you"
-        case .done: "done"
-        case .working: "working"
-        case .idle: "ready"
-        case .unknown: "unknown"
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .blocked: Color(nsColor: StatusPalette.blocked)
-        case .working: Color(nsColor: StatusPalette.working)
-        case .done, .idle, .unknown: .secondary
-        }
-    }
-}
-
-enum StatusPalette {
-    static let blocked = adaptive(
-        light: (0.62, 0.08, 0.24),
-        dark: (1.00, 0.38, 0.54)
-    )
-    static let working = NSColor.controlAccentColor
-
-    private static func adaptive(
-        light: (CGFloat, CGFloat, CGFloat),
-        dark: (CGFloat, CGFloat, CGFloat)
-    ) -> NSColor {
-        NSColor(name: nil) { appearance in
-            let rgb = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
-            return NSColor(srgbRed: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
-        }
     }
 }

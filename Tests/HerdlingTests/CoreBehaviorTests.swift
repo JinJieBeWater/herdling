@@ -44,24 +44,22 @@ struct CoreBehaviorTests {
     @Test
     @MainActor
     func ghosttyOpenBehaviorPersistsAndDefaultsToTab() {
-        let suite = "HerdlingTests.\(UUID())"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let testDefaults = TestDefaults()
 
         var store = SessionStore(
             client: HerdrClient(executable: nil),
             sourceDescriptors: [.local],
-            defaults: defaults
+            defaults: testDefaults.defaults
         )
         #expect(store.ghosttyOpenBehavior == .tab)
 
         store.setGhosttyOpenBehavior(.window)
-        #expect(defaults.string(forKey: "ghostty-open-behavior") == "window")
+        #expect(testDefaults.defaults.string(forKey: "ghostty-open-behavior") == "window")
 
         store = SessionStore(
             client: HerdrClient(executable: nil),
             sourceDescriptors: [.local],
-            defaults: defaults
+            defaults: testDefaults.defaults
         )
         #expect(store.ghosttyOpenBehavior == .window)
     }
@@ -429,9 +427,7 @@ struct CoreBehaviorTests {
     @Test
     @MainActor
     func readdedRemoteRejectsOldMonitorEvents() async {
-        let suite = "HerdlingTests.\(UUID())"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let testDefaults = TestDefaults()
         let descriptor = SourceDescriptor.remote("kvm")
         let oldMonitor = ManualSessionMonitor()
         let newMonitor = ManualSessionMonitor()
@@ -447,7 +443,7 @@ struct CoreBehaviorTests {
             },
             remoteMonitorFactory: { _ in monitors.next() },
             sourceDescriptors: [descriptor],
-            defaults: defaults
+            defaults: testDefaults.defaults
         )
 
         store.start()
@@ -1134,13 +1130,11 @@ struct CoreBehaviorTests {
         let included = directory.appendingPathComponent("hosts")
         try "Include hosts\nHost first\n".write(to: config, atomically: true, encoding: .utf8)
         try "Host added\n".write(to: included, atomically: true, encoding: .utf8)
-        let suite = "herdling-test-\(UUID())"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let testDefaults = TestDefaults()
         let store = SessionStore(
             client: HerdrClient(executable: nil),
             sourceDescriptors: [.local, .remote("enabled")],
-            defaults: defaults
+            defaults: testDefaults.defaults
         )
         await store.refreshSSHAliases(at: config)
         #expect(store.availableSSHAliases == ["added", "first", "enabled"])
@@ -1537,10 +1531,8 @@ struct CoreBehaviorTests {
         let started = AsyncGate()
         let release = AsyncGate()
         let changes = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        let suite = "herdling-test-\(UUID())"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let testDefaults = TestDefaults()
         defer {
-            defaults.removePersistentDomain(forName: suite)
             changes.continuation.finish()
             Task { await release.release() }
         }
@@ -1558,7 +1550,7 @@ struct CoreBehaviorTests {
                 throw GhosttyController.GhosttyError.clientLaunchFailed
             },
             sourceDescriptors: [.local, .remote("disabled")],
-            defaults: defaults
+            defaults: testDefaults.defaults
         )
         await store.refresh()
         let local = try #require(store.sources.first?.sessions.first)
@@ -1667,6 +1659,8 @@ struct CoreBehaviorTests {
         #expect(completed != nil)
         #expect(panelVisible)
         #expect(store.focusError != nil)
+        store.dismissFocusError()
+        #expect(store.focusError == nil)
         #expect(store.pendingFocusWorkspaceID == nil)
     }
 
@@ -2507,4 +2501,22 @@ private final class LockedSnapshotSequence: @unchecked Sendable {
 private func socketSnapshotReply(_ snapshot: String) -> String {
     "snapshot_id=${request#*\\\"id\\\":\\\"}; snapshot_id=${snapshot_id%%\\\"*}; "
         + "printf '%s\\n' '\(snapshot)' | sed \"s/\\\"id\\\":\\\"snapshot\\\"/\\\"id\\\":\\\"$snapshot_id\\\"/\""
+}
+
+/// Temporary `UserDefaults` suite that clears itself when the test scope ends.
+private final class TestDefaults {
+    let defaults: UserDefaults
+    private let suite: String
+
+    init() {
+        suite = "HerdlingTests.\(UUID())"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            preconditionFailure("Could not create a temporary UserDefaults suite.")
+        }
+        self.defaults = defaults
+    }
+
+    deinit {
+        defaults.removePersistentDomain(forName: suite)
+    }
 }

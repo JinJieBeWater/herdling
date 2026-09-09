@@ -1,9 +1,11 @@
 import Foundation
+import os
 
 actor GitBranchResolver {
     typealias Query = @Sendable (SourceDescriptor, [String]) -> [String: String]?
 
     static let shared = GitBranchResolver()
+    private static let logger = Logger(subsystem: "dev.herdr.Herdling", category: "branches")
 
     private struct Key: Hashable {
         let sourceID: String
@@ -93,6 +95,11 @@ actor GitBranchResolver {
             }
             return parse(data)
         } catch {
+            // Branch labels are cosmetic, so a failed query still means "no branch shown",
+            // but the reason has to be recoverable from the log instead of vanishing.
+            Self.logger.debug(
+                "Branch query failed for \(source.id, privacy: .public) on \(paths.count) path(s): \(error.localizedDescription, privacy: .public)"
+            )
             return nil
         }
     }

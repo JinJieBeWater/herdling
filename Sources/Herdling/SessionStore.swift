@@ -783,6 +783,10 @@ final class SessionStore {
         focusRunner.submit(.session(session, source))
     }
 
+    func dismissFocusError() {
+        focusError = nil
+    }
+
     private func performFocus(_ request: FocusRequest) async {
         focusError = nil
         defer {
@@ -875,10 +879,21 @@ final class SessionStore {
         let old = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
         let descriptors = [SourceDescriptor.local] + selectedSSHAliases.map(SourceDescriptor.remote)
         let retainedIDs = Set(descriptors.map(\.id))
+        pruneSourceRuntime(retainedIDs: retainedIDs)
+        sources = descriptors.map { old[$0.id] ?? SourceInfo(descriptor: $0, sessions: [], online: false, error: nil) }
+        for descriptor in descriptors where descriptor.sshAlias != nil {
+            startRemoteMonitor(for: descriptor)
+        }
+        scheduleNextPoll(reset: true)
+        onChange?()
+        Task { await refresh() }
+    }
+
+    private func pruneSourceRuntime(retainedIDs: Set<String>) {
         sourceFailureCounts = sourceFailureCounts.filter { retainedIDs.contains($0.key) }
+        branchLoadGenerations = branchLoadGenerations.filter { retainedIDs.contains($0.key) }
         pollFallbackSourceIDs.formIntersection(retainedIDs)
-        let removedMonitorIDs = Set(remoteMonitors.keys).subtracting(retainedIDs)
-        for id in removedMonitorIDs {
+        for id in Set(remoteMonitors.keys).subtracting(retainedIDs) {
             let monitor = remoteMonitors.removeValue(forKey: id)
             let start = monitorStartTasks.removeValue(forKey: id)
             start?.cancel()
@@ -891,13 +906,6 @@ final class SessionStore {
                 }
             }
         }
-        sources = descriptors.map { old[$0.id] ?? SourceInfo(descriptor: $0, sessions: [], online: false, error: nil) }
-        for descriptor in descriptors where descriptor.sshAlias != nil {
-            startRemoteMonitor(for: descriptor)
-        }
-        scheduleNextPoll(reset: true)
-        onChange?()
-        Task { await refresh() }
     }
 
     func setGhosttyOpenBehavior(_ behavior: GhosttyOpenBehavior) {

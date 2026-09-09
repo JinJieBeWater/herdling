@@ -144,16 +144,3 @@ private struct MenuBarSummaryStrip: View {
         .fixedSize()
     }
 }
-
-private extension AgentStatus {
-    func menuBarLabel(count: Int) -> String {
-        let agent = count == 1 ? "agent" : "agents"
-        return switch self {
-        case .blocked: "blocked \(agent)"
-        case .working: "working \(agent)"
-        case .done: "completed \(agent)"
-        case .idle: "idle \(agent)"
-        case .unknown: "unknown \(agent)"
-        }
-    }
-}
