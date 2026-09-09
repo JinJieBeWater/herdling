@@ -23,10 +23,19 @@ private struct DisclosureChevron: View {
     }
 }
 
+private struct AccordionContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 private struct AccordionBody<Content: View>: View {
     let isExpanded: Bool
     let content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+    @State private var contentHeight: CGFloat = 0
 
     init(isExpanded: Bool, @ViewBuilder content: @escaping () -> Content) {
         self.isExpanded = isExpanded
@@ -34,24 +43,49 @@ private struct AccordionBody<Content: View>: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if isExpanded {
-                content()
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .transition(.opacity.combined(with: .offset(y: -4)))
+        content()
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(
+                        key: AccordionContentHeightKey.self,
+                        value: geometry.size.height
+                    )
+                }
             }
+            .onPreferenceChange(AccordionContentHeightKey.self) { contentHeight = $0 }
+            .frame(height: isExpanded ? contentHeight : 0, alignment: .top)
+            .clipped()
+            .allowsHitTesting(isExpanded)
+            .accessibilityHidden(!isExpanded)
+            .animation(
+                AccordionMotion.animation(reduceMotion: accessibilityReduceMotion),
+                value: isExpanded
+            )
+    }
+}
+
+private struct PanelHeightDriver: GeometryEffect {
+    var height: CGFloat
+
+    var animatableData: CGFloat {
+        get { height }
+        set {
+            height = newValue
+            PanelHeightBridge.push(newValue)
         }
-        .animation(
-            AccordionMotion.animation(reduceMotion: accessibilityReduceMotion),
-            value: isExpanded
-        )
-        .clipped()
+    }
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        PanelHeightBridge.push(height)
+        return ProjectionTransform()
     }
 }
 
 struct AgentListView: View {
     let store: SessionStore
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @State private var panelHeight: CGFloat = 0
 
     init(store: SessionStore) {
@@ -67,13 +101,24 @@ struct AgentListView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background {
+            // Fixed-size backdrop so the material never re-samples while the panel resizes.
+            Rectangle()
+                .fill(.regularMaterial)
+                .frame(width: 640, height: 1200, alignment: .topLeading)
+        }
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .modifier(PanelHeightDriver(height: panelHeight))
         .onPreferenceChange(PanelContentHeightKey.self) { measurement in
             let height = measurement.total
             guard height > 0, abs(height - panelHeight) >= 0.5 else { return }
-            panelHeight = height
-            PanelHeightBridge.push(height)
+            if panelHeight == 0 || accessibilityReduceMotion {
+                panelHeight = height
+            } else {
+                withAnimation(AccordionMotion.animation(reduceMotion: false)) {
+                    panelHeight = height
+                }
+            }
         }
     }
 }
@@ -85,10 +130,12 @@ private struct AgentRoster: View {
     }
 
     let store: SessionStore
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @AppStorage("expanded.source") private var savedExpandedSourceID = ""
     @AppStorage("expanded.recent") private var savedRecentExpanded = true
     @State private var expandedSection: ExpandedSection?
     @State private var restoredExpansion = false
+    @State private var now = Date()
 
     private var sourceIDs: [String] { store.sources.map(\.id) }
     private var effectiveExpandedSourceID: String? {
@@ -104,18 +151,16 @@ private struct AgentRoster: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                VStack(alignment: .leading, spacing: 0) {
                     if let error = store.focusError {
                         ErrorRow(message: error).padding(.bottom, 6)
                     }
-                    TimelineView(.periodic(from: .now, by: 60)) { timeline in
-                        RecentSection(
-                            store: store,
-                            items: store.recentAgents(at: timeline.date),
-                            isExpanded: isRecentExpanded,
-                            onToggle: toggleRecent
-                        )
-                    }
+                    RecentSection(
+                        store: store,
+                        items: store.recentAgents(at: now),
+                        isExpanded: isRecentExpanded,
+                        onToggle: toggleRecent
+                    )
                     ForEach(store.sources) { source in
                         SourceOutline(
                             store: store,
@@ -140,6 +185,12 @@ private struct AgentRoster: View {
             .scrollBounceBehavior(.basedOnSize)
             .scrollIndicators(.automatic)
             .contentMargins(.vertical, 8, for: .scrollIndicators)
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                now = .now
+            }
         }
         .onChange(of: sourceIDs, initial: true) { _, ids in
             if !restoredExpansion {
@@ -166,13 +217,17 @@ private struct AgentRoster: View {
     private func toggleRecent() {
         let target: ExpandedSection? = isRecentExpanded ? nil : .recent
         persist(target)
-        expandedSection = target
+        withAnimation(AccordionMotion.animation(reduceMotion: accessibilityReduceMotion)) {
+            expandedSection = target
+        }
     }
 
     private func toggleSource(_ sourceID: String) {
         let target: ExpandedSection? = sourceID == effectiveExpandedSourceID ? nil : .source(sourceID)
         persist(target)
-        expandedSection = target
+        withAnimation(AccordionMotion.animation(reduceMotion: accessibilityReduceMotion)) {
+            expandedSection = target
+        }
     }
 
     private func persist(_ section: ExpandedSection?) {
@@ -516,14 +571,8 @@ private struct AccordionHeaderBackground: View {
     let isHovered: Bool
 
     var body: some View {
-        ZStack {
-            if isExpanded {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(.ultraThinMaterial)
-            }
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(Color.primary.opacity(isHovered ? 0.07 : isExpanded ? 0.045 : 0))
-        }
+        RoundedRectangle(cornerRadius: 11, style: .continuous)
+            .fill(Color.primary.opacity(isHovered ? 0.07 : isExpanded ? 0.025 : 0))
     }
 }
 
@@ -857,6 +906,7 @@ private struct WorktreeSection: View {
                 .padding(.leading, 20)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(5)
         .background(
             Color.primary.opacity(0.018),
