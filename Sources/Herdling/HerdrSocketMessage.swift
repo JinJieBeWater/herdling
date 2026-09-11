@@ -1,9 +1,12 @@
 import Foundation
+import OSLog
 
 enum HerdrSocketMessage {
     case event(HerdrSocketEvent)
     case subscriptionStarted
     case other
+
+    private static let logger = Logger(subsystem: "dev.herdr.Herdling", category: "socket")
 
     static func decode(_ data: Data) -> Self {
         let decoder = JSONDecoder()
@@ -15,6 +18,11 @@ enum HerdrSocketMessage {
            acknowledgement.result.type == "subscription_started"
         {
             return .subscriptionStarted
+        }
+        // A line that looks like JSON but matches neither shape means the protocol moved on; the
+        // caller drops it, so leave the size behind instead of losing the evidence entirely.
+        if data.count > 1, data.first == UInt8(ascii: "{") {
+            logger.debug("Unrecognized Herdr socket message of \(data.count) bytes")
         }
         return .other
     }

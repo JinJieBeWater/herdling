@@ -341,34 +341,7 @@ final class HerdrSocketConnection: @unchecked Sendable {
             subscribedPaneIDs = paneIDs
         }
 
-        let process = Process()
-        let inputPipe = Pipe()
-        let outputPipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: eventExecutable)
-        process.arguments = eventArguments
-        process.standardInput = inputPipe
-        process.standardOutput = outputPipe
-        process.standardError = FileHandle.nullDevice
-        process.terminationHandler = { [weak self] _ in self?.finish() }
-        outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            guard let self else { return }
-            let data = handle.availableData
-            if data.isEmpty { self.finish(); return }
-            self.queue.async { self.consume(data) }
-        }
-        let canStart = lock.withLock { () -> Bool in
-            guard !stopped else { return false }
-            self.process = process
-            input = inputPipe.fileHandleForWriting
-            output = outputPipe.fileHandleForReading
-            return true
-        }
-        guard canStart else { throw CancellationError() }
-        try process.run()
-        guard !lock.withLock({ stopped }) else {
-            process.terminate()
-            throw CancellationError()
-        }
+        try launchTransport()
 
         try send(HerdrLocalSessionMonitor.subscriptionRequest(paneIDs: paneIDs))
         guard subscriptionStarted.wait(timeout: .now() + 7) == .success else {
@@ -402,6 +375,39 @@ final class HerdrSocketConnection: @unchecked Sendable {
         }
         guard bootstrapSucceeded else {
             throw CommandRunner.Error.failed("Herdr subscription changed during startup.")
+        }
+    }
+
+    /// Spawns the socket transport and registers its handles under the lock. Throws (after
+    /// terminating the process) when the connection was stopped midway.
+    private func launchTransport() throws {
+        let process = Process()
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: eventExecutable)
+        process.arguments = eventArguments
+        process.standardInput = inputPipe
+        process.standardOutput = outputPipe
+        process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { [weak self] _ in self?.finish() }
+        outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            guard let self else { return }
+            let data = handle.availableData
+            if data.isEmpty { self.finish(); return }
+            self.queue.async { self.consume(data) }
+        }
+        let canStart = lock.withLock { () -> Bool in
+            guard !stopped else { return false }
+            self.process = process
+            input = inputPipe.fileHandleForWriting
+            output = outputPipe.fileHandleForReading
+            return true
+        }
+        guard canStart else { throw CancellationError() }
+        try process.run()
+        guard !lock.withLock({ stopped }) else {
+            process.terminate()
+            throw CancellationError()
         }
     }
 

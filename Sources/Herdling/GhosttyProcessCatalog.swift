@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 struct GhosttyClientProcess: Equatable, Sendable {
     let tty: String
@@ -7,6 +8,8 @@ struct GhosttyClientProcess: Equatable, Sendable {
 }
 
 enum GhosttyProcessCatalog {
+    private static let logger = Logger(subsystem: "dev.herdr.Herdling", category: "ghostty")
+
     private struct Process {
         let pid: Int
         let parentPID: Int
@@ -83,6 +86,9 @@ enum GhosttyProcessCatalog {
                 if arguments[index] == "--session" { session = arguments[index + 1] }
                 index += 2
             default:
+                // Failing closed keeps non-client invocations (`herdr server`, `machine add`, ...) out
+                // of the roster, but a flag added by a Herdr update would stop window reuse silently.
+                logger.debug("Skipped herdr process with unrecognized argument \(arguments[index], privacy: .public)")
                 return nil
             }
         }

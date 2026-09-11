@@ -2,6 +2,11 @@ import Foundation
 import Observation
 import ServiceManagement
 
+private enum DefaultsKey {
+    static let selectedSSHAliases = "selected-ssh-aliases"
+    static let ghosttyOpenBehavior = "ghostty-open-behavior"
+}
+
 enum AgentStatus: String, Sendable {
     case blocked
     case done
@@ -179,6 +184,78 @@ enum RecentAgentList {
         var sessions: [String: SessionSelection] = [:]
     }
 
+    /// Ranking bookkeeping for the outline: sources and sessions keep the order in which their first
+    /// item appeared, groups and panes keep the item order inside them.
+    private struct OutlineOrder {
+        private var sourceOrder: [String] = []
+        private var selections: [String: SourceSelection] = [:]
+
+        var sourceIDs: [String] { sourceOrder }
+
+        mutating func add(_ item: RecentAgentItem, rank: Int) {
+            let sourceID = item.id.sourceID
+            let sessionName = item.id.sessionName
+            if selections[sourceID] == nil {
+                sourceOrder.append(sourceID)
+                selections[sourceID] = SourceSelection()
+            }
+
+            var sourceSelection = selections[sourceID]!
+            if sourceSelection.sessions[sessionName] == nil {
+                sourceSelection.sessionOrder.append(sessionName)
+                sourceSelection.sessions[sessionName] = SessionSelection()
+            }
+
+            var sessionSelection = sourceSelection.sessions[sessionName]!
+            let components = item.agent.workspace.split(separator: "/")
+            for end in components.indices {
+                let name = components[...end].joined(separator: "/")
+                sessionSelection.rankByGroupName[name] = min(
+                    sessionSelection.rankByGroupName[name] ?? rank,
+                    rank
+                )
+            }
+            if sessionSelection.rankByPaneID[item.id.paneID] == nil {
+                sessionSelection.rankByPaneID[item.id.paneID] = rank
+            }
+            sourceSelection.sessions[sessionName] = sessionSelection
+            selections[sourceID] = sourceSelection
+        }
+
+        /// Returns nil when the source contributed no ranked item, so the caller skips it.
+        func sessions(for source: SourceInfo) -> [SessionInfo]? {
+            guard let selection = selections[source.id] else { return nil }
+            let sessionByName = Dictionary(uniqueKeysWithValues: source.sessions.map { ($0.name, $0) })
+
+            return selection.sessionOrder.compactMap { sessionName -> SessionInfo? in
+                guard let session = sessionByName[sessionName],
+                      let sessionSelection = selection.sessions[sessionName]
+                else { return nil }
+
+                let groups = session.groups.enumerated().compactMap { index, group -> (Int, Int, AgentGroup)? in
+                    let agents = group.agents
+                        .filter { sessionSelection.rankByPaneID[$0.paneID] != nil }
+                        .sorted {
+                            sessionSelection.rankByPaneID[$0.paneID, default: .max]
+                                < sessionSelection.rankByPaneID[$1.paneID, default: .max]
+                        }
+                    guard let rank = sessionSelection.rankByGroupName[group.name] else { return nil }
+                    return (rank, index, AgentGroup(id: group.id, name: group.name, agents: agents))
+                }.sorted {
+                    $0.0 == $1.0 ? $0.1 < $1.1 : $0.0 < $1.0
+                }.map(\.2)
+
+                return SessionInfo(
+                    name: session.name,
+                    groups: groups,
+                    online: session.online,
+                    updatedAt: session.updatedAt,
+                    error: session.error
+                )
+            }
+        }
+    }
+
     static func items(from sources: [SourceInfo], at now: Date) -> [RecentAgentItem] {
         var order = 0
         var ranked: [(priority: Int, order: Int, item: RecentAgentItem)] = []
@@ -216,69 +293,15 @@ enum RecentAgentList {
 
     static func outlineSources(from sources: [SourceInfo], items: [RecentAgentItem]) -> [SourceInfo] {
         let sourceByID = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
-        var sourceOrder: [String] = []
-        var selections: [String: SourceSelection] = [:]
-
+        var order = OutlineOrder()
         for (rank, item) in items.enumerated() {
-            let sourceID = item.id.sourceID
-            let sessionName = item.id.sessionName
-            if selections[sourceID] == nil {
-                sourceOrder.append(sourceID)
-                selections[sourceID] = SourceSelection()
-            }
-
-            var sourceSelection = selections[sourceID]!
-            if sourceSelection.sessions[sessionName] == nil {
-                sourceSelection.sessionOrder.append(sessionName)
-                sourceSelection.sessions[sessionName] = SessionSelection()
-            }
-
-            var sessionSelection = sourceSelection.sessions[sessionName]!
-            let components = item.agent.workspace.split(separator: "/")
-            for end in components.indices {
-                let name = components[...end].joined(separator: "/")
-                sessionSelection.rankByGroupName[name] = min(
-                    sessionSelection.rankByGroupName[name] ?? rank,
-                    rank
-                )
-            }
-            if sessionSelection.rankByPaneID[item.id.paneID] == nil {
-                sessionSelection.rankByPaneID[item.id.paneID] = rank
-            }
-            sourceSelection.sessions[sessionName] = sessionSelection
-            selections[sourceID] = sourceSelection
+            order.add(item, rank: rank)
         }
 
-        return sourceOrder.compactMap { sourceID in
-            guard let source = sourceByID[sourceID], let selection = selections[sourceID] else { return nil }
-            let sessionByName = Dictionary(uniqueKeysWithValues: source.sessions.map { ($0.name, $0) })
-
-            let sessions = selection.sessionOrder.compactMap { sessionName -> SessionInfo? in
-                guard let session = sessionByName[sessionName],
-                      let sessionSelection = selection.sessions[sessionName]
-                else { return nil }
-
-                let groups = session.groups.enumerated().compactMap { index, group -> (Int, Int, AgentGroup)? in
-                    let agents = group.agents
-                        .filter { sessionSelection.rankByPaneID[$0.paneID] != nil }
-                        .sorted {
-                            sessionSelection.rankByPaneID[$0.paneID, default: .max]
-                                < sessionSelection.rankByPaneID[$1.paneID, default: .max]
-                        }
-                    guard let rank = sessionSelection.rankByGroupName[group.name] else { return nil }
-                    return (rank, index, AgentGroup(id: group.id, name: group.name, agents: agents))
-                }.sorted {
-                    $0.0 == $1.0 ? $0.1 < $1.1 : $0.0 < $1.0
-                }.map(\.2)
-
-                return SessionInfo(
-                    name: session.name,
-                    groups: groups,
-                    online: session.online,
-                    updatedAt: session.updatedAt,
-                    error: session.error
-                )
-            }
+        return order.sourceIDs.compactMap { sourceID -> SourceInfo? in
+            guard let source = sourceByID[sourceID],
+                  let sessions = order.sessions(for: source)
+            else { return nil }
 
             return SourceInfo(
                 descriptor: source.descriptor,
@@ -368,8 +391,25 @@ final class SessionStore {
     private(set) var availableSSHAliases: [String]
     private(set) var selectedSSHAliases: [String]
     private(set) var focusError: String?
-    private(set) var pendingFocusAgentID: RecentAgentItem.ID?
-    private(set) var pendingFocusWorkspaceID: WorkspaceFocusID?
+    private var pendingFocus: FocusRequest?
+
+    var pendingFocusAgentID: RecentAgentItem.ID? {
+        guard case let .agent(agent, session, source) = pendingFocus else { return nil }
+        return RecentAgentItem.ID(
+            sourceID: source.id,
+            sessionName: session.name,
+            paneID: agent.paneID
+        )
+    }
+
+    var pendingFocusWorkspaceID: WorkspaceFocusID? {
+        guard case let .workspace(workspaceID, session, source) = pendingFocus else { return nil }
+        return WorkspaceFocusID(
+            sourceID: source.id,
+            sessionName: session.name,
+            workspaceID: workspaceID
+        )
+    }
     private(set) var settingsError: String?
     private(set) var automationStatus = "Not checked"
     private(set) var ghosttyOpenBehavior: GhosttyOpenBehavior
@@ -403,7 +443,7 @@ final class SessionStore {
         sourceDescriptors: [SourceDescriptor]? = nil,
         defaults: UserDefaults = .standard
     ) {
-        let persisted = defaults.stringArray(forKey: "selected-ssh-aliases") ?? []
+        let persisted = defaults.stringArray(forKey: DefaultsKey.selectedSSHAliases) ?? []
         let aliases = sourceDescriptors?.compactMap(\.sshAlias) ?? SSHConfig.aliases()
         let selected = sourceDescriptors?.compactMap(\.sshAlias) ?? aliases.filter(persisted.contains)
         let ghostty = GhosttyController()
@@ -423,10 +463,10 @@ final class SessionStore {
         availableSSHAliases = aliases
         selectedSSHAliases = selected
         ghosttyOpenBehavior = GhosttyOpenBehavior(
-            rawValue: defaults.string(forKey: "ghostty-open-behavior") ?? ""
+            rawValue: defaults.string(forKey: DefaultsKey.ghosttyOpenBehavior) ?? ""
         ) ?? .tab
         if sourceDescriptors == nil, selected != persisted {
-            defaults.set(selected, forKey: "selected-ssh-aliases")
+            defaults.set(selected, forKey: DefaultsKey.selectedSSHAliases)
         }
         let descriptors = sourceDescriptors ?? ([SourceDescriptor.local] + selected.map(SourceDescriptor.remote))
         sources = descriptors.map { SourceInfo(descriptor: $0, sessions: [], online: false, error: nil) }
@@ -482,6 +522,9 @@ final class SessionStore {
         starts: [Task<Void, Never>]
     )) async {
         let monitors = [plan.local].compactMap { $0 } + plan.remotes
+        // Stop once up front, then once more after the starts settle: a monitor whose start() was
+        // already in flight re-arms itself when it finishes, so the trailing stop is the one that
+        // guarantees it stays down. StopCount >= 2 is asserted by the race test.
         let stops = monitors.map { monitor in Task { await monitor.stop() } }
         for start in plan.starts { await start.value }
         for stop in stops { await stop.value }
@@ -494,7 +537,7 @@ final class SessionStore {
         guard pollingStarted else { return }
         scheduleNextPoll(reset: true)
         if open {
-            for source in sources where source.online && !pollFallbackSourceIDs.contains(source.id) {
+            for source in sources where source.online && monitorOwnsSource(source.id) {
                 guard let generation = monitorGenerations[source.id] else { continue }
                 refreshBranches(for: source.descriptor, sessions: source.sessions, generation: generation)
             }
@@ -525,14 +568,7 @@ final class SessionStore {
 
         let loadSource = self.loadSource
         let loadBranches = self.loadBranches
-        let descriptors = sources.map(\.descriptor).filter { descriptor in
-            if monitorGenerations[descriptor.id] != nil,
-               !pollFallbackSourceIDs.contains(descriptor.id)
-            {
-                return false
-            }
-            return true
-        }
+        let descriptors = sources.map(\.descriptor).filter { !monitorOwnsSource($0.id) }
         guard !descriptors.isEmpty else { return }
         let previousSources = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
         var completed: [String: SourceLoad] = [:]
@@ -571,11 +607,7 @@ final class SessionStore {
         for index in nextSources.indices {
             let current = nextSources[index]
             guard let load = completed[current.id] else { continue }
-            if monitorGenerations[load.descriptor.id] != nil,
-               !pollFallbackSourceIDs.contains(load.descriptor.id)
-            {
-                continue
-            }
+            guard !monitorOwnsSource(load.descriptor.id) else { continue }
             var updated = current
             if let loaded = load.sessions {
                 sourceFailureCounts[load.descriptor.id] = 0
@@ -753,33 +785,21 @@ final class SessionStore {
     func focus(_ agent: AgentInfo, in session: SessionInfo, source: SourceDescriptor = .local) {
         guard session.online else { return }
         focusError = nil
-        let id = RecentAgentItem.ID(
-            sourceID: source.id,
-            sessionName: session.name,
-            paneID: agent.paneID
-        )
-        pendingFocusAgentID = id
-        pendingFocusWorkspaceID = nil
+        pendingFocus = .agent(agent, session, source)
         focusRunner.submit(.agent(agent, session, source))
     }
 
     func focusWorkspace(_ group: AgentGroup, in session: SessionInfo, source: SourceDescriptor = .local) {
         guard session.online else { return }
         focusError = nil
-        pendingFocusAgentID = nil
-        pendingFocusWorkspaceID = WorkspaceFocusID(
-            sourceID: source.id,
-            sessionName: session.name,
-            workspaceID: group.id
-        )
+        pendingFocus = .workspace(group.id, session, source)
         focusRunner.submit(.workspace(group.id, session, source))
     }
 
     func focusSession(_ session: SessionInfo, source: SourceDescriptor = .local) {
         guard session.online else { return }
         focusError = nil
-        pendingFocusAgentID = nil
-        pendingFocusWorkspaceID = nil
+        pendingFocus = nil
         focusRunner.submit(.session(session, source))
     }
 
@@ -791,8 +811,7 @@ final class SessionStore {
         focusError = nil
         defer {
             if !focusRunner.hasPendingRequest {
-                pendingFocusAgentID = nil
-                pendingFocusWorkspaceID = nil
+                pendingFocus = nil
             }
             onChange?()
         }
@@ -876,7 +895,7 @@ final class SessionStore {
         }
         if !enabled { selectedSSHAliases.removeAll { $0 == alias } }
         selectedSSHAliases.sort { (availableSSHAliases.firstIndex(of: $0) ?? .max) < (availableSSHAliases.firstIndex(of: $1) ?? .max) }
-        defaults.set(selectedSSHAliases, forKey: "selected-ssh-aliases")
+        defaults.set(selectedSSHAliases, forKey: DefaultsKey.selectedSSHAliases)
         let old = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
         let descriptors = [SourceDescriptor.local] + selectedSSHAliases.map(SourceDescriptor.remote)
         let retainedIDs = Set(descriptors.map(\.id))
@@ -901,6 +920,8 @@ final class SessionStore {
             monitorGenerations.removeValue(forKey: id)
             if let monitor {
                 Task {
+                    // The first stop unblocks a start that is still waiting on its handshake; the
+                    // second one covers a start that re-armed the monitor after that stop.
                     await monitor.stop()
                     await start?.value
                     await monitor.stop()
@@ -911,7 +932,7 @@ final class SessionStore {
 
     func setGhosttyOpenBehavior(_ behavior: GhosttyOpenBehavior) {
         ghosttyOpenBehavior = behavior
-        defaults.set(behavior.rawValue, forKey: "ghostty-open-behavior")
+        defaults.set(behavior.rawValue, forKey: DefaultsKey.ghosttyOpenBehavior)
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -966,9 +987,13 @@ final class SessionStore {
         if pollingStarted, generation == pollGeneration, pollTask == nil { scheduleNextPoll() }
     }
 
+    private func monitorOwnsSource(_ id: String) -> Bool {
+        monitorGenerations[id] != nil && !pollFallbackSourceIDs.contains(id)
+    }
+
     private var needsPolling: Bool {
         sources.contains { source in
-            monitorGenerations[source.id] == nil || pollFallbackSourceIDs.contains(source.id)
+            !monitorOwnsSource(source.id)
         }
     }
 
