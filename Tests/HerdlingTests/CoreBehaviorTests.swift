@@ -1286,6 +1286,60 @@ struct CoreBehaviorTests {
     }
 
     @Test
+    func agentFocusProjectsTheTabBeforeThePane() throws {
+        let commands = HerdrClient.agentFocusCommands(session: "work", paneID: "w1:p2", tabID: "w1:t3")
+        #expect(commands == [
+            ["--session", "work", "tab", "focus", "w1:t3"],
+            ["--session", "work", "agent", "focus", "w1:p2"],
+        ])
+        #expect(HerdrClient.agentFocusCommands(session: "work", paneID: "w1:p2", tabID: nil) == [
+            ["--session", "work", "agent", "focus", "w1:p2"],
+        ])
+        #expect(HerdrClient.agentFocusCommands(session: "work", paneID: "w1:p2", tabID: "") == [
+            ["--session", "work", "agent", "focus", "w1:p2"],
+        ])
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("herdling-agent-focus-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("fake-herdr")
+        let argumentsURL = directory.appendingPathComponent("arguments")
+        try "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \(HerdrClient.shellQuote(argumentsURL.path))\n"
+            .write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+
+        try HerdrClient(executable: executable.path)
+            .focus(session: "work", paneID: "w1:p2", tabID: "w1:t3")
+        #expect(try String(contentsOf: argumentsURL, encoding: .utf8) == """
+        --session
+        work
+        tab
+        focus
+        w1:t3
+        --session
+        work
+        agent
+        focus
+        w1:p2
+
+        """)
+    }
+
+    @Test
+    func chainedRemoteFocusUsesOneLoginShell() {
+        let command = HerdrClient.remoteCommandSequence(
+            HerdrClient.agentFocusCommands(session: "work's session", paneID: "w1:p2", tabID: "w1:t3")
+        )
+        #expect(command == HerdrClient.remoteShellCommand(
+            "'herdr' '--session' 'work'\\''s session' 'tab' 'focus' 'w1:t3'"
+                + " && 'herdr' '--session' 'work'\\''s session' 'agent' 'focus' 'w1:p2'"
+        ))
+        #expect(HerdrClient.remoteCommand(arguments: ["--session", "work", "api", "snapshot"])
+            == HerdrClient.remoteShellCommand("'herdr' '--session' 'work' 'api' 'snapshot'"))
+    }
+
+    @Test
     func workspaceFocusKeepsExactArgumentsThroughRemoteShellWrapping() {
         let arguments = HerdrClient.workspaceFocusArguments(session: "work's session", workspaceID: "w42")
         #expect(arguments == ["--session", "work's session", "workspace", "focus", "w42"])

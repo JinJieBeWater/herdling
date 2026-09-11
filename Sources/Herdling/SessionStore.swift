@@ -805,7 +805,12 @@ final class SessionStore {
                 let focusedExistingClient = try await focusExistingClient(source, session.name)
                 guard !focusRunner.hasPendingRequest else { return }
                 if case let .agent(agent, _, _) = request {
-                    try await runHerdrFocus(source: source, session: session.name, paneID: agent.paneID)
+                    try await runHerdrFocus(
+                        source: source,
+                        session: session.name,
+                        paneID: agent.paneID,
+                        tabID: agent.tabID
+                    )
                 } else if case let .workspace(workspaceID, _, _) = request {
                     let client = self.client
                     try await Task.detached {
@@ -971,9 +976,16 @@ final class SessionStore {
         }
     }
 
-    private func runHerdrFocus(source: SourceDescriptor, session: String, paneID: String) async throws {
+    private func runHerdrFocus(
+        source: SourceDescriptor,
+        session: String,
+        paneID: String,
+        tabID: String?
+    ) async throws {
         let client = self.client
-        try await Task.detached { try client.focus(source: source, session: session, paneID: paneID) }.value
+        try await Task.detached {
+            try client.focus(source: source, session: session, paneID: paneID, tabID: tabID)
+        }.value
     }
 
     nonisolated static func branchPaths(from sessions: [SessionInfo]) -> [String] {

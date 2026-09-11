@@ -95,14 +95,31 @@ struct HerdrClient: Sendable {
         return try Self.parseGroups(data)
     }
 
-    func focus(source: SourceDescriptor = .local, session: String, paneID: String) throws {
+    func focus(
+        source: SourceDescriptor = .local,
+        session: String,
+        paneID: String,
+        tabID: String? = nil
+    ) throws {
         guard let executable else { throw ClientError.notInstalled }
         _ = try run(
             source,
             executable: executable,
-            arguments: ["--session", session, "agent", "focus", paneID],
+            commands: Self.agentFocusCommands(session: session, paneID: paneID, tabID: tabID),
             timeout: 5
         )
+    }
+
+    /// Herdr 0.9 renders its UI inside each client. Only `workspace.focus`, `tab.focus`, and
+    /// `pane.focus` requests project focus onto every attached client; `agent.focus` alone
+    /// updates server state and marks the agent seen without moving anyone.
+    static func agentFocusCommands(session: String, paneID: String, tabID: String?) -> [[String]] {
+        var commands: [[String]] = []
+        if let tabID, !tabID.isEmpty {
+            commands.append(["--session", session, "tab", "focus", tabID])
+        }
+        commands.append(["--session", session, "agent", "focus", paneID])
+        return commands
     }
 
     func focusWorkspace(source: SourceDescriptor = .local, session: String, workspaceID: String) throws {
@@ -198,8 +215,15 @@ struct HerdrClient: Sendable {
     }
 
     static func remoteCommand(arguments: [String]) -> String {
-        let command = (["herdr"] + arguments).map(shellQuote).joined(separator: " ")
-        return remoteShellCommand(command)
+        remoteCommandSequence([arguments])
+    }
+
+    /// Runs several CLI invocations in one remote login shell so a chained focus costs one round trip.
+    static func remoteCommandSequence(_ commands: [[String]]) -> String {
+        let chained = commands
+            .map { (["herdr"] + $0).map(shellQuote).joined(separator: " ") }
+            .joined(separator: " && ")
+        return remoteShellCommand(chained)
     }
 
     static func remoteShellCommand(_ command: String) -> String {
@@ -229,15 +253,31 @@ struct HerdrClient: Sendable {
         arguments: [String],
         timeout: TimeInterval? = nil
     ) throws -> Data {
+        try run(source, executable: executable, commands: [arguments], timeout: timeout)
+    }
+
+    private func run(
+        _ source: SourceDescriptor,
+        executable: String,
+        commands: [[String]],
+        timeout: TimeInterval? = nil
+    ) throws -> Data {
         do {
             if let alias = source.sshAlias {
                 return try CommandRunner.run(
                     "/usr/bin/ssh",
-                    Self.sshArguments(alias: alias, command: Self.remoteCommand(arguments: arguments)),
+                    Self.sshArguments(
+                        alias: alias,
+                        command: Self.remoteCommandSequence(commands)
+                    ),
                     timeout: timeout ?? 7
                 )
             }
-            return try CommandRunner.run(executable, arguments, timeout: timeout ?? 5)
+            var data = Data()
+            for command in commands {
+                data = try CommandRunner.run(executable, command, timeout: timeout ?? 5)
+            }
+            return data
         } catch CommandRunner.Error.timedOut {
             throw ClientError.timedOut
         } catch let CommandRunner.Error.failed(message) {

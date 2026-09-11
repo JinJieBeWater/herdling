@@ -78,9 +78,9 @@ enum GhosttyProcessCatalog {
                 guard index + 1 < arguments.count else { return nil }
                 remote = arguments[index + 1]
                 index += 2
-            case "--session":
+            case "--session", "--remote-keybindings":
                 guard index + 1 < arguments.count else { return nil }
-                session = arguments[index + 1]
+                if arguments[index] == "--session" { session = arguments[index + 1] }
                 index += 2
             default:
                 return nil
