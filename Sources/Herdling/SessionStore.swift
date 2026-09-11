@@ -802,21 +802,17 @@ final class SessionStore {
         do {
             switch request {
             case let .agent(_, session, source), let .workspace(_, session, source):
+                // Herdr 0.9 projects workspace/tab/pane focus onto every attached client, so the CLI
+                // call can run while the Ghostty window is located and raised; a client created
+                // afterwards attaches to the focus already set on the server.
+                async let herdrFocus: Void = performHerdrFocus(
+                    request,
+                    source: source,
+                    session: session
+                )
                 let focusedExistingClient = try await focusExistingClient(source, session.name)
                 guard !focusRunner.hasPendingRequest else { return }
-                if case let .agent(agent, _, _) = request {
-                    try await runHerdrFocus(
-                        source: source,
-                        session: session.name,
-                        paneID: agent.paneID,
-                        tabID: agent.tabID
-                    )
-                } else if case let .workspace(workspaceID, _, _) = request {
-                    let client = self.client
-                    try await Task.detached {
-                        try client.focusWorkspace(source: source, session: session.name, workspaceID: workspaceID)
-                    }.value
-                }
+                try await herdrFocus
                 guard !focusRunner.hasPendingRequest else { return }
                 if !focusedExistingClient {
                     try await ghostty.activateClient(
@@ -973,6 +969,33 @@ final class SessionStore {
     private var needsPolling: Bool {
         sources.contains { source in
             monitorGenerations[source.id] == nil || pollFallbackSourceIDs.contains(source.id)
+        }
+    }
+
+    private func performHerdrFocus(
+        _ request: FocusRequest,
+        source: SourceDescriptor,
+        session: SessionInfo
+    ) async throws {
+        switch request {
+        case let .agent(agent, _, _):
+            try await runHerdrFocus(
+                source: source,
+                session: session.name,
+                paneID: agent.paneID,
+                tabID: agent.tabID
+            )
+        case let .workspace(workspaceID, _, _):
+            let client = self.client
+            try await Task.detached {
+                try client.focusWorkspace(
+                    source: source,
+                    session: session.name,
+                    workspaceID: workspaceID
+                )
+            }.value
+        case .session:
+            return
         }
     }
 
