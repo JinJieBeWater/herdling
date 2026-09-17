@@ -22,20 +22,22 @@ private struct PanelMaterialBackdrop: NSViewRepresentable {
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
 
-/// Interactive glass for the section header buttons (every machine plus Recent): they read as
-/// controls, while the rows below them stay plain text on the panel. `interactive()` belongs on a
-/// control, not on the whole panel.
-private struct DeviceButtonGlass: ViewModifier {
+/// One glass plate per section, holding the header and everything it expands to. Parent and children
+/// read as a single surface instead of the children sitting loose on the panel.
+private struct SectionGlass: ViewModifier {
     let cornerRadius: CGFloat
 
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
             content.glassEffect(
-                .regular.interactive(),
+                .regular,
                 in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             )
         } else {
-            content
+            content.background(
+                Color.primary.opacity(0.06),
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
         }
     }
 }
@@ -114,14 +116,8 @@ private struct AccordionHeader<Trailing: View>: View {
         .accessibilityLabel(accessibilityLabel)
         .accessibilityHint(accessibilityHint)
         .background {
-            // Pre-glass systems keep the flat hover/selection tint.
-            if #available(macOS 26.0, *) {
-                EmptyView()
-            } else {
-                AccordionHeaderBackground(isHovered: isHovered)
-            }
+            AccordionHeaderBackground(isHovered: isHovered)
         }
-        .modifier(DeviceButtonGlass(cornerRadius: 14))
         .onHover { isHovered = $0 }
     }
 
@@ -393,13 +389,11 @@ private struct RecentSection: View {
 
                     AccordionBody(isExpanded: isExpanded) {
                         VStack(alignment: .leading, spacing: 0) {
-                            if isExpanded { RosterRowSeparator() }
                             let sources = outlineSources
                             ForEach(sources) { source in
                                 let showsSource = sources.count > 1 || source.descriptor.sshAlias != nil
 
                                 if showsSource {
-                                    if source.id != sources.first?.id { RosterRowSeparator() }
                                     RecentSourceHeader(source: source)
                                 }
 
@@ -598,7 +592,8 @@ private extension Collection where Element == AgentStatusCount {
     var primaryStatusText: String { first?.status.rosterLabel ?? "stopped" }
 }
 
-/// One roster section: its rows sit directly on the panel, closed off by a hairline.
+/// One roster section: a single glass plate that grows with its content, so a device and the rows it
+/// expands to share one surface.
 struct RosterSection<Content: View>: View {
     private let content: Content
 
@@ -608,7 +603,7 @@ struct RosterSection<Content: View>: View {
 
     var body: some View {
         VStack(spacing: 0) { content }
-            .overlay(alignment: .bottom) { RosterRowSeparator() }
+            .modifier(SectionGlass(cornerRadius: 14))
     }
 }
 
@@ -618,7 +613,7 @@ struct RosterRowSeparator: View {
 
     var body: some View {
         Rectangle()
-            .fill(Color.primary.opacity(0.08))
+            .fill(Color.primary.opacity(0.07))
             .frame(height: 1)
             .padding(.leading, inset)
             .accessibilityHidden(true)
@@ -740,7 +735,6 @@ private struct SourceOutline: View {
 
                 AccordionBody(isExpanded: isExpanded) {
                     VStack(alignment: .leading, spacing: 0) {
-                        if isExpanded { RosterRowSeparator() }
                         if let error = source.error {
                             ErrorRow(
                                 message: error,
@@ -852,7 +846,6 @@ private struct SessionRoster: View {
                         space: space,
                         branches: branches,
                         showEmptyMain: showEmptyMain,
-                        showsTopSeparator: space.id != spaces.first?.id
                     )
                 }
             }
@@ -867,7 +860,6 @@ private struct SpaceSection: View {
     let space: RosterSpace
     let branches: [String: String]
     let showEmptyMain: Bool
-    let showsTopSeparator: Bool
 
     init(
         store: SessionStore,
@@ -876,7 +868,6 @@ private struct SpaceSection: View {
         space: RosterSpace,
         branches: [String: String],
         showEmptyMain: Bool,
-        showsTopSeparator: Bool
     ) {
         self.store = store
         self.source = source
@@ -884,12 +875,10 @@ private struct SpaceSection: View {
         self.space = space
         self.branches = branches
         self.showEmptyMain = showEmptyMain
-        self.showsTopSeparator = showsTopSeparator
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if showsTopSeparator { RosterRowSeparator() }
             SpaceLabel(title: space.name)
 
             ForEach(space.displayedWorktrees(showEmptyMain: showEmptyMain)) { worktree in
