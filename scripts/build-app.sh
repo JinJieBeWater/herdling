@@ -5,6 +5,13 @@ configuration="${1:-debug}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
+# Command Line Tools ship no SwiftUIMacros plugin, so SDK 27+ cannot compile SwiftUI.
+# Falling back to the newest 26.x SDK keeps CLT-only builds working; selecting Xcode lifts this.
+if [[ "$(xcode-select -p)" == *CommandLineTools* ]]; then
+  clt_sdk="$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX26*.sdk 2>/dev/null | tail -1)"
+  [[ -n "$clt_sdk" ]] && export SDKROOT="$clt_sdk"
+fi
+
 swift build -c "$configuration" >&2
 bin_dir="$(swift build -c "$configuration" --show-bin-path)"
 app="$root/.build/Herdling.app"
