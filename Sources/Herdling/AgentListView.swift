@@ -1,6 +1,45 @@
 import AppKit
 import SwiftUI
 
+let panelCornerRadius: CGFloat = 12
+
+/// Panel surface: the system menu material, which is what the menu bar panels people compare
+/// against (Control Center, the Wi-Fi popup) use. Rows sit directly on it, separated by hairlines.
+private struct PanelMaterialBackdrop: NSViewRepresentable {
+    let cornerRadius: CGFloat
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .menu
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        view.wantsLayer = true
+        view.layer?.cornerRadius = cornerRadius
+        view.layer?.masksToBounds = true
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+}
+
+/// Interactive glass for the section header buttons (every machine plus Recent): they read as
+/// controls, while the rows below them stay plain text on the panel. `interactive()` belongs on a
+/// control, not on the whole panel.
+private struct DeviceButtonGlass: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(
+                .regular.interactive(),
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+        } else {
+            content
+        }
+    }
+}
+
 private enum AccordionMotion {
     static func animation(reduceMotion: Bool) -> Animation? {
         reduceMotion ? nil : .smooth(duration: 0.18)
@@ -26,6 +65,7 @@ private struct DisclosureChevron: View {
 private struct AccordionHeader<Trailing: View>: View {
     let icon: String
     let iconHelp: String?
+    let badgeTint: Color
     let title: String
     let isExpanded: Bool
     let accessibilityLabel: String
@@ -37,6 +77,7 @@ private struct AccordionHeader<Trailing: View>: View {
     init(
         icon: String,
         iconHelp: String? = nil,
+        badgeTint: Color = .accentColor,
         title: String,
         isExpanded: Bool,
         accessibilityLabel: String,
@@ -46,6 +87,7 @@ private struct AccordionHeader<Trailing: View>: View {
     ) {
         self.icon = icon
         self.iconHelp = iconHelp
+        self.badgeTint = badgeTint
         self.title = title
         self.isExpanded = isExpanded
         self.accessibilityLabel = accessibilityLabel
@@ -56,39 +98,40 @@ private struct AccordionHeader<Trailing: View>: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
-                DisclosureChevron(isExpanded: isExpanded)
-                iconView
+            HStack(spacing: 10) {
+                badge
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                 trailing()
+                DisclosureChevron(isExpanded: isExpanded)
             }
-            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
-            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+            .padding(.horizontal, 10)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityHint(accessibilityHint)
         .background {
-            AccordionHeaderBackground(isExpanded: isExpanded, isHovered: isHovered)
+            // Pre-glass systems keep the flat hover/selection tint.
+            if #available(macOS 26.0, *) {
+                EmptyView()
+            } else {
+                AccordionHeaderBackground(isHovered: isHovered)
+            }
         }
+        .modifier(DeviceButtonGlass(cornerRadius: 14))
         .onHover { isHovered = $0 }
     }
 
-    private var iconView: some View {
-        let image = Image(systemName: icon)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(.secondary)
-            .frame(width: 15, height: 16)
-            .drawingGroup()
-            .accessibilityHidden(true)
+    private var badge: some View {
+        let badge = RosterBadge(symbol: icon, tint: badgeTint)
         return Group {
             if let iconHelp {
-                image.help(iconHelp)
+                badge.help(iconHelp)
             } else {
-                image
+                badge
             }
         }
     }
@@ -175,12 +218,15 @@ struct AgentListView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background {
-            // Fixed-size backdrop so the material never re-samples while the panel resizes.
-            Rectangle()
-                .fill(.regularMaterial)
-                .frame(width: 640, height: 1200, alignment: .topLeading)
+            if #available(macOS 26.0, *) {
+                // The window itself hosts an NSGlassEffectView behind this content, which is where
+                // the glass edges and refraction come from; a material here would only blur.
+                Color.clear
+            } else {
+                PanelMaterialBackdrop(cornerRadius: panelCornerRadius)
+            }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: panelCornerRadius, style: .continuous))
         .modifier(PanelHeightDriver(height: panelHeight))
         .onPreferenceChange(PanelContentHeightKey.self) { measurement in
             let height = measurement.total
@@ -224,10 +270,9 @@ private struct AgentRoster: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 8) {
                     if let error = store.focusError {
                         ErrorRow(message: error, onDismiss: store.dismissFocusError)
-                            .padding(.bottom, 6)
                     }
                     RecentSection(
                         store: store,
@@ -331,49 +376,52 @@ private struct RecentSection: View {
 
     var body: some View {
         if !items.isEmpty {
-            Section {
-                AccordionBody(isExpanded: isExpanded) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        let sources = outlineSources
-                        ForEach(sources) { source in
-                            let showsSource = sources.count > 1 || source.descriptor.sshAlias != nil
+            RosterSection {
+                VStack(spacing: 0) {
+                    AccordionHeader(
+                        icon: "clock",
+                        badgeTint: .indigo,
+                        title: "Recent",
+                        isExpanded: isExpanded,
+                        accessibilityLabel: "Recent, \(isExpanded ? "expanded" : "collapsed")",
+                        accessibilityHint: "Expands or collapses recent agents",
+                        action: onToggle
+                    ) {
+                        Spacer(minLength: 8)
+                        GroupActivitySummary(counts: AgentStatusCount.summarize(items.map(\.agent)))
+                    }
 
-                            if showsSource {
-                                RecentSourceHeader(source: source)
-                            }
+                    AccordionBody(isExpanded: isExpanded) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            if isExpanded { RosterRowSeparator() }
+                            let sources = outlineSources
+                            ForEach(sources) { source in
+                                let showsSource = sources.count > 1 || source.descriptor.sshAlias != nil
 
-                            ForEach(source.sessions) { session in
-                                SessionRoster(
-                                    store: store,
-                                    source: source.descriptor,
-                                    session: session,
-                                    branches: source.branches,
-                                    showEmptyMain: false,
-                                    showHeader: RosterLayout.showsSessionHeader(
-                                        name: session.name,
-                                        sourceSessionCount: source.sessions.count
+                                if showsSource {
+                                    if source.id != sources.first?.id { RosterRowSeparator() }
+                                    RecentSourceHeader(source: source)
+                                }
+
+                                ForEach(source.sessions) { session in
+                                    SessionRoster(
+                                        store: store,
+                                        source: source.descriptor,
+                                        session: session,
+                                        branches: source.branches,
+                                        showEmptyMain: false,
+                                        showHeader: RosterLayout.showsSessionHeader(
+                                            name: session.name,
+                                            sourceSessionCount: source.sessions.count
+                                        )
                                     )
-                                )
-                                .padding(.leading, showsSource ? 14 : 0)
+                                    .padding(.leading, showsSource ? 14 : 0)
+                                }
                             }
                         }
+                        .padding(.bottom, 6)
                     }
                 }
-                .padding(.bottom, 2)
-            } header: {
-                AccordionHeader(
-                    icon: "clock",
-                    title: "Recent",
-                    isExpanded: isExpanded,
-                    accessibilityLabel: "Recent, \(isExpanded ? "expanded" : "collapsed")",
-                    accessibilityHint: "Expands or collapses recent agents",
-                    action: onToggle
-                ) {
-                    Spacer(minLength: 8)
-                    GroupActivitySummary(counts: AgentStatusCount.summarize(items.map(\.agent)))
-                }
-                .padding(.top, 4)
-                .padding(.bottom, 2)
             }
         }
     }
@@ -384,10 +432,11 @@ private struct RecentSourceHeader: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: source.descriptor.sshAlias == nil ? "desktopcomputer" : "network")
-                .font(.system(size: 10, weight: .medium))
-                .frame(width: 15)
-                .accessibilityHidden(true)
+            RosterBadge(
+                symbol: source.descriptor.sshAlias == nil ? "desktopcomputer" : "network",
+                tint: source.descriptor.sshAlias == nil ? .blue : .purple,
+                size: 18
+            )
             Text(source.descriptor.name)
                 .font(.system(size: 11.5, weight: .semibold))
                 .lineLimit(1)
@@ -395,7 +444,7 @@ private struct RecentSourceHeader: View {
             GroupActivitySummary(counts: AgentStatusCount.summarize(source.sessions.flatMap(\.agents)))
         }
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 10)
         .padding(.top, 6)
         .frame(maxWidth: .infinity, minHeight: 26, alignment: .leading)
         .accessibilityElement(children: .combine)
@@ -447,7 +496,7 @@ private struct HoverRow<Content: View>: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) { content(isHovered) }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 10)
                 .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
                 .contentShape(Rectangle())
         }
@@ -456,8 +505,8 @@ private struct HoverRow<Content: View>: View {
         .accessibilityLabel(accessibilityText)
         .accessibilityHint("Opens this item in Ghostty")
         .background(
-            Color.primary.opacity(isHovered ? 0.04 : 0),
-            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+            Color.primary.opacity(isHovered ? 0.06 : 0),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
         )
         .onHover { isHovered = $0 }
     }
@@ -483,11 +532,11 @@ private struct GroupHeader: View {
                 if let primary = counts.first {
                     StatusIndicator(
                         symbol: primary.status.indicatorSymbolName,
-                        color: primary.status.color
+                        tint: primary.status.badgeTint
                     )
                     .padding(.top, 3)
                 } else {
-                    StatusIndicator(symbol: "square.dashed", color: .secondary)
+                    StatusIndicator(symbol: "square.dashed", tint: nil)
                         .padding(.top, 3)
                 }
                 VStack(alignment: .leading, spacing: 2) {
@@ -515,10 +564,10 @@ private struct SpaceLabel: View {
 
     var body: some View {
         Text(title)
-            .font(.system(size: 9.5, weight: .medium))
+            .font(.system(size: 10.5, weight: .medium))
             .foregroundStyle(.tertiary)
             .lineLimit(1)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 12)
         .padding(.top, 2)
         .frame(maxWidth: .infinity, minHeight: 15, alignment: .leading)
     }
@@ -530,11 +579,15 @@ private struct GroupActivitySummary: View {
     var body: some View {
         HStack(spacing: 7) {
             ForEach(counts) { count in
-                Text("\(count.count) \(count.status.rawValue)")
-                    .foregroundStyle(count.status.color)
+                // Label colours, not the status accent: accent blue on glass sits at the panel's
+                // own luminance. The status colour is carried by the badge.
+                Text("\(count.count) ")
+                    .foregroundStyle(.primary)
+                    + Text(count.status.rawValue)
+                    .foregroundStyle(.secondary)
             }
         }
-        .font(.system(size: 11))
+        .font(.system(size: 11, weight: .medium))
         .fixedSize()
         .frame(minWidth: 140, alignment: .trailing)
         .layoutPriority(1)
@@ -545,25 +598,73 @@ private extension Collection where Element == AgentStatusCount {
     var primaryStatusText: String { first?.status.rosterLabel ?? "stopped" }
 }
 
+/// One roster section: its rows sit directly on the panel, closed off by a hairline.
+struct RosterSection<Content: View>: View {
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(spacing: 0) { content }
+            .overlay(alignment: .bottom) { RosterRowSeparator() }
+    }
+}
+
+/// Hairline between rows and between sections, inset to align with row text.
+struct RosterRowSeparator: View {
+    var inset: CGFloat = 44
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.08))
+            .frame(height: 1)
+            .padding(.leading, inset)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Leading badge: a white disc with the tinted glyph, the same for every variant so the icon
+/// always has a white background.
+private struct RosterBadge: View {
+    let symbol: String
+    let tint: Color
+    var size: CGFloat = 24
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: size * 0.46, weight: .semibold))
+            .foregroundStyle(tint)
+            .frame(width: size, height: size)
+            .background { Circle().fill(.white) }
+            // Rasterize before the glass renders: glass vibrancy lightens symbol glyphs.
+            .drawingGroup()
+            .accessibilityHidden(true)
+    }
+}
+
 private struct AccordionHeaderBackground: View {
-    let isExpanded: Bool
     let isHovered: Bool
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 11, style: .continuous)
-            .fill(Color.primary.opacity(isHovered ? 0.07 : isExpanded ? 0.025 : 0))
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .fill(Color.primary.opacity(isHovered ? 0.06 : 0))
     }
 }
 
 private struct StatusIndicator: View {
     let symbol: String
-    let color: Color
+    let tint: Color?
 
     var body: some View {
         Image(systemName: symbol)
-            .font(.system(size: 8, weight: .medium))
-            .foregroundStyle(color)
-            .frame(width: 10)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(tint ?? Color(nsColor: .systemGray))
+            .frame(width: 18, height: 18)
+            .background { Circle().fill(.white) }
+            // Rasterize before the glass renders: glass vibrancy lightens symbol glyphs.
+            .drawingGroup()
             .accessibilityHidden(true)
     }
 }
@@ -593,7 +694,8 @@ private struct SourceFocusRow: View {
         AccordionHeader(
             icon: source.descriptor.sshAlias == nil ? "desktopcomputer" : "network",
             iconHelp: sourceKind,
-            title: source.descriptor.name,
+            badgeTint: source.descriptor.sshAlias == nil ? .blue : .purple,
+                        title: source.descriptor.name,
             isExpanded: isExpanded,
             accessibilityLabel: "\(source.descriptor.name), \(sourceKind), \(accessibilitySummary.isEmpty ? summaryText : accessibilitySummary), \(isExpanded ? "expanded" : "collapsed")",
             accessibilityHint: "Expands or collapses this source",
@@ -628,63 +730,64 @@ private struct SourceOutline: View {
     let onToggle: () -> Void
 
     var body: some View {
-        Section {
-            AccordionBody(isExpanded: isExpanded) {
-                VStack(alignment: .leading, spacing: 0) {
-                    if let error = source.error {
-                        ErrorRow(message: error)
-                        if source.descriptor.sshAlias != nil {
-                            Button("Retry now") {
-                                store.retryRemoteSource(source.descriptor)
-                            }
-                            .font(.system(size: 11, weight: .medium))
-                            .buttonStyle(.link)
-                            .padding(.leading, 26)
-                            .padding(.bottom, 14)
-                            .accessibilityHint("Retries this SSH source immediately")
-                        }
-                    } else if !source.online {
-                        HStack(spacing: 6) {
-                            ProgressView()
-                                .controlSize(.small)
-                                .progressViewStyle(.circular)
-                            Text("Loading sessions and branches…")
-                                .font(.system(size: 11))
-                        }
-                        .foregroundStyle(.secondary)
-                        .padding(.leading, 26)
-                        .padding(.vertical, 8)
-                        .padding(.bottom, 6)
-                    } else if source.sessions.isEmpty {
-                        Text("No running sessions")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .padding(.bottom, 14)
-                    }
+        RosterSection {
+            VStack(spacing: 0) {
+                SourceFocusRow(
+                    source: source,
+                    isExpanded: isExpanded,
+                    onToggle: onToggle
+                )
 
-                    ForEach(source.sessions) { session in
-                        SessionRoster(
-                            store: store,
-                            source: source.descriptor,
-                            session: session,
-                            branches: source.branches,
-                            showHeader: RosterLayout.showsSessionHeader(
-                                name: session.name,
-                                sourceSessionCount: source.sessions.count
+                AccordionBody(isExpanded: isExpanded) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        if isExpanded { RosterRowSeparator() }
+                        if let error = source.error {
+                            ErrorRow(message: error)
+                            if source.descriptor.sshAlias != nil {
+                                Button("Retry now") {
+                                    store.retryRemoteSource(source.descriptor)
+                                }
+                                .font(.system(size: 11, weight: .medium))
+                                .buttonStyle(.link)
+                                .padding(.leading, 26)
+                                .padding(.bottom, 14)
+                                .accessibilityHint("Retries this SSH source immediately")
+                            }
+                        } else if !source.online {
+                            HStack(spacing: 6) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .progressViewStyle(.circular)
+                                Text("Loading sessions and branches…")
+                                    .font(.system(size: 11))
+                            }
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 26)
+                            .padding(.vertical, 8)
+                            .padding(.bottom, 6)
+                        } else if source.sessions.isEmpty {
+                            Text("No running sessions")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .padding(.bottom, 14)
+                        }
+
+                        ForEach(source.sessions) { session in
+                            SessionRoster(
+                                store: store,
+                                source: source.descriptor,
+                                session: session,
+                                branches: source.branches,
+                                showHeader: RosterLayout.showsSessionHeader(
+                                    name: session.name,
+                                    sourceSessionCount: source.sessions.count
+                                )
                             )
-                        )
+                        }
                     }
+                    .padding(.bottom, 6)
                 }
             }
-            .padding(.bottom, 2)
-        } header: {
-            SourceFocusRow(
-                source: source,
-                isExpanded: isExpanded,
-                onToggle: onToggle
-            )
-            .padding(.top, 4)
-            .padding(.bottom, 2)
         }
     }
 }
@@ -753,7 +856,8 @@ private struct SessionRoster: View {
                         session: session,
                         space: space,
                         branches: branches,
-                        showEmptyMain: showEmptyMain
+                        showEmptyMain: showEmptyMain,
+                        showsTopSeparator: space.id != spaces.first?.id
                     )
                 }
             }
@@ -768,6 +872,7 @@ private struct SpaceSection: View {
     let space: RosterSpace
     let branches: [String: String]
     let showEmptyMain: Bool
+    let showsTopSeparator: Bool
 
     init(
         store: SessionStore,
@@ -775,7 +880,8 @@ private struct SpaceSection: View {
         session: SessionInfo,
         space: RosterSpace,
         branches: [String: String],
-        showEmptyMain: Bool
+        showEmptyMain: Bool,
+        showsTopSeparator: Bool
     ) {
         self.store = store
         self.source = source
@@ -783,10 +889,12 @@ private struct SpaceSection: View {
         self.space = space
         self.branches = branches
         self.showEmptyMain = showEmptyMain
+        self.showsTopSeparator = showsTopSeparator
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if showsTopSeparator { RosterRowSeparator() }
             SpaceLabel(title: space.name)
 
             ForEach(space.displayedWorktrees(showEmptyMain: showEmptyMain)) { worktree in
@@ -867,11 +975,7 @@ private struct WorktreeSection: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(5)
-        .background(
-            Color.primary.opacity(0.018),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-        )
+        .padding(.vertical, 2)
         .padding(.top, 3)
     }
 
@@ -895,7 +999,7 @@ private struct AgentDetailRow: View {
             accessibilityText: accessibilityText,
             action: action
         ) { isHovered in
-            StatusIndicator(symbol: agent.status.indicatorSymbolName, color: agent.status.color)
+            StatusIndicator(symbol: agent.status.indicatorSymbolName, tint: agent.status.badgeTint)
             Text(agent.title)
                 .font(.system(size: 11.5))
                 .lineLimit(1)
