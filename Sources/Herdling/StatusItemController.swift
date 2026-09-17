@@ -95,7 +95,7 @@ final class StatusItemController: NSObject {
             // while the labels follow the appearance, which pairs dark text with a dark panel.
             let glass = NSGlassEffectView()
             glass.style = .regular
-            glass.cornerRadius = panelCornerRadius
+            glass.cornerRadius = PanelRadius.panel
             glass.tintColor = NSColor(white: 1, alpha: 0.04)
             glass.contentView = hostingController.view
             panel.contentView = glass

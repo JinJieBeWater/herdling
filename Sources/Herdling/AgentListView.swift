@@ -1,7 +1,15 @@
 import AppKit
 import SwiftUI
 
-let panelCornerRadius: CGFloat = 12
+/// Corner radii, one scale for the whole panel: each level sits inside the previous one and is a
+/// step tighter, so no inner surface is rounder than its container.
+enum PanelRadius {
+    static let panel: CGFloat = 12
+    static let section: CGFloat = 10
+    static let row: CGFloat = 8
+    /// Side inset for a row highlight, so it never runs into the card edge.
+    static let rowInset: CGFloat = 5
+}
 
 /// Panel surface: the system menu material, which is what the menu bar panels people compare
 /// against (Control Center, the Wi-Fi popup) use. Rows sit directly on it, separated by hairlines.
@@ -118,7 +126,7 @@ private struct AccordionHeader<Trailing: View>: View {
         .background {
             AccordionHeaderBackground(isExpanded: isExpanded, isHovered: isHovered)
         }
-        .modifier(HeaderGlass(cornerRadius: 14))
+        .modifier(HeaderGlass(cornerRadius: PanelRadius.section))
         .onHover { isHovered = $0 }
     }
 
@@ -220,10 +228,10 @@ struct AgentListView: View {
                 // the glass edges and refraction come from; a material here would only blur.
                 Color.clear
             } else {
-                PanelMaterialBackdrop(cornerRadius: panelCornerRadius)
+                PanelMaterialBackdrop(cornerRadius: PanelRadius.panel)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: panelCornerRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: PanelRadius.panel, style: .continuous))
         .modifier(PanelHeightDriver(height: panelHeight))
         .onPreferenceChange(PanelContentHeightKey.self) { measurement in
             let height = measurement.total
@@ -506,10 +514,11 @@ private struct HoverRow<Content: View>: View {
         .disabled(!enabled)
         .accessibilityLabel(accessibilityText)
         .accessibilityHint("Opens this item in Ghostty")
-        .background(
-            Color.primary.opacity(isHovered ? 0.06 : 0),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-        )
+        .background {
+            RoundedRectangle(cornerRadius: PanelRadius.row, style: .continuous)
+                .fill(Color.primary.opacity(isHovered ? 0.06 : 0))
+                .padding(.horizontal, PanelRadius.rowInset)
+        }
         .onHover { isHovered = $0 }
     }
 }
@@ -613,7 +622,7 @@ struct RosterSection<Content: View>: View {
 
     private var surface: some View {
         VStack(spacing: 0) { content }
-            .modifier(SectionGlass(cornerRadius: 14))
+            .modifier(SectionGlass(cornerRadius: PanelRadius.section))
     }
 
     var body: some View {
@@ -685,7 +694,7 @@ private struct AccordionHeaderBackground: View {
     var body: some View {
         // Expanded headers keep a standing highlight: the section stays marked as open after the
         // pointer leaves, the way a selected row does.
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
+        RoundedRectangle(cornerRadius: PanelRadius.section, style: .continuous)
             .fill(Color.primary.opacity(isHovered ? 0.08 : isExpanded ? 0.045 : 0))
     }
 }
