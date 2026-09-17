@@ -89,7 +89,19 @@ final class StatusItemController: NSObject {
         )
 
         hostingController.sizingOptions = []
-        panel.contentViewController = hostingController
+        if #available(macOS 26.0, *) {
+            // NSGlassEffectView with the hosting view as its contentView, which is how AppKit embeds
+            // content in glass. Regular rather than clear: clear takes its tone from the backdrop
+            // while the labels follow the appearance, which pairs dark text with a dark panel.
+            let glass = NSGlassEffectView()
+            glass.style = .regular
+            glass.cornerRadius = panelCornerRadius
+            glass.tintColor = NSColor(white: 1, alpha: 0.04)
+            glass.contentView = hostingController.view
+            panel.contentView = glass
+        } else {
+            panel.contentViewController = hostingController
+        }
         panel.setContentSize(NSSize(width: Self.panelWidth, height: preferredPanelHeight))
 
         store.onChange = { [weak self] in self?.updateStatus() }
