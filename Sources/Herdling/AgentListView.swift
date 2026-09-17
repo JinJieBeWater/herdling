@@ -627,7 +627,7 @@ struct RosterRowSeparator: View {
 
 /// Leading badge: a white disc with the tinted glyph, the same for every variant so the icon
 /// always has a white background.
-private struct RosterBadge: View {
+struct RosterBadge: View {
     let symbol: String
     let tint: Color
     var size: CGFloat = 24
@@ -742,34 +742,29 @@ private struct SourceOutline: View {
                     VStack(alignment: .leading, spacing: 0) {
                         if isExpanded { RosterRowSeparator() }
                         if let error = source.error {
-                            ErrorRow(message: error)
-                            if source.descriptor.sshAlias != nil {
-                                Button("Retry now") {
+                            ErrorRow(
+                                message: error,
+                                retry: source.descriptor.sshAlias == nil ? nil : {
                                     store.retryRemoteSource(source.descriptor)
                                 }
-                                .font(.system(size: 11, weight: .medium))
-                                .buttonStyle(.link)
-                                .padding(.leading, 26)
-                                .padding(.bottom, 14)
-                                .accessibilityHint("Retries this SSH source immediately")
-                            }
+                            )
                         } else if !source.online {
-                            HStack(spacing: 6) {
+                            HStack(spacing: 8) {
                                 ProgressView()
                                     .controlSize(.small)
                                     .progressViewStyle(.circular)
                                 Text("Loading sessions and branches…")
-                                    .font(.system(size: 11))
                             }
+                            .font(.system(size: 11.5))
                             .foregroundStyle(.secondary)
-                            .padding(.leading, 26)
+                            .padding(.leading, 44)
                             .padding(.vertical, 8)
-                            .padding(.bottom, 6)
                         } else if source.sessions.isEmpty {
                             Text("No running sessions")
-                                .font(.system(size: 11))
+                                .font(.system(size: 11.5))
                                 .foregroundStyle(.secondary)
-                                .padding(.bottom, 14)
+                                .padding(.leading, 44)
+                                .padding(.vertical, 6)
                         }
 
                         ForEach(source.sessions) { session in
