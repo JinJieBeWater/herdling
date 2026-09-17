@@ -3,6 +3,19 @@ import SwiftUI
 
 /// Corner radii, one scale for the whole panel: each level sits inside the previous one and is a
 /// step tighter, so no inner surface is rounder than its container.
+private struct PanelOpenKey: EnvironmentKey {
+    /// Whether the panel is on screen; rows use the transition to drop hover state left over from
+    /// the last time it was open, because no hover exit arrives while the panel is ordered out.
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var panelIsOpen: Bool {
+        get { self[PanelOpenKey.self] }
+        set { self[PanelOpenKey.self] = newValue }
+    }
+}
+
 enum PanelRadius {
     static let panel: CGFloat = 12
     static let section: CGFloat = 10
@@ -84,6 +97,7 @@ private struct AccordionHeader<Trailing: View>: View {
     let action: () -> Void
     let trailing: () -> Trailing
     @State private var isHovered = false
+    @Environment(\.panelIsOpen) private var panelIsOpen
 
     init(
         icon: String,
@@ -129,6 +143,7 @@ private struct AccordionHeader<Trailing: View>: View {
         }
         .modifier(HeaderGlass(cornerRadius: PanelRadius.section))
         .onHover { isHovered = $0 }
+        .onChange(of: panelIsOpen) { _, isOpen in if isOpen { isHovered = false } }
     }
 
     private var badge: some View {
@@ -233,6 +248,7 @@ struct AgentListView: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: PanelRadius.panel, style: .continuous))
+        .environment(\.panelIsOpen, store.panelOpen)
         .modifier(PanelHeightDriver(height: panelHeight))
         .onPreferenceChange(PanelContentHeightKey.self) { measurement in
             let height = measurement.total
@@ -484,6 +500,7 @@ private struct HoverRow<Content: View>: View {
     let action: () -> Void
     let content: (Bool) -> Content
     @State private var isHovered = false
+    @Environment(\.panelIsOpen) private var panelIsOpen
 
     init(
         minHeight: CGFloat = 26,
@@ -525,6 +542,7 @@ private struct HoverRow<Content: View>: View {
                 .padding(.trailing, 10 - PanelRadius.rowInset)
         }
         .onHover { isHovered = $0 }
+        .onChange(of: panelIsOpen) { _, isOpen in if isOpen { isHovered = false } }
     }
 }
 

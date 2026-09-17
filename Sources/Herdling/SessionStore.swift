@@ -414,7 +414,7 @@ final class SessionStore {
     private(set) var automationStatus = "Not checked"
     private(set) var ghosttyOpenBehavior: GhosttyOpenBehavior
     private var isRefreshing = false
-    private var panelOpen = false
+    private(set) var panelOpen = false
     private(set) var showingSettings = false
 
     var menuStatus: MenuStatus { MenuStatus.summarize(sources) }
