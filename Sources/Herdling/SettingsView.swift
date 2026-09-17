@@ -37,44 +37,55 @@ struct SettingsView: View {
             }
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 14) {
                     settingsGroup("SSH Sources") {
-                        if store.availableSSHAliases.isEmpty {
-                            Text("No aliases found in ~/.ssh/config").foregroundStyle(.secondary)
+                        let aliases = store.availableSSHAliases
+                        if aliases.isEmpty {
+                            settingsRow(showsSeparator: false) {
+                                Text("No aliases found in ~/.ssh/config").foregroundStyle(.secondary)
+                            }
                         }
-                        ForEach(store.availableSSHAliases, id: \.self) { alias in
-                            Toggle(alias, isOn: Binding(
-                                get: { store.selectedSSHAliases.contains(alias) },
-                                set: { store.setRemoteAlias(alias, enabled: $0) }
-                            ))
+                        ForEach(Array(aliases.enumerated()), id: \.element) { index, alias in
+                            settingsRow(showsSeparator: index > 0) {
+                                Toggle(alias, isOn: Binding(
+                                    get: { store.selectedSSHAliases.contains(alias) },
+                                    set: { store.setRemoteAlias(alias, enabled: $0) }
+                                ))
+                            }
                         }
                     }
 
                     settingsGroup("Ghostty") {
-                        Picker("Open new clients in", selection: Binding(
-                            get: { store.ghosttyOpenBehavior },
-                            set: { store.setGhosttyOpenBehavior($0) }
-                        )) {
-                            Text("Window").tag(GhosttyOpenBehavior.window)
-                            Text("Tab").tag(GhosttyOpenBehavior.tab)
+                        settingsRow(showsSeparator: false) {
+                            Picker("Open new clients in", selection: Binding(
+                                get: { store.ghosttyOpenBehavior },
+                                set: { store.setGhosttyOpenBehavior($0) }
+                            )) {
+                                Text("Window").tag(GhosttyOpenBehavior.window)
+                                Text("Tab").tag(GhosttyOpenBehavior.tab)
+                            }
+                            .pickerStyle(.segmented)
                         }
-                        .pickerStyle(.segmented)
                     }
 
                     settingsGroup("General") {
-                        Toggle("Launch at Login", isOn: Binding(
-                            get: { store.launchAtLoginEnabled },
-                            set: { store.setLaunchAtLogin($0) }
-                        ))
+                        settingsRow(showsSeparator: false) {
+                            Toggle("Launch at Login", isOn: Binding(
+                                get: { store.launchAtLoginEnabled },
+                                set: { store.setLaunchAtLogin($0) }
+                            ))
+                        }
                     }
 
                     settingsGroup("Permissions") {
-                        permissionRow("Ghostty Automation", value: store.automationStatus)
+                        settingsRow(showsSeparator: false) {
+                            permissionRow("Ghostty Automation", value: store.automationStatus)
+                        }
                     }
 
                     if let error = store.settingsError { ErrorRow(message: error) }
                 }
-                .padding(16)
+                .padding(14)
                 .frame(maxWidth: 540, alignment: .leading)
                 .frame(maxWidth: .infinity)
                 .background {
@@ -95,13 +106,25 @@ struct SettingsView: View {
     }
 
     private func settingsGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title.uppercased())
-                .font(.system(size: 10, weight: .semibold))
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
-            content()
+                .padding(.horizontal, 12)
+            RosterSection {
+                VStack(spacing: 0) { content() }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func settingsRow<Content: View>(showsSeparator: Bool, @ViewBuilder content: () -> Content) -> some View {
+        VStack(spacing: 0) {
+            if showsSeparator { RosterRowSeparator(inset: 12) }
+            HStack(spacing: 10) { content() }
+                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+        }
     }
 
     private func permissionRow(_ name: String, value: String) -> some View {
