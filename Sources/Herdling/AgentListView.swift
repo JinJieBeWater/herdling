@@ -602,9 +602,20 @@ struct RosterSection<Content: View>: View {
         self.content = content()
     }
 
-    var body: some View {
+    private var surface: some View {
         VStack(spacing: 0) { content }
             .modifier(SectionGlass(cornerRadius: 14))
+    }
+
+    var body: some View {
+        // Container around both glass layers so the system batches them in one pass, as the custom
+        // view guidance asks. Spacing stays zero: the header plate belongs inside the card, not
+        // merged with it.
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: 0) { surface }
+        } else {
+            surface
+        }
     }
 }
 
