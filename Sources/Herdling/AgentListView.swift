@@ -116,7 +116,7 @@ private struct AccordionHeader<Trailing: View>: View {
         .accessibilityLabel(accessibilityLabel)
         .accessibilityHint(accessibilityHint)
         .background {
-            AccordionHeaderBackground(isHovered: isHovered)
+            AccordionHeaderBackground(isExpanded: isExpanded, isHovered: isHovered)
         }
         .onHover { isHovered = $0 }
     }
@@ -640,11 +640,14 @@ struct RosterBadge: View {
 }
 
 private struct AccordionHeaderBackground: View {
+    let isExpanded: Bool
     let isHovered: Bool
 
     var body: some View {
+        // Expanded headers keep a standing highlight: the section stays marked as open after the
+        // pointer leaves, the way a selected row does.
         RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(Color.primary.opacity(isHovered ? 0.06 : 0))
+            .fill(Color.primary.opacity(isHovered ? 0.08 : isExpanded ? 0.045 : 0))
     }
 }
 
