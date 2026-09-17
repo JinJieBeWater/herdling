@@ -515,9 +515,12 @@ private struct HoverRow<Content: View>: View {
         .accessibilityLabel(accessibilityText)
         .accessibilityHint("Opens this item in Ghostty")
         .background {
+            // The highlight hugs the row's own content box with even breathing room, so an indented
+            // row does not get a stretch of empty highlight on its left.
             RoundedRectangle(cornerRadius: PanelRadius.row, style: .continuous)
                 .fill(Color.primary.opacity(isHovered ? 0.06 : 0))
-                .padding(.horizontal, PanelRadius.rowInset)
+                .padding(.leading, 10 + indent - PanelRadius.rowInset)
+                .padding(.trailing, 10 - PanelRadius.rowInset)
         }
         .onHover { isHovered = $0 }
     }
