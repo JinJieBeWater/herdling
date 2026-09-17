@@ -12,6 +12,14 @@ extension AgentStatus {
         }
     }
 
+    /// Vivid badge fill for states that need attention; nil keeps the neutral low-key badge.
+    var badgeTint: Color? {
+        switch self {
+        case .blocked, .working: color
+        case .done, .idle, .unknown: nil
+        }
+    }
+
     var rosterLabel: String {
         switch self {
         case .blocked: "needs you"
@@ -45,16 +53,28 @@ extension AgentStatus {
 enum StatusPalette {
     static let blocked = adaptive(
         light: (0.62, 0.08, 0.24),
-        dark: (1.00, 0.38, 0.54)
+        dark: (1.00, 0.38, 0.54),
+        highContrastLight: (0.48, 0.00, 0.16),
+        highContrastDark: (1.00, 0.62, 0.72)
     )
     static let working = NSColor.controlAccentColor
 
+    /// Custom colours need a variant per appearance including the increased-contrast ones, per the
+    /// HIG colour guidance. The flag comes from `NSWorkspace`, not from matching appearance names:
+    /// on macOS 27 an appearance built from `.accessibilityHighContrastAqua` reports its name as
+    /// `.aqua`, so name matching cannot see the setting.
     private static func adaptive(
         light: (CGFloat, CGFloat, CGFloat),
-        dark: (CGFloat, CGFloat, CGFloat)
+        dark: (CGFloat, CGFloat, CGFloat),
+        highContrastLight: (CGFloat, CGFloat, CGFloat),
+        highContrastDark: (CGFloat, CGFloat, CGFloat)
     ) -> NSColor {
         NSColor(name: nil) { appearance in
-            let rgb = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let increased = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+            let rgb = isDark
+                ? (increased ? highContrastDark : dark)
+                : (increased ? highContrastLight : light)
             return NSColor(srgbRed: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
         }
     }
