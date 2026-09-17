@@ -6,7 +6,6 @@ import SwiftUI
 enum PanelRadius {
     static let panel: CGFloat = 12
     static let section: CGFloat = 10
-    static let row: CGFloat = 8
     /// Side inset for a row highlight, so it never runs into the card edge.
     static let rowInset: CGFloat = 8
     /// Vertical breathing room between a row's content and its highlight.
@@ -520,8 +519,8 @@ private struct HoverRow<Content: View>: View {
         .background {
             // The highlight hugs the row's own content box with even breathing room, so an indented
             // row does not get a stretch of empty highlight on its left.
-            RoundedRectangle(cornerRadius: PanelRadius.row, style: .continuous)
-                .fill(Color.primary.opacity(isHovered ? 0.06 : 0))
+            RoundedRectangle(cornerRadius: PanelRadius.section, style: .continuous)
+                .fill(Color.primary.opacity(isHovered ? 0.08 : 0))
                 .padding(.leading, 10 + indent - PanelRadius.rowInset)
                 .padding(.trailing, 10 - PanelRadius.rowInset)
         }
