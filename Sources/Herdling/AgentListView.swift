@@ -118,6 +118,7 @@ private struct AccordionHeader<Trailing: View>: View {
         .background {
             AccordionHeaderBackground(isExpanded: isExpanded, isHovered: isHovered)
         }
+        .modifier(HeaderGlass(cornerRadius: 14))
         .onHover { isHovered = $0 }
     }
 
@@ -636,6 +637,24 @@ struct RosterBadge: View {
             // Rasterize before the glass renders: glass vibrancy lightens symbol glyphs.
             .drawingGroup()
             .accessibilityHidden(true)
+    }
+}
+
+/// Glass under the section header button, layered on the section's own plate so the control reads as
+/// glass. Merge them with a container and the button would dissolve into the card, which is the
+/// distinction this is for.
+private struct HeaderGlass: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(
+                .regular,
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+        } else {
+            content
+        }
     }
 }
 
