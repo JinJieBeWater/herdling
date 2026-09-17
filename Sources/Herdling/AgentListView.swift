@@ -8,7 +8,9 @@ enum PanelRadius {
     static let section: CGFloat = 10
     static let row: CGFloat = 8
     /// Side inset for a row highlight, so it never runs into the card edge.
-    static let rowInset: CGFloat = 5
+    static let rowInset: CGFloat = 8
+    /// Vertical breathing room between a row's content and its highlight.
+    static let rowVerticalPadding: CGFloat = 3
 }
 
 /// Panel surface: the system menu material, which is what the menu bar panels people compare
@@ -507,6 +509,7 @@ private struct HoverRow<Content: View>: View {
                 // the section header's plate does.
                 .padding(.leading, 10 + indent)
                 .padding(.trailing, 10)
+                .padding(.vertical, PanelRadius.rowVerticalPadding)
                 .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
                 .contentShape(Rectangle())
         }
