@@ -408,9 +408,10 @@ private struct RecentSection: View {
                                         showHeader: RosterLayout.showsSessionHeader(
                                             name: session.name,
                                             sourceSessionCount: source.sessions.count
-                                        )
+                                        ),
+                                        indent: showsSource ? 14 : 0
                                     )
-                                    .padding(.leading, showsSource ? 14 : 0)
+    
                                 }
                             }
                         }
@@ -468,6 +469,7 @@ private struct GitBranchLabel: View {
 
 private struct HoverRow<Content: View>: View {
     let minHeight: CGFloat
+    let indent: CGFloat
     let enabled: Bool
     let accessibilityText: String
     let action: () -> Void
@@ -476,12 +478,14 @@ private struct HoverRow<Content: View>: View {
 
     init(
         minHeight: CGFloat = 26,
+        indent: CGFloat = 0,
         enabled: Bool = true,
         accessibilityText: String,
         action: @escaping () -> Void,
         @ViewBuilder content: @escaping (Bool) -> Content
     ) {
         self.minHeight = minHeight
+        self.indent = indent
         self.enabled = enabled
         self.accessibilityText = accessibilityText
         self.action = action
@@ -491,7 +495,10 @@ private struct HoverRow<Content: View>: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) { content(isHovered) }
-                .padding(.horizontal, 10)
+                // Indent the content, not the row: the highlight has to span the whole card, the way
+                // the section header's plate does.
+                .padding(.leading, 10 + indent)
+                .padding(.trailing, 10)
                 .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
                 .contentShape(Rectangle())
         }
@@ -512,6 +519,7 @@ private struct GroupHeader: View {
     let branchSummary: BranchSummary?
     let counts: [AgentStatusCount]
     let titleFont: Font
+    let indent: CGFloat
     let enabled: Bool
     let isFocusPending: Bool
     let action: () -> Void
@@ -519,6 +527,7 @@ private struct GroupHeader: View {
     var body: some View {
         HoverRow(
             minHeight: RosterLayout.groupHeaderHeight(branchSummary: branchSummary),
+            indent: indent,
             enabled: enabled,
             accessibilityText: title + (counts.isEmpty ? "" : ", \(counts.primaryStatusText)") + (isFocusPending ? ", opening in Ghostty" : ""),
             action: action
@@ -821,6 +830,7 @@ private struct SessionRoster: View {
     let branches: [String: String]
     let showEmptyMain: Bool
     let showHeader: Bool
+    let indent: CGFloat
 
     private var summaryText: String {
         AgentStatusCount.summarize(session.agents).primaryStatusText
@@ -833,7 +843,8 @@ private struct SessionRoster: View {
         session: SessionInfo,
         branches: [String: String],
         showEmptyMain: Bool = true,
-        showHeader: Bool
+        showHeader: Bool,
+        indent: CGFloat = 0
     ) {
         self.store = store
         self.source = source
@@ -841,6 +852,7 @@ private struct SessionRoster: View {
         self.branches = branches
         self.showEmptyMain = showEmptyMain
         self.showHeader = showHeader
+        self.indent = indent
     }
 
     var body: some View {
@@ -848,6 +860,7 @@ private struct SessionRoster: View {
             if showHeader {
                 HoverRow(
                     minHeight: 30,
+                    indent: indent,
                     enabled: session.online,
                     accessibilityText: "\(session.name), \(summaryText)",
                     action: { store.focusSession(session, source: source) }
@@ -879,6 +892,7 @@ private struct SessionRoster: View {
                         space: space,
                         branches: branches,
                         showEmptyMain: showEmptyMain,
+                        indent: indent
                     )
                 }
             }
@@ -893,6 +907,7 @@ private struct SpaceSection: View {
     let space: RosterSpace
     let branches: [String: String]
     let showEmptyMain: Bool
+    let indent: CGFloat
 
     init(
         store: SessionStore,
@@ -901,6 +916,7 @@ private struct SpaceSection: View {
         space: RosterSpace,
         branches: [String: String],
         showEmptyMain: Bool,
+        indent: CGFloat = 0
     ) {
         self.store = store
         self.source = source
@@ -908,6 +924,7 @@ private struct SpaceSection: View {
         self.space = space
         self.branches = branches
         self.showEmptyMain = showEmptyMain
+        self.indent = indent
     }
 
     var body: some View {
@@ -921,9 +938,9 @@ private struct SpaceSection: View {
                     session: session,
                     name: worktree.name,
                     group: worktree.group,
-                    resolvedBranches: branches
+                    resolvedBranches: branches,
+                    indent: indent + 8
                 )
-                .padding(.leading, 8)
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -939,6 +956,7 @@ private struct WorktreeSection: View {
     let name: String
     let group: AgentGroup
     let resolvedBranches: [String: String]
+    let indent: CGFloat
 
     private var counts: [AgentStatusCount] { AgentStatusCount.summarize(group.agents) }
     private var branchSummary: BranchSummary? {
@@ -951,7 +969,8 @@ private struct WorktreeSection: View {
         session: SessionInfo,
         name: String,
         group: AgentGroup,
-        resolvedBranches: [String: String]
+        resolvedBranches: [String: String],
+        indent: CGFloat = 0
     ) {
         self.store = store
         self.source = source
@@ -959,6 +978,7 @@ private struct WorktreeSection: View {
         self.name = name
         self.group = group
         self.resolvedBranches = resolvedBranches
+        self.indent = indent
     }
 
     var body: some View {
@@ -968,6 +988,7 @@ private struct WorktreeSection: View {
                 branchSummary: branchSummary,
                 counts: counts,
                 titleFont: .system(size: 12.5, weight: .semibold),
+                indent: indent,
                 enabled: session.online,
                 isFocusPending: store.pendingFocusWorkspaceID == SessionStore.WorkspaceFocusID(
                     sourceID: source.id,
@@ -986,9 +1007,9 @@ private struct WorktreeSection: View {
                         sessionName: session.name,
                         paneID: agent.paneID
                     ),
-                    action: { store.focus(agent, in: session, source: source) }
+                    action: { store.focus(agent, in: session, source: source) },
+                    indent: indent + 20
                 )
-                .padding(.leading, 20)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1003,6 +1024,7 @@ private struct AgentDetailRow: View {
     let enabled: Bool
     let isFocusPending: Bool
     let action: () -> Void
+    let indent: CGFloat
 
     private var accessibilityText: String {
         let base = "\(agent.title), \(agent.status.rosterLabel)"
@@ -1012,6 +1034,7 @@ private struct AgentDetailRow: View {
     var body: some View {
         HoverRow(
             minHeight: 24,
+            indent: indent,
             enabled: enabled,
             accessibilityText: accessibilityText,
             action: action
