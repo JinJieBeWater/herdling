@@ -163,6 +163,16 @@ final class StatusItemController: NSObject {
         hostingController.view.layoutSubtreeIfNeeded()
         resizePanel(button: button, window: window, screen: screen)
         panel.makeKeyAndOrderFront(nil)
+        // The status item window can still report its previous display right after launch, which
+        // parked the panel on another screen; re-apply once the button has settled.
+        Task { @MainActor [weak self] in
+            guard let self,
+                  panel.isVisible,
+                  let button = menuBarItem.item.button,
+                  let buttonWindow = button.window
+            else { return }
+            resizePanel(button: button, window: buttonWindow, screen: buttonWindow.screen ?? screen)
+        }
         panel.makeFirstResponder(nil)
         menuBarItem.setHighlighted(true)
         store.setPanelOpen(true)
