@@ -279,6 +279,11 @@ private struct AgentRoster: View {
     @State private var now = Date()
 
     private var sourceIDs: [String] { store.sources.map(\.id) }
+    /// Recent agents, or a few idle ones when nothing has been active lately.
+    private var recentItems: [RecentAgentItem] {
+        let recent = store.recentAgents(at: now)
+        return recent.isEmpty ? store.recentFallbackAgents() : recent
+    }
     private var effectiveExpandedSourceID: String? {
         guard case let .source(sourceID) = expandedSection,
               sourceIDs.contains(sourceID)
@@ -298,7 +303,7 @@ private struct AgentRoster: View {
                     }
                     RecentSection(
                         store: store,
-                        items: store.recentAgents(at: now),
+                        items: recentItems,
                         isExpanded: isRecentExpanded,
                         onToggle: toggleRecent
                     )
@@ -397,24 +402,28 @@ private struct RecentSection: View {
     }
 
     var body: some View {
-        if !items.isEmpty {
-            RosterSection {
-                VStack(spacing: 0) {
-                    AccordionHeader(
-                        icon: "clock",
-                        badgeTint: .indigo,
-                        title: "Recent",
-                        isExpanded: isExpanded,
-                        accessibilityLabel: "Recent, \(isExpanded ? "expanded" : "collapsed")",
-                        accessibilityHint: "Expands or collapses recent agents",
-                        action: onToggle
-                    ) {
-                        Spacer(minLength: 8)
-                        GroupActivitySummary(counts: AgentStatusCount.summarize(items.map(\.agent)))
-                    }
+        RosterSection {
+            VStack(spacing: 0) {
+                AccordionHeader(
+                    icon: "clock",
+                    badgeTint: .indigo,
+                    title: "Recent",
+                    isExpanded: isExpanded,
+                    accessibilityLabel: "Recent, \(isExpanded ? "expanded" : "collapsed")",
+                    accessibilityHint: "Expands or collapses recent agents",
+                    action: onToggle
+                ) {
+                    Spacer(minLength: 8)
+                    GroupActivitySummary(counts: AgentStatusCount.summarize(items.map(\.agent)))
+                }
 
-                    AccordionBody(isExpanded: isExpanded) {
-                        VStack(alignment: .leading, spacing: 0) {
+                AccordionBody(isExpanded: isExpanded) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        // The section stays put when nothing is recent, with the same empty row a
+                        // source shows, so the panel keeps its shape instead of dropping a group.
+                        if items.isEmpty {
+                            EmptyRow(message: "No recent activity", indent: 0)
+                        } else {
                             let sources = outlineSources
                             ForEach(sources) { source in
                                 let showsSource = sources.count > 1 || source.descriptor.sshAlias != nil
@@ -436,12 +445,11 @@ private struct RecentSection: View {
                                         ),
                                         indent: showsSource ? 14 : 0
                                     )
-    
                                 }
                             }
                         }
-                        .padding(.bottom, 6)
                     }
+                    .padding(.bottom, 6)
                 }
             }
         }
@@ -660,6 +668,21 @@ struct RosterSection<Content: View>: View {
     }
 }
 
+/// A quiet row for a place that has nothing to show yet, aligned with the rows it stands in for.
+struct EmptyRow: View {
+    let message: String
+    var indent: CGFloat = 0
+
+    var body: some View {
+        Text(message)
+            .font(.system(size: 11.5))
+            .foregroundStyle(.secondary)
+            .padding(.leading, 10 + indent + 34)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 /// Hairline between rows and between sections, inset to align with row text.
 struct RosterRowSeparator: View {
     var inset: CGFloat = 44
@@ -828,11 +851,7 @@ private struct SourceOutline: View {
                             .padding(.leading, 44)
                             .padding(.vertical, 8)
                         } else if source.sessions.isEmpty {
-                            Text("No running sessions")
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(.secondary)
-                                .padding(.leading, 44)
-                                .padding(.vertical, 6)
+                            EmptyRow(message: "No running sessions", indent: 34)
                         }
 
                         ForEach(source.sessions) { session in

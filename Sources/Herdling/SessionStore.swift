@@ -256,6 +256,40 @@ enum RecentAgentList {
         }
     }
 
+    /// Idle agents to fall back on when nothing has been active recently, most recently updated
+    /// first, so the section still leads somewhere.
+    static func idleFallback(from sources: [SourceInfo], limit: Int = 3) -> [RecentAgentItem] {
+        var candidates: [(order: Int, agent: AgentInfo, source: SourceInfo, sessionName: String)] = []
+        var order = 0
+        for source in sources where source.online {
+            for session in source.sessions where session.online {
+                for agent in session.agents where agent.status == .idle {
+                    candidates.append((order, agent, source, session.name))
+                    order += 1
+                }
+            }
+        }
+
+        return candidates
+            .sorted {
+                if $0.agent.updatedAt != $1.agent.updatedAt {
+                    return $0.agent.updatedAt > $1.agent.updatedAt
+                }
+                return $0.order < $1.order
+            }
+            .prefix(limit)
+            .map {
+                RecentAgentItem(
+                    id: .init(
+                        sourceID: $0.source.id,
+                        sessionName: $0.sessionName,
+                        paneID: $0.agent.paneID
+                    ),
+                    agent: $0.agent
+                )
+            }
+    }
+
     static func items(from sources: [SourceInfo], at now: Date) -> [RecentAgentItem] {
         var order = 0
         var ranked: [(priority: Int, order: Int, item: RecentAgentItem)] = []
@@ -422,6 +456,12 @@ final class SessionStore {
 
     func recentAgents(at date: Date) -> [RecentAgentItem] {
         RecentAgentList.items(from: sources, at: date)
+    }
+
+    /// What the Recent section shows when nothing has been active lately: a few idle agents, so the
+    /// section still leads somewhere instead of sitting empty.
+    func recentFallbackAgents() -> [RecentAgentItem] {
+        RecentAgentList.idleFallback(from: sources)
     }
 
     convenience init() {
