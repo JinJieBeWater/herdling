@@ -279,10 +279,12 @@ private struct AgentRoster: View {
     @State private var now = Date()
 
     private var sourceIDs: [String] { store.sources.map(\.id) }
-    /// Recent agents, or a few idle ones when nothing has been active lately.
+    /// Recent agents plus up to three of the most recently idle ones: attention items keep the
+    /// section useful, the idle fill keeps its size predictable.
     private var recentItems: [RecentAgentItem] {
         let recent = store.recentAgents(at: now)
-        return recent.isEmpty ? store.recentFallbackAgents() : recent
+        var seen = Set(recent.map(\.id))
+        return recent + store.recentFallbackAgents().filter { seen.insert($0.id).inserted }
     }
     private var effectiveExpandedSourceID: String? {
         guard case let .source(sourceID) = expandedSection,
