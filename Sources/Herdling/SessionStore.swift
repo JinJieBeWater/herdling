@@ -5,7 +5,6 @@ import ServiceManagement
 private enum DefaultsKey {
     static let selectedSSHAliases = "selected-ssh-aliases"
     static let ghosttyOpenBehavior = "ghostty-open-behavior"
-    static let focusedAgents = "focused-agents"
 }
 
 enum AgentStatus: String, Sendable {
@@ -257,18 +256,8 @@ enum RecentAgentList {
         }
     }
 
-    /// Stable key for one agent, used to remember when it was last opened from the panel.
-    static func key(sourceID: String, sessionName: String, paneID: String) -> String {
-        "\(sourceID)|\(sessionName)|\(paneID)"
-    }
-
-    /// Idle agents to fill the Recent section with. Opened ones come first, newest first, then the
-    /// ones whose status changed most recently, so the fill follows what was actually touched.
-    static func idleFallback(
-        from sources: [SourceInfo],
-        focusedAt: [String: Date],
-        limit: Int = 3
-    ) -> [RecentAgentItem] {
+    /// Idle agents to fill the Recent section with, the ones that went idle most recently first.
+    static func idleFallback(from sources: [SourceInfo], limit: Int = 3) -> [RecentAgentItem] {
         var candidates: [(order: Int, agent: AgentInfo, source: SourceInfo, sessionName: String)] = []
         var order = 0
         for source in sources where source.online {
@@ -282,9 +271,6 @@ enum RecentAgentList {
 
         return candidates
             .sorted {
-                let left = focusedAt[key(sourceID: $0.source.id, sessionName: $0.sessionName, paneID: $0.agent.paneID)]
-                let right = focusedAt[key(sourceID: $1.source.id, sessionName: $1.sessionName, paneID: $1.agent.paneID)]
-                if left != right { return (left ?? .distantPast) > (right ?? .distantPast) }
                 if $0.agent.updatedAt != $1.agent.updatedAt {
                     return $0.agent.updatedAt > $1.agent.updatedAt
                 }
@@ -437,7 +423,6 @@ final class SessionStore {
     private(set) var sources: [SourceInfo]
     private(set) var availableSSHAliases: [String]
     private(set) var selectedSSHAliases: [String]
-    private var focusedAgents: [String: Date]
     private(set) var focusError: String?
     private var pendingFocus: FocusRequest?
 
@@ -472,27 +457,9 @@ final class SessionStore {
         RecentAgentList.items(from: sources, at: date)
     }
 
-    /// Idle agents the Recent section fills up with, most recently opened from the panel first.
+    /// Idle agents the Recent section fills up with, the most recently idle ones.
     func recentFallbackAgents() -> [RecentAgentItem] {
-        RecentAgentList.idleFallback(from: sources, focusedAt: focusedAgents)
-    }
-
-    private func rememberFocus(_ agent: AgentInfo, in session: SessionInfo, source: SourceDescriptor) {
-        focusedAgents[RecentAgentList.key(sourceID: source.id, sessionName: session.name, paneID: agent.paneID)] = .now
-        guard focusedAgents.count > 50 else {
-            persistFocusedAgents()
-            return
-        }
-        let keep = focusedAgents.sorted { $0.value > $1.value }.prefix(50)
-        focusedAgents = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
-        persistFocusedAgents()
-    }
-
-    private func persistFocusedAgents() {
-        defaults.set(
-            Dictionary(uniqueKeysWithValues: focusedAgents.map { ($0.key, $0.value.timeIntervalSince1970) }),
-            forKey: DefaultsKey.focusedAgents
-        )
+        RecentAgentList.idleFallback(from: sources)
     }
 
     convenience init() {
@@ -515,8 +482,6 @@ final class SessionStore {
         defaults: UserDefaults = .standard
     ) {
         let persisted = defaults.stringArray(forKey: DefaultsKey.selectedSSHAliases) ?? []
-        focusedAgents = (defaults.dictionary(forKey: DefaultsKey.focusedAgents) as? [String: Double] ?? [:])
-            .mapValues(Date.init(timeIntervalSince1970:))
         let aliases = sourceDescriptors?.compactMap(\.sshAlias) ?? SSHConfig.aliases()
         let selected = sourceDescriptors?.compactMap(\.sshAlias) ?? aliases.filter(persisted.contains)
         let ghostty = GhosttyController()
@@ -857,7 +822,6 @@ final class SessionStore {
 
     func focus(_ agent: AgentInfo, in session: SessionInfo, source: SourceDescriptor = .local) {
         guard session.online else { return }
-        rememberFocus(agent, in: session, source: source)
         focusError = nil
         pendingFocus = .agent(agent, session, source)
         focusRunner.submit(.agent(agent, session, source))

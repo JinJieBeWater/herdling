@@ -933,13 +933,13 @@ struct CoreBehaviorTests {
     }
 
     @Test
-    func recentFallbackPrefersAgentsOpenedFromThePanel() {
+    func recentFallbackPrefersTheMostRecentlyIdleAgents() {
         let now = Date(timeIntervalSince1970: 10_000)
         let agents = [
-            recentAgent("never-opened-newer", .idle, changedAt: now.addingTimeInterval(-900)),
-            recentAgent("never-opened-older", .idle, changedAt: now.addingTimeInterval(-2_000)),
-            recentAgent("opened-long-ago", .idle, changedAt: now.addingTimeInterval(-3_000)),
-            recentAgent("opened-lately", .idle, changedAt: now.addingTimeInterval(-4_000)),
+            recentAgent("idle-oldest", .idle, changedAt: now.addingTimeInterval(-3_000)),
+            recentAgent("idle-newest", .idle, changedAt: now.addingTimeInterval(-900)),
+            recentAgent("idle-middle", .idle, changedAt: now.addingTimeInterval(-2_000)),
+            recentAgent("idle-never-observed", .idle, changedAt: .distantPast),
             recentAgent("working", .working, changedAt: now),
         ]
         let source = SourceInfo(
@@ -947,16 +947,11 @@ struct CoreBehaviorTests {
             sessions: [SessionInfo(name: "default", agents: agents, online: true)],
             online: true
         )
-        let focusedAt = [
-            RecentAgentList.key(sourceID: "local", sessionName: "default", paneID: "opened-lately"): now,
-            RecentAgentList.key(sourceID: "local", sessionName: "default", paneID: "opened-long-ago"):
-                now.addingTimeInterval(-5_000),
-        ]
 
-        let items = RecentAgentList.idleFallback(from: [source], focusedAt: focusedAt)
+        let items = RecentAgentList.idleFallback(from: [source])
 
-        // Opened agents first, newest opening first; the rest by status change; working never fills.
-        #expect(items.map(\.agent.title) == ["opened-lately", "opened-long-ago", "never-opened-newer"])
+        // Most recently idle first; an agent whose change was never observed comes last.
+        #expect(items.map(\.agent.title) == ["idle-newest", "idle-middle", "idle-oldest"])
     }
 
     @Test
