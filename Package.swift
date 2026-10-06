@@ -4,7 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "Herdling",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v15)],
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-testing.git", exact: "6.2.4"),
     ],
