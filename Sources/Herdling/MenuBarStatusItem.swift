@@ -131,16 +131,21 @@ private struct MenuBarSummaryStrip: View {
                 HStack(spacing: 2) {
                     Image(systemName: entry.statusSymbol)
                         .symbolRenderingMode(.monochrome)
-                        .font(.system(size: 11, weight: .medium))
-                        .frame(width: 11, height: 13)
+                        .font(Theme.Glyph.menuBar)
+                        .frame(
+                            width: Theme.Size.menuBarGlyphWidth,
+                            height: Theme.Size.menuBarGlyphHeight
+                        )
                     if let count = entry.count {
                         Text(count.formatted())
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .font(Theme.Glyph.menuBarDigit)
                     }
                 }
             }
         }
-        .foregroundStyle(.black)
+        // The image is a template, so AppKit recolours it for the menu bar; the ink here only has to
+        // be opaque enough for the renderer to keep the glyphs' alpha.
+        .foregroundStyle(Theme.Colors.textPrimary)
         .fixedSize()
     }
 }

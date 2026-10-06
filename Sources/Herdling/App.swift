@@ -42,6 +42,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Overlay scrollers, app-wide and once: under the system's "Automatic" setting AppKit
+        // otherwise switches every scroll view to a legacy scroller the moment it sees a mouse,
+        // and that scroller reserves a trailing gutter — inside a transparent panel it shows up as
+        // the footer's right edge sitting inboard of its left one.
+        UserDefaults.standard.set("WhenScrolling", forKey: "AppleShowScrollBars")
+
         let store = SessionStore()
         self.store = store
         let statusController = StatusItemController(store: store)
