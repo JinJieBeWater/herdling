@@ -63,6 +63,13 @@ struct RosterSpace: Identifiable, Sendable {
     let primary: AgentGroup
     let worktrees: [AgentGroup]
 
+    /// True when this space has nothing but its own primary worktree — no branches under it.
+    ///
+    /// Herdr gives every workspace one primary worktree, displayed as `Main`. Whether a row for it
+    /// carries any information is a question about *structure*, so it is asked here rather than by
+    /// comparing the display name somewhere in the view.
+    var isOnlyItsPrimaryWorktree: Bool { worktrees.isEmpty }
+
     func displayedWorktrees(showEmptyMain: Bool = true) -> [RosterWorktree] {
         (showEmptyMain || !primary.agents.isEmpty ? [RosterWorktree(name: "Main", group: primary)] : []) + worktrees.map {
             RosterWorktree(name: worktreeName($0), group: $0)

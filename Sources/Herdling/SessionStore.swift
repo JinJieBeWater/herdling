@@ -5,6 +5,8 @@ import ServiceManagement
 private enum DefaultsKey {
     static let selectedSSHAliases = "selected-ssh-aliases"
     static let ghosttyOpenBehavior = "ghostty-open-behavior"
+    static let expandedSource = "expanded.source"
+    static let expandedRecent = "expanded.recent"
 }
 
 enum AgentStatus: String, Sendable {
@@ -149,6 +151,7 @@ struct SessionInfo: Identifiable, Sendable {
         self.init(name: name, groups: groups, online: online, updatedAt: updatedAt, error: error)
     }
 }
+
 
 struct SourceInfo: Identifiable, Sendable {
     var id: String { descriptor.id }
@@ -443,12 +446,35 @@ final class SessionStore {
             workspaceID: workspaceID
         )
     }
+
+    /// Whether this workspace is the one a focus is currently opening, so whichever row stands for
+    /// it — a worktree's own, or a space's when the space has only `Main` — can say so.
+    func isFocusing(_ group: AgentGroup, in session: SessionInfo, source: SourceDescriptor) -> Bool {
+        pendingFocusWorkspaceID == WorkspaceFocusID(
+            sourceID: source.id,
+            sessionName: session.name,
+            workspaceID: group.id
+        )
+    }
     private(set) var settingsError: String?
     private(set) var automationStatus = "Not checked"
     private(set) var ghosttyOpenBehavior: GhosttyOpenBehavior
     private var isRefreshing = false
     private(set) var panelOpen = false
-    private(set) var showingSettings = false
+
+    /// Which group the panel opens on. Persisted through the store's own `defaults`, not through
+    /// `@AppStorage`: a view that keeps its own copy writes to the standard domain even when the
+    /// store was handed a different one, which is both untestable and invisible.
+    var expandedSourceID: String {
+        get { defaults.string(forKey: DefaultsKey.expandedSource) ?? "" }
+        set { defaults.set(newValue, forKey: DefaultsKey.expandedSource) }
+    }
+
+    /// Whether Recent opens expanded. Defaults to true: Recent is what the panel is for.
+    var expandedRecent: Bool {
+        get { defaults.object(forKey: DefaultsKey.expandedRecent) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: DefaultsKey.expandedRecent) }
+    }
 
     var menuStatus: MenuStatus { MenuStatus.summarize(sources) }
     var launchAtLoginEnabled: Bool { SMAppService.mainApp.status == .enabled }
@@ -581,10 +607,6 @@ final class SessionStore {
             }
             Task { await refresh() }
         }
-    }
-
-    func setShowingSettings(_ showing: Bool) {
-        showingSettings = showing
     }
 
     func refresh() async {

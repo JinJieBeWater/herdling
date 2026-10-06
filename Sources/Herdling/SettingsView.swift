@@ -1,137 +1,112 @@
 import SwiftUI
 
+/// The Settings window's content: one grouped `Form`, so cards, row insets and hairlines are
+/// system-drawn and the window reads as System Settings does. See `docs/ui.md`.
 struct SettingsView: View {
     let store: SessionStore
 
     var body: some View {
-        VStack(spacing: 0) {
-            VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    Button { store.setShowingSettings(false) } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 12, weight: .medium))
-                            .frame(width: 28, height: 28)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Back to agents")
-                    .accessibilityLabel("Back to agents")
-                    Spacer()
-                    Text("Settings")
-                        .font(.system(size: 12, weight: .semibold))
-                    Spacer()
-                    Color.clear.frame(width: 28, height: 28)
-                }
-                .padding(.horizontal, 8)
-                .frame(height: 42)
+        Form {
+            sshSources
+            ghostty
+            general
+            permissions
 
-                Divider()
-            }
-            .background {
-                GeometryReader { geometry in
-                    Color.clear.preference(
-                        key: PanelContentHeightKey.self,
-                        value: PanelHeightMeasurement(header: geometry.size.height)
-                    )
+            if let error = store.settingsError {
+                Section {
+                    ErrorRow(message: error)
                 }
             }
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    settingsGroup("SSH Sources") {
-                        let aliases = store.availableSSHAliases
-                        if aliases.isEmpty {
-                            settingsRow(showsSeparator: false) {
-                                Text("No aliases found in ~/.ssh/config").foregroundStyle(.secondary)
-                            }
-                        }
-                        ForEach(Array(aliases.enumerated()), id: \.element) { index, alias in
-                            settingsRow(showsSeparator: index > 0) {
-                                Toggle(alias, isOn: Binding(
-                                    get: { store.selectedSSHAliases.contains(alias) },
-                                    set: { store.setRemoteAlias(alias, enabled: $0) }
-                                ))
-                            }
-                        }
-                    }
-
-                    settingsGroup("Ghostty") {
-                        settingsRow(showsSeparator: false) {
-                            Picker("Open new clients in", selection: Binding(
-                                get: { store.ghosttyOpenBehavior },
-                                set: { store.setGhosttyOpenBehavior($0) }
-                            )) {
-                                Text("Window").tag(GhosttyOpenBehavior.window)
-                                Text("Tab").tag(GhosttyOpenBehavior.tab)
-                            }
-                            .pickerStyle(.segmented)
-                        }
-                    }
-
-                    settingsGroup("General") {
-                        settingsRow(showsSeparator: false) {
-                            Toggle("Launch at Login", isOn: Binding(
-                                get: { store.launchAtLoginEnabled },
-                                set: { store.setLaunchAtLogin($0) }
-                            ))
-                        }
-                    }
-
-                    settingsGroup("Permissions") {
-                        settingsRow(showsSeparator: false) {
-                            permissionRow("Ghostty Automation", value: store.automationStatus)
-                        }
-                    }
-
-                    if let error = store.settingsError { ErrorRow(message: error) }
-                }
-                .padding(14)
-                .frame(maxWidth: 540, alignment: .leading)
-                .frame(maxWidth: .infinity)
-                .background {
-                    GeometryReader { geometry in
-                        Color.clear.preference(
-                            key: PanelContentHeightKey.self,
-                            value: PanelHeightMeasurement(body: geometry.size.height)
-                        )
-                    }
-                }
-            }
-            .scrollBounceBehavior(.basedOnSize)
-            .scrollIndicators(.automatic)
-            .contentMargins(.vertical, 8, for: .scrollIndicators)
         }
+        .formStyle(.grouped)
+        .frame(
+            minWidth: Theme.Size.settingsWidth,
+            minHeight: Theme.Size.settingsMinHeight
+        )
         .task { await store.refreshPermissionStatus() }
         .task { await store.refreshSSHAliases() }
     }
 
-    private func settingsGroup<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-            RosterSection {
-                VStack(spacing: 0) { content() }
+    private var sshSources: some View {
+        Section {
+            let aliases = store.availableSSHAliases
+            if aliases.isEmpty {
+                Text("No aliases found in ~/.ssh/config")
+                    .foregroundStyle(Theme.Colors.textSecondary)
+            }
+            ForEach(aliases, id: \.self) { alias in
+                let isEnabled = store.selectedSSHAliases.contains(alias)
+                Toggle(isOn: Binding(
+                    get: { isEnabled },
+                    set: { store.setRemoteAlias(alias, enabled: $0) }
+                )) {
+                    // A host that is off reads as off, the way a Settings sidebar's glyph does.
+                    SettingsLabel(
+                        title: alias,
+                        symbol: "network",
+                        tint: isEnabled ? Theme.Hue.purple : Theme.Colors.textTertiary
+                    )
+                }
+            }
+        } header: {
+            Text("SSH Sources")
+        } footer: {
+            Text("Herdr must be installed on each enabled host. Disabled hosts are never contacted.")
+        }
+    }
+
+    private var ghostty: some View {
+        Section("Ghostty") {
+            Picker(selection: Binding(
+                get: { store.ghosttyOpenBehavior },
+                set: { store.setGhosttyOpenBehavior($0) }
+            )) {
+                Text("Window").tag(GhosttyOpenBehavior.window)
+                Text("Tab").tag(GhosttyOpenBehavior.tab)
+            } label: {
+                SettingsLabel(
+                    title: "Open new clients in",
+                    subtitle: "Where a client opens when no existing one can be reused.",
+                    symbol: "macwindow",
+                    tint: Theme.Hue.blue
+                )
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    private var general: some View {
+        Section("General") {
+            Toggle(isOn: Binding(
+                get: { store.launchAtLoginEnabled },
+                set: { store.setLaunchAtLogin($0) }
+            )) {
+                SettingsLabel(
+                    title: "Launch at Login",
+                    subtitle: "Herdling starts with your Mac and keeps the roster current.",
+                    symbol: "power",
+                    tint: Theme.Hue.green
+                )
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func settingsRow<Content: View>(showsSeparator: Bool, @ViewBuilder content: () -> Content) -> some View {
-        VStack(spacing: 0) {
-            if showsSeparator { RosterRowSeparator(inset: 12) }
-            HStack(spacing: 10) { content() }
-                .padding(.horizontal, 12)
-                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
-        }
-    }
-
-    private func permissionRow(_ name: String, value: String) -> some View {
-        HStack {
-            Text(name)
-            Spacer()
-            Text(value).foregroundStyle(.secondary)
+    private var permissions: some View {
+        Section {
+            LabeledContent {
+                Text(store.automationStatus)
+                    .foregroundStyle(Theme.Colors.textSecondary)
+                    .lineLimit(1)
+            } label: {
+                SettingsLabel(
+                    title: "Ghostty Automation",
+                    subtitle: "Let Herdling open and focus sessions.",
+                    symbol: "lock.shield",
+                    tint: Theme.Hue.orange
+                )
+            }
+        } header: {
+            Text("Permissions")
         }
     }
 }

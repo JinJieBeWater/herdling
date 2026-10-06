@@ -47,15 +47,20 @@ enum PanelHeightBridge {
 
 @MainActor
 final class StatusItemController: NSObject {
-    static let panelWidth: CGFloat = 420
-    static let panelTopMargin: CGFloat = 0
-    static let panelBottomMargin: CGFloat = 16
-    static let panelMinHeight: CGFloat = 100
-    static let panelScreenFraction: CGFloat = 0.85
+    static let panelWidth: CGFloat = Theme.Size.panelWidth
+    static let panelTopMargin: CGFloat = Theme.Size.panelTopMargin
+    static let panelBottomMargin: CGFloat = Theme.Size.panelBottomMargin
+    static let panelMinHeight: CGFloat = Theme.Size.panelMinHeight
+    static let panelScreenFraction: CGFloat = Theme.Size.panelScreenFraction
     private let store: SessionStore
     private let menuBarItem = MenuBarStatusItem()
     private let panel = MenuBarPanel()
-    private lazy var hostingController = NSHostingController(rootView: AgentListView(store: store))
+    private var settingsController: SettingsWindowController?
+    private lazy var hostingController = NSHostingController(
+        rootView: AgentListView(store: store, onOpenSettings: { [weak self] in
+            self?.openSettings()
+        })
+    )
     private lazy var outsideClickMonitor = PanelOutsideClickMonitor(
         panel: panel,
         statusItems: [menuBarItem.item],
@@ -95,8 +100,8 @@ final class StatusItemController: NSObject {
             // while the labels follow the appearance, which pairs dark text with a dark panel.
             let glass = NSGlassEffectView()
             glass.style = .regular
-            glass.cornerRadius = PanelRadius.panel
-            glass.tintColor = NSColor(white: 1, alpha: 0.04)
+            glass.cornerRadius = Theme.Radius.panel
+            glass.tintColor = Theme.Colors.glassTint
             glass.contentView = hostingController.view
             panel.contentView = glass
         } else {
@@ -145,8 +150,11 @@ final class StatusItemController: NSObject {
     }
 
     @objc func openSettings() {
-        store.setShowingSettings(true)
-        if !panel.isVisible { openPanel() }
+        if panel.isVisible { closePanel() }
+        if settingsController == nil {
+            settingsController = SettingsWindowController(store: store)
+        }
+        settingsController?.show()
     }
 
     @objc private func quitApp() {
@@ -226,25 +234,12 @@ final class StatusItemController: NSObject {
                 else { return false }
 
                 guard keyCode == 53 else { return false }
-                switch Self.escapeAction(showingSettings: self.store.showingSettings) {
-                case .showRoster:
-                    self.store.setShowingSettings(false)
-                case .closePanel:
-                    self.closePanel()
-                }
+                // Settings lives in its own window, so Escape here only ever closes the panel.
+                self.closePanel()
                 return true
             }
             return consumed ? nil : event
         }
-    }
-
-    enum EscapeAction: Equatable {
-        case showRoster
-        case closePanel
-    }
-
-    nonisolated static func escapeAction(showingSettings: Bool) -> EscapeAction {
-        showingSettings ? .showRoster : .closePanel
     }
 
     private func updateStatus() {

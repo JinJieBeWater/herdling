@@ -2239,12 +2239,6 @@ struct CoreBehaviorTests {
     }
 
     @Test
-    func panelEscapeReturnsFromSettingsBeforeClosing() {
-        #expect(StatusItemController.escapeAction(showingSettings: true) == .showRoster)
-        #expect(StatusItemController.escapeAction(showingSettings: false) == .closePanel)
-    }
-
-    @Test
     @MainActor
     func applicationMenuProvidesStandardSettingsAndQuitShortcuts() throws {
         let menu = HerdlingApplicationMenu.make(settingsTarget: NSObject())
