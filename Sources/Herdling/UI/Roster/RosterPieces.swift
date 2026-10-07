@@ -27,11 +27,13 @@ struct GroupHeaderLine<Leading: View, Subtitle: View, Trailing: View>: View {
 
     var body: some View {
         HStack(spacing: Theme.Spacing.lg) {
-            leading
-            Text(title)
-                .font(titleFont)
-                .foregroundStyle(Theme.Colors.textPrimary)
-                .lineLimit(1)
+            HStack(spacing: Theme.Spacing.rowContentGap) {
+                leading
+                Text(title)
+                    .font(titleFont)
+                    .foregroundStyle(Theme.Colors.textPrimary)
+                    .lineLimit(1)
+            }
             subtitle
             Spacer(minLength: Theme.Spacing.md)
             trailing
@@ -79,6 +81,8 @@ struct GroupHeaderRow<Leading: View, Subtitle: View, Trailing: View>: View {
     var body: some View {
         HoverRow(
             minHeight: Theme.Size.rowMinHeight,
+            verticalPadding: isExpanded == nil
+                ? Theme.Spacing.rowVertical : Theme.Spacing.sectionHeaderVertical,
             indent: indent,
             enabled: enabled,
             isSelected: isExpanded == true,
@@ -142,17 +146,15 @@ struct RowSlot<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        content
+        Color.clear
             .frame(width: Theme.Size.rowIcon, height: Theme.Size.rowIcon)
+            .overlay { content }
     }
 }
 
 // MARK: - Trailing readouts
 
-/// A space's name: the heading of the worktrees below it, one step left of their content.
-///
-/// `trailing` is where a space's readouts go when it has no worktree row of its own to carry them
-/// — a branch and a count, on the same trailing edge every other readout in the panel uses.
+/// A quiet space heading on the same title column as a single-worktree space.
 struct SpaceLabel<Trailing: View>: View {
     let title: String
     var indent: CGFloat = 0
@@ -160,16 +162,20 @@ struct SpaceLabel<Trailing: View>: View {
 
     var body: some View {
         HStack(spacing: Theme.Spacing.md) {
-            Text(title)
-                .font(Theme.Typography.groupLabel.weight(.medium))
-                .foregroundStyle(Theme.Colors.textSecondary)
-                .lineLimit(1)
+            HStack(spacing: Theme.Spacing.rowContentGap) {
+                RowSlot { EmptyView() }
+                Text(title)
+                    .font(Theme.Typography.groupLabel.weight(.medium))
+                    .foregroundStyle(Theme.Colors.textSecondary)
+                    .lineLimit(1)
+            }
             Spacer(minLength: Theme.Spacing.md)
             trailing
         }
         .padding(.leading, Theme.Spacing.md + indent)
         .padding(.trailing, Theme.Spacing.md)
-        .frame(maxWidth: .infinity, minHeight: Theme.Size.labelBand, alignment: .leading)
+        .padding(.vertical, Theme.Spacing.rowVertical)
+        .frame(maxWidth: .infinity, minHeight: Theme.Size.rowMinHeight, alignment: .leading)
     }
 }
 

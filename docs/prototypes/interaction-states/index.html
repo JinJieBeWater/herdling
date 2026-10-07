@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Herdling · 交互状态对照</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#171c26;color:#e9edf4;font:14px -apple-system,BlinkMacSystemFont,sans-serif;line-height:1.5}main{max-width:1040px;padding:28px 20px;margin:auto}h1{font-size:22px;font-weight:600;margin:0 0 8px}h2{font-size:17px;margin:28px 0 10px}p{color:#aeb8c8;margin:8px 0 16px}img.evidence{width:100%;max-width:1000px;display:block}a{color:#9fbded}table{border-collapse:collapse;width:100%;font-size:13px}td,th{text-align:left;padding:9px;border-bottom:1px solid #343b4a}th{color:#b9c7db;font-weight:500}.sample{display:flex;gap:24px;flex-wrap:wrap}.panel{width:420px;border-radius:26px;padding:8px;background:#2c3443;max-width:100%}.bar{display:flex;align-items:center;height:38px;gap:4px}.mode{border:0;padding:0;height:38px;background:none;color:#aab0b9;cursor:pointer;font:400 12px -apple-system,BlinkMacSystemFont,sans-serif}.surface{height:28px;display:flex;align-items:center;gap:6px;padding:0 8px;border-radius:8px}.mode[aria-pressed=true]{color:#fff}.mode[aria-pressed=true] .surface{background:rgb(255 255 255 / .1)}.mode:hover{color:#fff}.mode:active .surface{opacity:.7}.mode:focus-visible{outline:0}.mode:focus-visible .surface{outline:1px solid #b2bfd4;outline-offset:-1px}.symbol{display:block;width:14px;height:14px;flex:none}.offline{margin-left:auto;padding-right:8px;color:#ffb147;font-size:12px}.row{height:38px;display:flex;align-items:center;gap:6px;padding:0 8px;border-radius:10px;margin-top:4px;font-size:13px}.row:hover{background:rgb(255 255 255 / .05)}.row.open{background:rgb(255 255 255 / .1)}.row.open:hover{background:rgb(255 255 255 / .1)}.source-mark{color:#39bbff;width:22px;text-align:center}.tail{margin-left:auto;color:#aab0b9;font-size:11px}.caption{font-size:12px;color:#aeb8c8}.facts{max-width:700px}.footer{padding-top:20px;color:#aeb8c8;font-size:12px}
+</style>
+<main>
+<h1>状态先分清，再调整体量</h1>
+<p>当前原生截图与方案示意分开。只研究视觉；来源允许全部收起，点击任何示意都不会定位终端。</p>
+<h2>当前间距：6pt布局，不是6pt视觉距离</h2>
+<table><tr><th>导航</th><th>左留白</th><th>图标→文字</th><th>右留白</th></tr><tr><td>Activity</td><td>14pt</td><td>12pt</td><td>9pt</td></tr><tr><td>Sources</td><td>12.5pt</td><td>11.5pt</td><td>9pt</td></tr></table>
+<p class="caption">同一截图白色墨迹测量，约0.5pt误差。不是 Apple 推荐值。</p>
+<h2>待确认：28pt视觉表面，保留38pt点击区</h2>
+<div class="sample"><div>
+<div class="panel"><div class="bar">
+<button class="mode" aria-pressed="true"><span class="surface"><svg class="symbol" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M1 5v4M4 2v10M7 4v6M10 1v12M13 5v4"/></svg>Activity</span></button>
+<button class="mode" aria-pressed="false"><span class="surface"><svg class="symbol" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1" y="2" width="12" height="10" rx="1.5"/><path d="M1 5.3h12M1 8.7h12M3 3.5h2M3 6.9h2M3 10.3h2"/></svg>Sources</span></button>
+<span class="offline">1 offline</span></div>
+<div class="row" role="button" tabindex="0" aria-expanded="false"><span class="source-mark">▱</span><strong>JinJieBeWater</strong><span class="tail">3 working　21 idle　›</span></div>
+<div class="row" role="button" tabindex="0" aria-expanded="false"><span class="source-mark">◎</span><strong>kvm</strong><span class="tail">Offline　›</span></div>
+</div><p class="caption">CSS设计示意，不是原生玻璃。可hover、按住、Tab；来源行仅比较折叠状态，不实现目录内容。</p></div>
+<div class="facts"><p>current复用selection；hover不伪装成current。导航保留仅提亮的hover，列表保留临时wash。按下只是短暂反馈，focus单独显示。</p><p>图标槽按短控件调整，不再照搬列表22pt槽。字体和位置在状态变化时不跳动。</p></div></div>
+<h2>当前应用：12个原生状态</h2>
+<p class="caption">原生2×截图按逻辑尺寸展示，与上方420pt示意采用同一尺度。</p>
+<img class="evidence" style="max-width:500px" alt="导航、来源标题和定位行的实际状态对照" src="../../../.build/interaction-state-evidence-BJLrTD/native-state-sheet.png">
+<p class="footer"><a href="../../interaction-state-audit.md">本机审计与测量</a> · <a href="../../macos-control-states-research.md">Apple 官方依据</a><br>原生证据只操作视图、来源折叠与键盘选择，未提交目标定位。示意不能替代实际玻璃验收。</p>
+</main>
+<script>
+document.querySelectorAll('.mode').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.mode').forEach(other=>other.setAttribute('aria-pressed',String(other===button)))}));
+function toggleRow(row){let open=row.getAttribute('aria-expanded')!=='true';document.querySelectorAll('.row').forEach(other=>{let expanded=other===row&&open;other.classList.toggle('open',expanded);other.setAttribute('aria-expanded',String(expanded));let tail=other.querySelector('.tail');tail.textContent=tail.textContent.replace(/[›⌄]$/,expanded?'⌄':'›')})}
+document.querySelectorAll('.row').forEach(row=>{row.addEventListener('click',()=>toggleRow(row));row.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleRow(row)}})});
+</script>
+</html>

@@ -6,7 +6,6 @@ private enum DefaultsKey {
     static let selectedSSHAliases = "selected-ssh-aliases"
     static let ghosttyOpenBehavior = "ghostty-open-behavior"
     static let expandedSource = "expanded.source"
-    static let expandedRecent = "expanded.recent"
 }
 
 enum AgentStatus: String, Sendable {
@@ -97,14 +96,19 @@ final class LatestRequestRunner<Request> {
     }
 }
 
-private enum FocusRequest: Sendable {
-    case agent(AgentInfo, SessionInfo, SourceDescriptor)
-    case workspace(String, SessionInfo, SourceDescriptor)
-    case session(SessionInfo, SourceDescriptor)
+private struct FocusRequest: Sendable {
+    let destination: NavigationDestination
+    let token: UUID
+}
 
-    var source: SourceDescriptor {
+private enum NavigationValidationError: LocalizedError {
+    case missing
+    case offline
+
+    var errorDescription: String? {
         switch self {
-        case let .agent(_, _, source), let .workspace(_, _, source), let .session(_, source): source
+        case .missing: "This item is no longer available. Update the list, then retry."
+        case .offline: "This source or session is offline. Reconnect, then retry."
         }
     }
 }
@@ -163,203 +167,10 @@ struct SourceInfo: Identifiable, Sendable {
     var branches: [String: String] = [:]
 }
 
-struct RecentAgentItem: Identifiable, Sendable {
-    struct ID: Hashable, Sendable {
-        let sourceID: String
-        let sessionName: String
-        let paneID: String
-    }
-
-    let id: ID
-    let agent: AgentInfo
-}
-
-enum RecentAgentList {
-    static let idleLifetime: TimeInterval = 10 * 60
-
-    private struct SessionSelection {
-        var rankByGroupName: [String: Int] = [:]
-        var rankByPaneID: [String: Int] = [:]
-    }
-
-    private struct SourceSelection {
-        var sessionOrder: [String] = []
-        var sessions: [String: SessionSelection] = [:]
-    }
-
-    /// Ranking bookkeeping for the outline: sources and sessions keep the order in which their first
-    /// item appeared, groups and panes keep the item order inside them.
-    private struct OutlineOrder {
-        private var sourceOrder: [String] = []
-        private var selections: [String: SourceSelection] = [:]
-
-        var sourceIDs: [String] { sourceOrder }
-
-        mutating func add(_ item: RecentAgentItem, rank: Int) {
-            let sourceID = item.id.sourceID
-            let sessionName = item.id.sessionName
-            if selections[sourceID] == nil {
-                sourceOrder.append(sourceID)
-                selections[sourceID] = SourceSelection()
-            }
-
-            var sourceSelection = selections[sourceID]!
-            if sourceSelection.sessions[sessionName] == nil {
-                sourceSelection.sessionOrder.append(sessionName)
-                sourceSelection.sessions[sessionName] = SessionSelection()
-            }
-
-            var sessionSelection = sourceSelection.sessions[sessionName]!
-            let components = item.agent.workspace.split(separator: "/")
-            for end in components.indices {
-                let name = components[...end].joined(separator: "/")
-                sessionSelection.rankByGroupName[name] = min(
-                    sessionSelection.rankByGroupName[name] ?? rank,
-                    rank
-                )
-            }
-            if sessionSelection.rankByPaneID[item.id.paneID] == nil {
-                sessionSelection.rankByPaneID[item.id.paneID] = rank
-            }
-            sourceSelection.sessions[sessionName] = sessionSelection
-            selections[sourceID] = sourceSelection
-        }
-
-        /// Returns nil when the source contributed no ranked item, so the caller skips it.
-        func sessions(for source: SourceInfo) -> [SessionInfo]? {
-            guard let selection = selections[source.id] else { return nil }
-            let sessionByName = Dictionary(uniqueKeysWithValues: source.sessions.map { ($0.name, $0) })
-
-            return selection.sessionOrder.compactMap { sessionName -> SessionInfo? in
-                guard let session = sessionByName[sessionName],
-                      let sessionSelection = selection.sessions[sessionName]
-                else { return nil }
-
-                let groups = session.groups.enumerated().compactMap { index, group -> (Int, Int, AgentGroup)? in
-                    let agents = group.agents
-                        .filter { sessionSelection.rankByPaneID[$0.paneID] != nil }
-                        .sorted {
-                            sessionSelection.rankByPaneID[$0.paneID, default: .max]
-                                < sessionSelection.rankByPaneID[$1.paneID, default: .max]
-                        }
-                    guard let rank = sessionSelection.rankByGroupName[group.name] else { return nil }
-                    return (rank, index, AgentGroup(id: group.id, name: group.name, agents: agents))
-                }.sorted {
-                    $0.0 == $1.0 ? $0.1 < $1.1 : $0.0 < $1.0
-                }.map(\.2)
-
-                return SessionInfo(
-                    name: session.name,
-                    groups: groups,
-                    online: session.online,
-                    updatedAt: session.updatedAt,
-                    error: session.error
-                )
-            }
-        }
-    }
-
-    /// Idle agents to fill the Recent section with, the ones that went idle most recently first.
-    static func idleFallback(from sources: [SourceInfo], limit: Int = 3) -> [RecentAgentItem] {
-        var candidates: [(order: Int, agent: AgentInfo, source: SourceInfo, sessionName: String)] = []
-        var order = 0
-        for source in sources where source.online {
-            for session in source.sessions where session.online {
-                for agent in session.agents where agent.status == .idle {
-                    candidates.append((order, agent, source, session.name))
-                    order += 1
-                }
-            }
-        }
-
-        return candidates
-            .sorted {
-                if $0.agent.updatedAt != $1.agent.updatedAt {
-                    return $0.agent.updatedAt > $1.agent.updatedAt
-                }
-                return $0.order < $1.order
-            }
-            .prefix(limit)
-            .map {
-                RecentAgentItem(
-                    id: .init(
-                        sourceID: $0.source.id,
-                        sessionName: $0.sessionName,
-                        paneID: $0.agent.paneID
-                    ),
-                    agent: $0.agent
-                )
-            }
-    }
-
-    static func items(from sources: [SourceInfo], at now: Date) -> [RecentAgentItem] {
-        var order = 0
-        var ranked: [(priority: Int, order: Int, item: RecentAgentItem)] = []
-
-        for source in sources where source.online {
-            for session in source.sessions where session.online {
-                for agent in session.agents {
-                    let originalOrder = order
-                    order += 1
-                    guard let priority = priority(for: agent, at: now) else { continue }
-                    ranked.append((
-                        priority,
-                        originalOrder,
-                        RecentAgentItem(
-                            id: .init(
-                                sourceID: source.id,
-                                sessionName: session.name,
-                                paneID: agent.paneID
-                            ),
-                            agent: agent
-                        )
-                    ))
-                }
-            }
-        }
-
-        return ranked.sorted {
-            if $0.priority != $1.priority { return $0.priority < $1.priority }
-            if $0.item.agent.updatedAt != $1.item.agent.updatedAt {
-                return $0.item.agent.updatedAt > $1.item.agent.updatedAt
-            }
-            return $0.order < $1.order
-        }.map(\.item)
-    }
-
-    static func outlineSources(from sources: [SourceInfo], items: [RecentAgentItem]) -> [SourceInfo] {
-        let sourceByID = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
-        var order = OutlineOrder()
-        for (rank, item) in items.enumerated() {
-            order.add(item, rank: rank)
-        }
-
-        return order.sourceIDs.compactMap { sourceID -> SourceInfo? in
-            guard let source = sourceByID[sourceID],
-                  let sessions = order.sessions(for: source)
-            else { return nil }
-
-            return SourceInfo(
-                descriptor: source.descriptor,
-                sessions: sessions,
-                online: source.online,
-                error: source.error,
-                retryAt: source.retryAt,
-                branches: source.branches
-            )
-        }
-    }
-
-    private static func priority(for agent: AgentInfo, at now: Date) -> Int? {
-        switch agent.status {
-        case .blocked: 0
-        case .done: 1
-        case .working: 2
-        case .idle:
-            (0..<idleLifetime).contains(now.timeIntervalSince(agent.updatedAt)) ? 3 : nil
-        case .unknown: nil
-        }
-    }
+struct AgentFocusID: Hashable, Sendable {
+    let sourceID: String
+    let sessionName: String
+    let paneID: String
 }
 
 enum MenuAvailability: Equatable {
@@ -403,6 +214,7 @@ final class SessionStore {
     private let loadBranches: BranchLoader
     private let ghostty: GhosttyController
     private let focusExistingClient: @Sendable (SourceDescriptor, String) async throws -> Bool
+    private let activateClient: @Sendable (SourceDescriptor, String, String, GhosttyOpenBehavior) async throws -> Void
     private let defaults: UserDefaults
     private let sleep: @Sendable (Duration) async throws -> Void
     private let localMonitor: (any SessionMonitoring)?
@@ -423,26 +235,34 @@ final class SessionStore {
         await self?.performFocus(request)
     }
 
-    private(set) var sources: [SourceInfo]
+    private(set) var sources: [SourceInfo] {
+        didSet { pruneSuccessfulJumps() }
+    }
     private(set) var availableSSHAliases: [String]
     private(set) var selectedSSHAliases: [String]
     private(set) var focusError: String?
-    private var pendingFocus: FocusRequest?
+    private(set) var navigationAttempt: NavigationAttempt?
+    private(set) var successfulJumps: [NavigationDestination] = []
+    @ObservationIgnored private var navigationToken = UUID()
 
-    var pendingFocusAgentID: RecentAgentItem.ID? {
-        guard case let .agent(agent, session, source) = pendingFocus else { return nil }
-        return RecentAgentItem.ID(
-            sourceID: source.id,
-            sessionName: session.name,
-            paneID: agent.paneID
+    var pendingFocusAgentID: AgentFocusID? {
+        guard navigationAttempt?.phase == .pending,
+              case let .agent(sourceID, sessionName, paneID) = navigationAttempt?.destination
+        else { return nil }
+        return AgentFocusID(
+            sourceID: sourceID,
+            sessionName: sessionName,
+            paneID: paneID
         )
     }
 
     var pendingFocusWorkspaceID: WorkspaceFocusID? {
-        guard case let .workspace(workspaceID, session, source) = pendingFocus else { return nil }
+        guard navigationAttempt?.phase == .pending,
+              case let .workspace(sourceID, sessionName, workspaceID) = navigationAttempt?.destination
+        else { return nil }
         return WorkspaceFocusID(
-            sourceID: source.id,
-            sessionName: session.name,
+            sourceID: sourceID,
+            sessionName: sessionName,
             workspaceID: workspaceID
         )
     }
@@ -462,7 +282,7 @@ final class SessionStore {
     private var isRefreshing = false
     private(set) var panelOpen = false
 
-    /// Which group the panel opens on. Persisted through the store's own `defaults`, not through
+    /// The expanded directory in Sources. Persisted through the store's own `defaults`, not through
     /// `@AppStorage`: a view that keeps its own copy writes to the standard domain even when the
     /// store was handed a different one, which is both untestable and invisible.
     var expandedSourceID: String {
@@ -470,23 +290,8 @@ final class SessionStore {
         set { defaults.set(newValue, forKey: DefaultsKey.expandedSource) }
     }
 
-    /// Whether Recent opens expanded. Defaults to true: Recent is what the panel is for.
-    var expandedRecent: Bool {
-        get { defaults.object(forKey: DefaultsKey.expandedRecent) as? Bool ?? true }
-        set { defaults.set(newValue, forKey: DefaultsKey.expandedRecent) }
-    }
-
     var menuStatus: MenuStatus { MenuStatus.summarize(sources) }
     var launchAtLoginEnabled: Bool { SMAppService.mainApp.status == .enabled }
-
-    func recentAgents(at date: Date) -> [RecentAgentItem] {
-        RecentAgentList.items(from: sources, at: date)
-    }
-
-    /// Idle agents the Recent section fills up with, the most recently idle ones.
-    func recentFallbackAgents() -> [RecentAgentItem] {
-        RecentAgentList.idleFallback(from: sources)
-    }
 
     convenience init() {
         self.init(
@@ -505,7 +310,8 @@ final class SessionStore {
         remoteMonitorFactory: RemoteMonitorFactory? = nil,
         focusExistingClient: (@Sendable (SourceDescriptor, String) async throws -> Bool)? = nil,
         sourceDescriptors: [SourceDescriptor]? = nil,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        activateClient: (@Sendable (SourceDescriptor, String, String, GhosttyOpenBehavior) async throws -> Void)? = nil
     ) {
         let persisted = defaults.stringArray(forKey: DefaultsKey.selectedSSHAliases) ?? []
         let aliases = sourceDescriptors?.compactMap(\.sshAlias) ?? SSHConfig.aliases()
@@ -522,6 +328,9 @@ final class SessionStore {
         self.ghostty = ghostty
         self.focusExistingClient = focusExistingClient ?? { source, session in
             try await ghostty.focusExistingClient(source: source, session: session)
+        }
+        self.activateClient = activateClient ?? { source, session, command, behavior in
+            try await ghostty.activateClient(source: source, session: session, command: command, openBehavior: behavior)
         }
         self.defaults = defaults
         availableSSHAliases = aliases
@@ -843,82 +652,143 @@ final class SessionStore {
     }
 
     func focus(_ agent: AgentInfo, in session: SessionInfo, source: SourceDescriptor = .local) {
-        guard session.online else { return }
-        focusError = nil
-        pendingFocus = .agent(agent, session, source)
-        focusRunner.submit(.agent(agent, session, source))
+        navigate(to: .agent(sourceID: source.id, sessionName: session.name, paneID: agent.paneID))
     }
 
     func focusWorkspace(_ group: AgentGroup, in session: SessionInfo, source: SourceDescriptor = .local) {
-        guard session.online else { return }
-        focusError = nil
-        pendingFocus = .workspace(group.id, session, source)
-        focusRunner.submit(.workspace(group.id, session, source))
+        navigate(to: .workspace(sourceID: source.id, sessionName: session.name, workspaceID: group.id))
     }
 
     func focusSession(_ session: SessionInfo, source: SourceDescriptor = .local) {
-        guard session.online else { return }
-        focusError = nil
-        pendingFocus = nil
-        focusRunner.submit(.session(session, source))
+        navigate(to: .session(sourceID: source.id, sessionName: session.name))
+    }
+
+    func navigate(to destination: NavigationDestination) {
+        let resolved = destination.resolve(in: sources)
+        if resolved?.isAvailable == true, navigationAttempt?.phase == .pending,
+           navigationAttempt?.destination == destination { return }
+        navigationToken = UUID()
+        let previous = navigationAttempt?.destination == destination ? navigationAttempt : nil
+        let message = (resolved == nil ? NavigationValidationError.missing : .offline).localizedDescription
+        let fallbackTitle = switch destination {
+        case let .agent(_, _, paneID): paneID
+        case let .workspace(_, _, workspaceID): workspaceID
+        case let .session(_, sessionName): sessionName
+        }
+        navigationAttempt = NavigationAttempt(
+            destination: destination,
+            title: resolved?.title ?? previous?.title ?? fallbackTitle,
+            subtitle: resolved?.subtitle ?? previous?.subtitle ?? "\(destination.sourceID) / \(destination.sessionName)",
+            phase: resolved?.isAvailable == true ? .pending : .failed,
+            message: resolved?.isAvailable == true ? nil : message
+        )
+        focusError = navigationAttempt?.message
+        guard let resolved, resolved.isAvailable else {
+            onChange?()
+            return
+        }
+        focusRunner.submit(FocusRequest(destination: destination, token: navigationToken))
+        onChange?()
+    }
+
+    func retryNavigation() {
+        guard let navigationAttempt, navigationAttempt.phase == .failed else { return }
+        navigate(to: navigationAttempt.destination)
     }
 
     func dismissFocusError() {
         focusError = nil
+        if navigationAttempt?.phase == .failed { navigationAttempt = nil }
+        onChange?()
     }
 
     private func performFocus(_ request: FocusRequest) async {
-        focusError = nil
-        defer {
-            if !focusRunner.hasPendingRequest {
-                pendingFocus = nil
-            }
-            onChange?()
-        }
-
-        guard sources.contains(where: { $0.descriptor == request.source }) else { return }
-
+        guard request.token == navigationToken else { return }
+        // Keep the error privacy boundary even if configuration disappears during the request.
+        let remote = request.destination.resolve(in: sources)?.source.sshAlias != nil
+        defer { onChange?() }
         do {
-            switch request {
-            case let .agent(_, session, source), let .workspace(_, session, source):
-                // Herdr 0.9 projects workspace/tab/pane focus onto every attached client, so the CLI
-                // call can run while the Ghostty window is located and raised; a client created
-                // afterwards attaches to the focus already set on the server.
-                async let herdrFocus: Void = performHerdrFocus(
-                    request,
-                    source: source,
-                    session: session
-                )
-                let focusedExistingClient = try await focusExistingClient(source, session.name)
-                guard !focusRunner.hasPendingRequest else { return }
+            let resolved = try availableDestination(for: request)
+            navigationAttempt = NavigationAttempt(
+                destination: request.destination, title: resolved.title, subtitle: resolved.subtitle,
+                phase: .pending, message: nil
+            )
+            switch request.destination {
+            case .agent, .workspace:
+                // Public focus affects all shell clients and the target tab's seen state, even if
+                // Ghostty activation fails. The request token only gates Herdling's result UI.
+                async let herdrFocus: Void = performHerdrFocus(request)
+                let focusedExistingClient = try await focusExistingClient(resolved.source, resolved.session.name)
+                guard request.token == navigationToken else { return }
+                _ = try availableDestination(for: request)
                 try await herdrFocus
-                guard !focusRunner.hasPendingRequest else { return }
+                guard request.token == navigationToken else { return }
+                let latest = try availableDestination(for: request)
                 if !focusedExistingClient {
-                    try await ghostty.activateClient(
-                        source: source,
-                        session: session.name,
-                        command: try client.attachCommand(source: source, session: session.name),
-                        openBehavior: ghosttyOpenBehavior
+                    try await activateClient(
+                        latest.source,
+                        latest.session.name,
+                        try client.attachCommand(source: latest.source, session: latest.session.name),
+                        ghosttyOpenBehavior
                     )
+                    guard request.token == navigationToken else { return }
+                    _ = try availableDestination(for: request)
                 }
-                onClientActivated?()
-            case let .session(session, source):
-                try await ghostty.activateClient(
-                    source: source,
-                    session: session.name,
-                    command: try client.attachCommand(source: source, session: session.name),
-                    openBehavior: ghosttyOpenBehavior
-                )
-                onClientActivated?()
+            case .session:
+                let existing = try await focusExistingClient(resolved.source, resolved.session.name)
+                guard request.token == navigationToken else { return }
+                let latest = try availableDestination(for: request)
+                if !existing {
+                    try await activateClient(
+                        latest.source,
+                        latest.session.name,
+                        try client.attachCommand(source: latest.source, session: latest.session.name),
+                        ghosttyOpenBehavior
+                    )
+                    guard request.token == navigationToken else { return }
+                    _ = try availableDestination(for: request)
+                }
             }
+            completeNavigation(request.destination)
         } catch {
-            if !focusRunner.hasPendingRequest {
-                focusError = Self.focusErrorMessage(error, remote: request.source.sshAlias != nil)
-            }
+            guard request.token == navigationToken else { return }
+            focusError = Self.focusErrorMessage(error, remote: remote)
+            navigationAttempt?.phase = .failed
+            navigationAttempt?.message = focusError
+        }
+    }
+
+    private func availableDestination(for request: FocusRequest) throws -> ResolvedNavigationDestination {
+        guard request.token == navigationToken else { throw CancellationError() }
+        guard let resolved = request.destination.resolve(in: sources) else { throw NavigationValidationError.missing }
+        guard resolved.isAvailable else { throw NavigationValidationError.offline }
+        return resolved
+    }
+
+    private func completeNavigation(_ destination: NavigationDestination) {
+        navigationAttempt?.phase = .succeeded
+        navigationAttempt?.message = nil
+        if case .agent = destination {
+            successfulJumps.removeAll { $0 == destination }
+            successfulJumps.insert(destination, at: 0)
+            successfulJumps = Array(successfulJumps.prefix(3))
+        }
+        onClientActivated?()
+    }
+
+    private func pruneSuccessfulJumps() {
+        successfulJumps.removeAll { destination in
+            guard let source = sources.first(where: { $0.id == destination.sourceID }) else { return true }
+            // An outage is not evidence that a session or pane identity exited.
+            guard source.online else { return false }
+            guard let session = source.sessions.first(where: { $0.name == destination.sessionName }) else { return true }
+            guard session.online else { return false }
+            return destination.resolve(in: sources) == nil
         }
     }
 
     nonisolated static func focusErrorMessage(_ error: Error, remote: Bool = false) -> String {
+        if let error = error as? NavigationValidationError { return error.localizedDescription }
         if let error = error as? GhosttyController.GhosttyError {
             return error.localizedDescription
         }
@@ -1057,25 +927,22 @@ final class SessionStore {
         }
     }
 
-    private func performHerdrFocus(
-        _ request: FocusRequest,
-        source: SourceDescriptor,
-        session: SessionInfo
-    ) async throws {
-        switch request {
-        case let .agent(agent, _, _):
+    private func performHerdrFocus(_ request: FocusRequest) async throws {
+        let resolved = try availableDestination(for: request)
+        switch request.destination {
+        case let .agent(_, _, paneID):
             try await runHerdrFocus(
-                source: source,
-                session: session.name,
-                paneID: agent.paneID,
-                tabID: agent.tabID
+                source: resolved.source,
+                session: resolved.session.name,
+                paneID: paneID,
+                tabID: resolved.agent?.tabID
             )
-        case let .workspace(workspaceID, _, _):
+        case let .workspace(_, _, workspaceID):
             let client = self.client
             try await Task.detached {
                 try client.focusWorkspace(
-                    source: source,
-                    session: session.name,
+                    source: resolved.source,
+                    session: resolved.session.name,
                     workspaceID: workspaceID
                 )
             }.value
@@ -1116,8 +983,6 @@ final class SessionStore {
                         var agent = agent
                         if let previous = previousAgents[agent.paneID], previous.status == agent.status {
                             agent.updatedAt = previous.updatedAt
-                        } else if previousAgents[agent.paneID] == nil, agent.status == .idle {
-                            agent.updatedAt = .distantPast
                         }
                         return agent
                     }

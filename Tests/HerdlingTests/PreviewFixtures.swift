@@ -5,6 +5,16 @@ import Testing
 /// Fixture data for the render and layout harnesses: one local source with three spaces, a mix of
 /// statuses, and an SSH source that fails, so every row kind the roster can draw is covered.
 enum PreviewFixtures {
+    static func nestedSession() -> SessionInfo {
+        let groups = ["solo", "tree", "tree/topic"].map { name in
+            AgentGroup(id: name, name: name, agents: [
+                AgentInfo(paneID: name, title: "Agent", status: .working,
+                          workspace: name, cwd: "/repos/\(name)", updatedAt: .now)
+            ])
+        }
+        return SessionInfo(name: "Session", groups: groups, online: true)
+    }
+
     @MainActor
     static func makeStore(defaults: UserDefaults = renderDefaults()) -> SessionStore {
         let statuses: [(String, AgentStatus, String)] = [
@@ -61,7 +71,6 @@ enum PreviewFixtures {
     /// or the render would follow whatever the panel last had open.
     @MainActor
     static func renderDefaults() -> UserDefaults {
-        let suite = "HerdlingRender.\(UUID())"
         return makeDefaults()
     }
 
@@ -71,7 +80,6 @@ enum PreviewFixtures {
         guard let defaults = UserDefaults(suiteName: suite) else {
             preconditionFailure("Could not create a temporary UserDefaults suite.")
         }
-        defaults.set(true, forKey: "expanded.recent")
         defaults.set("", forKey: "expanded.source")
         return defaults
     }

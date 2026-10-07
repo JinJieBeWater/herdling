@@ -3,15 +3,14 @@ import SwiftUI
 
 /// The shared row grammar: one leading glyph slot, a title, an optional trailing label.
 ///
-/// Every list in the panel uses this, so an agent row, a worktree row and a Settings row all start
-/// their title at the same x. See `docs/ui.md`.
+/// Roster titles at the same visible depth share a column. See `docs/ui.md`.
 
 /// A clickable row with the shared hover fill. Hover state lives here, not in the list, so a mouse
 /// sweep repaints only the rows it enters and leaves.
 struct HoverRow<Content: View>: View {
     var minHeight: CGFloat = Theme.Size.rowMinHeight
-    /// Extra leading inset, so a nested row's content steps in while its highlight still spans the
-    /// row's own box — an indented row never gets a stretch of blank highlight on its left.
+    var verticalPadding: CGFloat = Theme.Spacing.rowVertical
+    /// Indents content only; the highlight and click target remain full width.
     var indent: CGFloat = 0
     var enabled = true
     /// A row that stands for something open, or a keyboard selection. Beats hover.
@@ -23,24 +22,58 @@ struct HoverRow<Content: View>: View {
 
     @State private var isHovered = false
     @Environment(\.panelIsOpen) private var panelIsOpen
+    @Environment(\.rosterScrollbarClearance) private var scrollbarClearance
+    @Environment(\.navigationBrowser) private var navigationBrowser
+    @Environment(\.navigationRowID) private var navigationRowID
+
+    private var keyboardSelected: Bool {
+        navigationRowID != nil && navigationBrowser?.selection == navigationRowID
+    }
+
+    private var available: Bool {
+        guard let navigationBrowser, case let .destination(destination) = navigationRowID else { return enabled }
+        return enabled && navigationBrowser.isAvailable(destination)
+    }
+
+    private var navigationValue: String {
+        var values = keyboardSelected ? ["Selected"] : []
+        if !available { values.append("Unavailable") }
+        if case let .destination(destination) = navigationRowID,
+           let attempt = navigationBrowser?.attempt, attempt.destination == destination {
+            switch attempt.phase {
+            case .pending: values.append("Opening")
+            case .failed: values.append(attempt.message.map { "Failed: \($0)" } ?? "Failed")
+            case .succeeded: break
+            }
+        }
+        return values.joined(separator: ", ")
+    }
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: Theme.Spacing.lg) { content(isHovered) }
+            HStack(spacing: Theme.Spacing.lg) { content(isHovered && available) }
                 .padding(.leading, Theme.Spacing.md + indent)
-                .padding(.trailing, Theme.Spacing.md)
-                .padding(.vertical, Theme.Spacing.rowVertical)
+                .padding(.trailing, Theme.Spacing.md + scrollbarClearance)
+                .padding(.vertical, verticalPadding)
                 .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!enabled)
+        .disabled(!available)
         .accessibilityLabel(accessibilityText)
         .modifier(OptionalAccessibilityHint(hint: accessibilityHint))
         .background {
             RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
                 .fill(fill)
         }
+        .overlay {
+            if keyboardSelected {
+                RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                    .strokeBorder(Theme.Colors.textSecondary, lineWidth: Theme.Size.keyboardSelectionStroke)
+                    .allowsHitTesting(false)
+            }
+        }
+        .accessibilityValue(navigationValue)
         .onHover { isHovered = $0 }
         // No hover-exit arrives while the panel is ordered out, so clear what was lit.
         .onChange(of: panelIsOpen) { _, isOpen in if isOpen { isHovered = false } }
@@ -48,7 +81,8 @@ struct HoverRow<Content: View>: View {
 
     /// Selection beats hover, the rule every row follows.
     private var fill: Color {
-        if isSelected { return Theme.Colors.selection }
+        guard available else { return .clear }
+        if isSelected || keyboardSelected { return Theme.Colors.selection }
         return isHovered ? Theme.Colors.rowHover : .clear
     }
 }
@@ -65,38 +99,24 @@ private struct OptionalAccessibilityHint: ViewModifier {
     }
 }
 
-/// A leading glyph in a tinted rounded tile — the panel's one icon treatment for a group or a source.
-struct RosterTile: View {
-    let symbol: String
-    let tint: Color
-    var size: CGFloat = Theme.Size.rowIcon
-
-    var body: some View {
-        // The glyph has to fill its plate: at 0.55 the tile read as an empty chip with a loud
-        // corner, which is the corner the eye went to instead of the icon.
-        Image(systemName: symbol)
-            .font(.system(size: size * Theme.Size.tileGlyphRatio, weight: .semibold))
-            .foregroundStyle(tint)
-            .frame(width: size, height: size)
-            .background(
-                Theme.Colors.tileFill(tint),
-                in: RoundedRectangle(cornerRadius: Theme.Radius.tile, style: .continuous)
-            )
-            .accessibilityHidden(true)
-    }
-}
-
-/// A status mark: the semantic status colour on a small glyph, centred in the shared icon slot.
-struct StatusIndicator: View {
+/// A bare leading glyph shared by groups, sources, statuses, errors and Settings.
+struct RowSymbol: View {
+    enum Role { case list, navigation }
     let symbol: String
     let tint: Color?
+    var slotSize: CGFloat = Theme.Size.rowIcon
+    var role: Role = .list
 
     var body: some View {
-        Image(systemName: symbol)
-            .font(Theme.Glyph.status)
-            .foregroundStyle(tint ?? Theme.Colors.textTertiary)
-            .frame(width: Theme.Size.rowIcon, height: Theme.Size.rowIcon)
-            .accessibilityHidden(true)
+        Group {
+            if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+                .withSymbolConfiguration(role == .navigation ? Theme.Glyph.navigationSymbol : Theme.Glyph.leadingSymbol) {
+                Image(nsImage: image).renderingMode(.template)
+            }
+        }
+        .foregroundStyle(tint ?? Theme.Colors.textTertiary)
+        .frame(width: slotSize, height: slotSize)
+        .accessibilityHidden(true)
     }
 }
 
@@ -154,76 +174,6 @@ struct RosterActionPill: View {
     }
 }
 
-/// A row's trailing shortcut chip, and the footer's: a filled `controlSurface`.
-struct KeyCapChip: View {
-    var text: String
-
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Theme.Radius.keyCap, style: .continuous)
-        Text(text)
-            .font(Theme.Typography.keyCap)
-            .foregroundStyle(Theme.Colors.textTertiary)
-            .padding(.horizontal, Theme.Spacing.xs)
-            .frame(minWidth: Theme.Size.keyCap, minHeight: Theme.Size.keyCap)
-            .background(shape.fill(Theme.Colors.controlSurface))
-            .accessibilityHidden(true)
-    }
-}
-
-/// A bar control: bare at rest, a `rowHover` fill under the pointer, `selection` when it stands for
-/// the open surface. Both the footer's pill and its round button are one of these.
-struct BarButton<Label: View>: View {
-    var isSelected = false
-    var isCompact = false
-    var help: String?
-    var accessibilityLabel: String?
-    let action: () -> Void
-    @ViewBuilder var label: Label
-
-    @State private var isHovered = false
-
-    var body: some View {
-        let shape = isCompact ? AnyShape(Circle()) : AnyShape(Capsule())
-        Button(action: action) {
-            label
-                .padding(.horizontal, isCompact ? 0 : Theme.Spacing.md)
-                // A compact control is a fixed square: a circle drawn in a stretched frame is an
-                // ellipse, which is what a bare `minHeight` leaves behind when a bar hands it more
-                // height than it asked for.
-                .frame(
-                    width: isCompact ? Theme.Size.barButtonHeight : nil,
-                    height: Theme.Size.barButtonHeight
-                )
-                .contentShape(shape)
-                .background(shape.fill(fill))
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
-        .modifier(BarButtonLabels(help: help, accessibilityLabel: accessibilityLabel))
-    }
-
-    /// Selection beats hover, the rule every row follows.
-    private var fill: Color {
-        if isSelected { return Theme.Colors.selection }
-        return isHovered ? Theme.Colors.rowHover : .clear
-    }
-}
-
-private struct BarButtonLabels: ViewModifier {
-    let help: String?
-    let accessibilityLabel: String?
-
-    func body(content: Content) -> some View {
-        if let accessibilityLabel {
-            content
-                .help(help ?? accessibilityLabel)
-                .accessibilityLabel(accessibilityLabel)
-        } else {
-            content
-        }
-    }
-}
-
 struct DisclosureChevron: View {
     let isExpanded: Bool
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
@@ -248,5 +198,5 @@ struct DisclosureChevron: View {
 /// had already drifted apart.
 extension SourceInfo {
     var rosterSymbol: String { descriptor.sshAlias == nil ? "desktopcomputer" : "network" }
-    var rosterTint: Color { descriptor.sshAlias == nil ? Theme.Hue.blue : Theme.Hue.purple }
+    var rosterTint: Color { Theme.Colors.textSecondary }
 }

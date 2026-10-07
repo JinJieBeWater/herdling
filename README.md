@@ -7,7 +7,8 @@ Herdling is a macOS menu bar companion for [Herdr](https://herdr.dev/). It shows
 ## Features
 
 - Groups agents by machine, session, Space, and worktree while preserving Herdr order.
-- Shows blocked, completed, working, and recently idle agents in **Recent**. Idle entries remain there for 10 minutes.
+- **Activity** shows agents in priority order: blocked, done, working, then the three most recently updated idle agents. **Sources** opens the full directory; expand one source or keep them all closed.
+- Keeps rows in place while browsing, with live status; reopen to rebuild the list. Failed jumps retain their target for retry.
 - Updates local and remote sessions through Herdr's socket event stream, with discovery and CLI fallback where needed.
 - Reuses an existing Ghostty Herdr client when possible. New clients open in a tab by default; Settings can switch this to a window.
 - Reads SSH hosts from `~/.ssh/config`, including `Include` files.
@@ -50,6 +51,7 @@ open .build/Herdling.app
 3. Open **Settings** with `⌘,` or by right-clicking the menu bar item.
 4. Enable required aliases under **SSH Sources**.
 5. Choose whether new Ghostty clients open as tabs or windows.
+6. Optionally record a global panel shortcut in Settings. No combination is assigned by default.
 
 The first Ghostty action may trigger a macOS Automation permission prompt. Permission status appears in Settings.
 
@@ -72,12 +74,19 @@ ssh -o BatchMode=yes my-server '$SHELL -lc "herdr session list --json"'
 | Action | Result |
 | --- | --- |
 | Left-click menu bar item | Open or close roster |
-| Right-click menu bar item | Open Settings/Quit menu |
-| Click Recent or a machine | Expand that section and collapse the previous one |
+| Right-click menu bar item | Open Refresh/Settings/Quit menu |
+| Click a machine in Sources | Toggle its directory; expanding one closes the previous source |
 | Click an agent, worktree, Space, or session | Focus it in Ghostty |
+| Global panel shortcut (when configured) | Toggle panel; select a target without navigating |
+| `↑` / `↓` | Select a row without navigating |
+| `Enter` | Open selected target; source rows only toggle their directory |
+| `←` / `→` in Sources | Return to parent / collapse or expand a source |
+| `Tab` / `Shift-Tab` | Move among native controls |
 | `⌘,` | Open Settings |
-| `Esc` | Return from Settings, then close panel |
+| `Esc` in roster | Close panel |
 | `⌘Q` | Quit Herdling |
+
+Herdr focus can mark every pane in the destination tab as seen and affect all shell clients in that session. A failed jump may already have changed focus; it does not imply rollback or that a task was handled. Recent idle rows come from Herdr's state timestamps, not navigation history.
 
 ## Development
 

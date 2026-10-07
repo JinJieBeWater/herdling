@@ -835,7 +835,7 @@ struct CoreBehaviorTests {
             "Main",
             "investigate-inft-50",
         ])
-        #expect(populated.displayedWorktrees(showEmptyMain: false).map(\.id) == ["engineer", "engineer-wt"])
+        #expect(populated.displayedWorktrees().map(\.id) == ["engineer", "engineer-wt"])
         #expect(AgentStatusCount.summarize(populated.displayedWorktrees()[0].group.agents) == [
             AgentStatusCount(status: .idle, count: 1),
         ])
@@ -856,7 +856,7 @@ struct CoreBehaviorTests {
     }
 
     @Test
-    func accordionAllowsAllSourcesToCollapse() {
+    func accordionAllowsAllSourcesToCollapseAndKeepsValidPreferences() {
         #expect(RosterLayout.expandedSourceID(saved: "ssh:kvm", available: ["local", "ssh:kvm"]) == "ssh:kvm")
         #expect(RosterLayout.expandedSourceID(saved: "missing", available: ["local", "ssh:kvm"]) == "local")
         #expect(RosterLayout.expandedSourceID(saved: "", available: ["local", "ssh:kvm"]) == nil)
@@ -933,174 +933,71 @@ struct CoreBehaviorTests {
     }
 
     @Test
-    func recentFallbackPrefersTheMostRecentlyIdleAgents() {
+    @MainActor
+    func quickAccessRanksOnlineStatesWithIdleAfterWorking() {
         let now = Date(timeIntervalSince1970: 10_000)
         let agents = [
-            recentAgent("idle-oldest", .idle, changedAt: now.addingTimeInterval(-3_000)),
-            recentAgent("idle-newest", .idle, changedAt: now.addingTimeInterval(-900)),
-            recentAgent("idle-middle", .idle, changedAt: now.addingTimeInterval(-2_000)),
-            recentAgent("idle-never-observed", .idle, changedAt: .distantPast),
-            recentAgent("working", .working, changedAt: now),
+            fixtureAgent("idle", .idle, changedAt: now),
+            fixtureAgent("working", .working, changedAt: now),
+            fixtureAgent("done", .done, changedAt: now.addingTimeInterval(-30)),
+            fixtureAgent("blocked", .blocked, changedAt: now.addingTimeInterval(-40)),
+            fixtureAgent("unknown", .unknown, changedAt: now),
         ]
-        let source = SourceInfo(
-            descriptor: .local,
-            sessions: [SessionInfo(name: "default", agents: agents, online: true)],
-            online: true
-        )
-
-        let items = RecentAgentList.idleFallback(from: [source])
-
-        // Most recently idle first; an agent whose change was never observed comes last.
-        #expect(items.map(\.agent.title) == ["idle-newest", "idle-middle", "idle-oldest"])
-    }
-
-    @Test
-    func recentAgentsKeepEveryAttentionItemInPriorityOrderAndExpireIdleAfterTenMinutes() {
-        let now = Date(timeIntervalSince1970: 10_000)
-        let agents = [
-            recentAgent("idle-old", .idle, changedAt: now.addingTimeInterval(-601)),
-            recentAgent("working-1", .working, changedAt: now.addingTimeInterval(-20)),
-            recentAgent("done", .done, changedAt: now.addingTimeInterval(-30)),
-            recentAgent("blocked", .blocked, changedAt: now.addingTimeInterval(-40)),
-            recentAgent("idle-recent", .idle, changedAt: now.addingTimeInterval(-599)),
-            recentAgent("unknown", .unknown, changedAt: now),
-        ] + (2...7).map { recentAgent("working-\($0)", .working, changedAt: now.addingTimeInterval(Double(-$0))) }
-        let source = SourceInfo(
-            descriptor: .local,
-            sessions: [SessionInfo(name: "default", agents: agents, online: true)],
-            online: true
-        )
-
-        let items = RecentAgentList.items(from: [source], at: now)
-
-        #expect(items.count == 10)
-        #expect(items.map(\.agent.status) == [
-            .blocked, .done,
-            .working, .working, .working, .working, .working, .working, .working,
-            .idle,
-        ])
-        #expect(items.map(\.agent.title).contains("idle-old") == false)
-        #expect(items.map(\.agent.title).contains("unknown") == false)
-    }
-
-    @Test
-    func recentAgentIdentityIncludesSourceSessionAndPane() {
-        let agent = recentAgent("shared", .working, changedAt: .now)
-        let sources = [SourceDescriptor.local, .remote("kvm")].map { descriptor in
-            SourceInfo(
-                descriptor: descriptor,
-                sessions: [SessionInfo(name: "default", agents: [agent], online: true)],
-                online: true
-            )
-        }
-
-        let items = RecentAgentList.items(from: sources, at: .now)
-
-        #expect(items.count == 2)
-        #expect(Set(items.map(\.id)).count == 2)
-    }
-
-    @Test
-    func recentOutlineKeepsOnlySelectedAgentsAndRequiredAncestors() throws {
-        let now = Date(timeIntervalSince1970: 10_000)
-        func item(_ title: String, _ status: AgentStatus, workspace: String, changedAt: Date) -> AgentInfo {
-            AgentInfo(
-                paneID: title,
-                title: title,
-                status: status,
-                workspace: workspace,
-                cwd: "/\(title)",
-                updatedAt: changedAt
-            )
-        }
-        let source = SourceInfo(
-            descriptor: .local,
-            sessions: [SessionInfo(
-                name: "default",
-                groups: [
-                    AgentGroup(
-                        id: "project",
-                        name: "Project",
-                        agents: [item("old", .idle, workspace: "Project", changedAt: now.addingTimeInterval(-1_801))]
-                    ),
-                    AgentGroup(
-                        id: "feature",
-                        name: "Project/feature",
-                        agents: [item("active", .blocked, workspace: "Project/feature", changedAt: now)]
-                    ),
-                    AgentGroup(
-                        id: "unrelated",
-                        name: "Unrelated",
-                        agents: [item("unknown", .unknown, workspace: "Unrelated", changedAt: now)]
-                    ),
-                    AgentGroup(id: "empty-root", name: "Empty", agents: []),
-                    AgentGroup(id: "empty-worktree", name: "Project/empty", agents: []),
-                ],
-                online: true
-            )],
-            online: true,
-            branches: ["/active": "feature"]
-        )
-
-        let outline = RecentAgentList.outlineSources(
-            from: [source],
-            items: RecentAgentList.items(from: [source], at: now)
-        )
-        let session = try #require(outline.first?.sessions.first)
-
-        #expect(session.groups.map(\.name) == ["Project", "Project/feature"])
-        #expect(session.groups.map(\.id) == ["project", "feature"])
-        #expect(session.groups[0].agents.isEmpty)
-        #expect(session.groups[1].agents.map(\.title) == ["active"])
-        #expect(outline.first?.branches == ["/active": "feature"])
-        let space = try #require(RosterLayout.spaces(from: session.groups).first)
-        #expect(space.name == "Project")
-        #expect(space.primary.id == "project")
-        #expect(space.displayedWorktrees(showEmptyMain: false).map(\.id) == ["feature"])
-        #expect(source.sessions[0].groups[0].agents.map(\.paneID) == ["old"])
-    }
-
-    @Test
-    func recentOutlineOrdersSpacesByHighestPriorityAgent() throws {
-        let now = Date(timeIntervalSince1970: 10_000)
-        func item(_ title: String, _ status: AgentStatus, workspace: String) -> AgentInfo {
-            AgentInfo(
-                paneID: title,
-                title: title,
-                status: status,
-                workspace: workspace,
-                cwd: "/\(title)",
-                updatedAt: now
-            )
-        }
-        let source = SourceInfo(
-            descriptor: .local,
-            sessions: [SessionInfo(
-                name: "default",
-                groups: [
-                    AgentGroup(id: "a", name: "A", agents: []),
-                    AgentGroup(id: "a-work", name: "A/work", agents: [item("working", .working, workspace: "A/work")]),
-                    AgentGroup(id: "b", name: "B", agents: []),
-                    AgentGroup(id: "b-work", name: "B/work", agents: [item("blocked", .blocked, workspace: "B/work")]),
-                ],
-                online: true
-            )],
-            online: true
-        )
-
-        let outline = RecentAgentList.outlineSources(
-            from: [source],
-            items: RecentAgentList.items(from: [source], at: now)
-        )
-
-        #expect(try #require(outline.first?.sessions.first).groups.map(\.name) == [
-            "B", "B/work", "A", "A/work",
+        let source = SourceInfo(descriptor: .local,
+            sessions: [SessionInfo(name: "default", agents: agents, online: true)], online: true)
+        let browser = NavigationBrowser(sources: [source])
+        #expect(browser.quickIDs == [
+            .agent(sourceID: source.id, sessionName: "default", paneID: "blocked"),
+            .agent(sourceID: source.id, sessionName: "default", paneID: "done"),
+            .agent(sourceID: source.id, sessionName: "default", paneID: "working"),
+            .agent(sourceID: source.id, sessionName: "default", paneID: "idle"),
         ])
     }
 
     @Test
     @MainActor
-    func recentIdleStartsAtObservedStatusTransition() async {
+    func agentIdentityIncludesSourceSessionAndPane() {
+        let agent = fixtureAgent("shared", .blocked, changedAt: .now)
+        let sources = [SourceDescriptor.local, .remote("kvm")].map { descriptor in
+            SourceInfo(descriptor: descriptor,
+                sessions: ["first", "second"].map {
+                    SessionInfo(name: $0, agents: [agent], online: true)
+                }, online: true)
+        }
+        let browser = NavigationBrowser(sources: sources)
+        #expect(browser.quickIDs.count == 4)
+        #expect(Set(browser.quickIDs).count == 4)
+        #expect(Set(sources.flatMap { source in
+            source.sessions.map { session in
+                AgentFocusID(sourceID: source.id, sessionName: session.name, paneID: agent.paneID)
+            }
+        }).count == 4)
+    }
+
+    @Test
+    @MainActor
+    func allDirectoryKeepsEveryWorkspaceAndReceivedOrderDespiteAttentionPriority() {
+        let source = SourceInfo(descriptor: .local, sessions: [
+            SessionInfo(name: "default", groups: [
+                AgentGroup(id: "a", name: "A", agents: []),
+                AgentGroup(id: "a-work", name: "A/work", agents: [fixtureAgent("working", .working, changedAt: .now)]),
+                AgentGroup(id: "b", name: "B", agents: []),
+                AgentGroup(id: "b-work", name: "B/work", agents: [fixtureAgent("blocked", .blocked, changedAt: .now)]),
+                AgentGroup(id: "empty", name: "Empty", agents: []),
+            ], online: true)
+        ], online: true, branches: ["/repo": "main"])
+        let browser = NavigationBrowser(sources: [source])
+        let displayed = browser.allSources[0]
+        #expect(displayed.sessions[0].groups.map(\.id) == ["a", "a-work", "b", "b-work", "empty"])
+        #expect(displayed.sessions[0].agents.map(\.paneID) == ["working", "blocked"])
+        #expect(displayed.branches == ["/repo": "main"])
+        #expect(RosterLayout.spaces(from: displayed.sessions[0].groups).map(\.name) == ["A", "B", "Empty"])
+        #expect(RosterLayout.spaces(from: displayed.sessions[0].groups)[0].displayedWorktrees().map(\.id) == ["a", "a-work"])
+    }
+
+    @Test
+    @MainActor
+    func agentStatusTimestampTracksTransitionsRatherThanPolling() async {
         let monitor = ManualSessionMonitor()
         let store = SessionStore(
             client: HerdrClient(executable: nil),
@@ -1116,7 +1013,7 @@ struct CoreBehaviorTests {
             status: .idle,
             changedAt: firstSeen
         )]))
-        #expect(store.recentAgents(at: firstSeen).isEmpty)
+        #expect(store.sources[0].sessions[0].agents[0].updatedAt == firstSeen)
 
         let workingAt = firstSeen.addingTimeInterval(60)
         await monitor.emit(.sessions([loadedSession(
@@ -1129,7 +1026,7 @@ struct CoreBehaviorTests {
             status: .working,
             changedAt: workingAt.addingTimeInterval(60)
         )]))
-        #expect(store.recentAgents(at: workingAt.addingTimeInterval(60)).first?.agent.updatedAt == workingAt)
+        #expect(store.sources[0].sessions[0].agents[0].updatedAt == workingAt)
 
         let idleAt = workingAt.addingTimeInterval(120)
         await monitor.emit(.sessions([loadedSession(
@@ -1137,8 +1034,7 @@ struct CoreBehaviorTests {
             status: .idle,
             changedAt: idleAt
         )]))
-        #expect(store.recentAgents(at: idleAt).map(\.agent.paneID) == ["pane"])
-        #expect(store.recentAgents(at: idleAt.addingTimeInterval(600)).isEmpty)
+        #expect(store.sources[0].sessions[0].agents[0].updatedAt == idleAt)
         store.stop()
     }
 
@@ -1243,120 +1139,56 @@ struct CoreBehaviorTests {
         try "#!/bin/sh\nprintf '%s\\n' \"$@\" > \(HerdrClient.shellQuote(argumentsURL.path))\n"
             .write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
-        let client = HerdrClient(executable: executable.path)
-        let group = AgentGroup(
-            id: "w-real-id",
-            name: isNamedWorktree ? "Engineer/my/feature" : "Engineer/my",
-            agents: []
-        )
-        let groups = isNamedWorktree
-            ? [AgentGroup(id: "w-root", name: "Engineer/my", agents: []), group]
-            : [group]
+        let group = AgentGroup(id: "w-real-id", name: isNamedWorktree ? "Engineer/my/feature" : "Engineer/my", agents: [])
+        let groups = isNamedWorktree ? [AgentGroup(id: "w-root", name: "Engineer/my", agents: []), group] : [group]
         let space = try #require(RosterLayout.spaces(from: groups).first)
         #expect(space.displayedWorktrees().map(\.id) == (isNamedWorktree ? ["w-root", "w-real-id"] : ["w-real-id"]))
         let target = try #require(space.displayedWorktrees().last)
         #expect(target.name == (isNamedWorktree ? "feature" : "Main"))
         #expect(target.group.agents.isEmpty)
         #expect(AgentStatusCount.summarize(target.group.agents).isEmpty)
-        var session = SessionInfo(name: "workspace session", groups: groups, online: false)
+        let monitor = ManualSessionMonitor()
         let store = SessionStore(
-            client: client,
+            client: HerdrClient(executable: executable.path),
+            loadBranches: { _, _ in [:] },
+            localMonitor: monitor,
             focusExistingClient: { source, name in
                 #expect(source == .local)
                 #expect(name == "workspace session")
-                #expect(!FileManager.default.fileExists(atPath: argumentsURL.path))
                 return true
             },
             sourceDescriptors: [.local]
         )
-        let completion = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        store.onChange = {
-            completion.continuation.yield(())
-            completion.continuation.finish()
-        }
-        defer { store.onChange = nil; completion.continuation.finish() }
+        store.start()
+        defer { store.stop() }
+        await monitor.waitUntilStarted()
+        await monitor.emit(.sessions([HerdrClient.LoadedSession(name: "workspace session", groups: groups, error: nil)]))
+        await monitor.emit(.sessions([HerdrClient.LoadedSession(name: "workspace session", groups: nil, error: "offline")]))
+        var session = try #require(store.sources[0].sessions.first)
+        #expect(!session.online)
         var activations = 0
         store.onClientActivated = {
             activations += 1
             #expect(FileManager.default.fileExists(atPath: argumentsURL.path))
         }
-
         store.focusWorkspace(target.group, in: session)
         #expect(store.pendingFocusWorkspaceID == nil)
         #expect(store.pendingFocusAgentID == nil)
         #expect(activations == 0)
-
-        session.online = true
+        #expect(!FileManager.default.fileExists(atPath: argumentsURL.path))
+        await monitor.emit(.sessions([HerdrClient.LoadedSession(name: "workspace session", groups: groups, error: nil)]))
+        session = try #require(store.sources[0].sessions.first)
         store.focusWorkspace(target.group, in: session)
-        #expect(store.pendingFocusWorkspaceID == SessionStore.WorkspaceFocusID(
-            sourceID: SourceDescriptor.local.id,
-            sessionName: session.name,
-            workspaceID: "w-real-id"
-        ))
-        var events = completion.stream.makeAsyncIterator()
-        let completed: Void? = await events.next()
-        #expect(completed != nil)
+        #expect(store.pendingFocusWorkspaceID == SessionStore.WorkspaceFocusID(sourceID: SourceDescriptor.local.id, sessionName: session.name, workspaceID: "w-real-id"))
+        await waitForNavigationResult(store)
         #expect(store.pendingFocusWorkspaceID == nil)
         #expect(store.focusError == nil)
         #expect(activations == 1)
-        #expect(try String(contentsOf: argumentsURL, encoding: .utf8) ==
-            "--session\nworkspace session\nworkspace\nfocus\nw-real-id\n")
-
-        try client.focus(session: session.name, paneID: "p-agent")
-        #expect(try String(contentsOf: argumentsURL, encoding: .utf8) ==
-            "--session\nworkspace session\nagent\nfocus\np-agent\n")
+        #expect(try String(contentsOf: argumentsURL, encoding: .utf8) == "--session\nworkspace session\nworkspace\nfocus\nw-real-id\n")
     }
 
     @Test
-    func agentFocusProjectsTheTabBeforeThePane() throws {
-        let commands = HerdrClient.agentFocusCommands(session: "work", paneID: "w1:p2", tabID: "w1:t3")
-        #expect(commands == [
-            ["--session", "work", "tab", "focus", "w1:t3"],
-            ["--session", "work", "agent", "focus", "w1:p2"],
-        ])
-        #expect(HerdrClient.agentFocusCommands(session: "work", paneID: "w1:p2", tabID: nil) == [
-            ["--session", "work", "agent", "focus", "w1:p2"],
-        ])
-        #expect(HerdrClient.agentFocusCommands(session: "work", paneID: "w1:p2", tabID: "") == [
-            ["--session", "work", "agent", "focus", "w1:p2"],
-        ])
-
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("herdling-agent-focus-\(UUID())")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let executable = directory.appendingPathComponent("fake-herdr")
-        let argumentsURL = directory.appendingPathComponent("arguments")
-        try "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \(HerdrClient.shellQuote(argumentsURL.path))\n"
-            .write(to: executable, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
-
-        try HerdrClient(executable: executable.path)
-            .focus(session: "work", paneID: "w1:p2", tabID: "w1:t3")
-        #expect(try String(contentsOf: argumentsURL, encoding: .utf8) == """
-        --session
-        work
-        tab
-        focus
-        w1:t3
-        --session
-        work
-        agent
-        focus
-        w1:p2
-
-        """)
-    }
-
-    @Test
-    func chainedRemoteFocusUsesOneLoginShell() {
-        let command = HerdrClient.remoteCommandSequence(
-            HerdrClient.agentFocusCommands(session: "work's session", paneID: "w1:p2", tabID: "w1:t3")
-        )
-        #expect(command == HerdrClient.remoteShellCommand(
-            "'herdr' '--session' 'work'\\''s session' 'tab' 'focus' 'w1:t3'"
-                + " && 'herdr' '--session' 'work'\\''s session' 'agent' 'focus' 'w1:p2'"
-        ))
+    func remoteSnapshotUsesLoginShell() {
         #expect(HerdrClient.remoteCommand(arguments: ["--session", "work", "api", "snapshot"])
             == HerdrClient.remoteShellCommand("'herdr' '--session' 'work' 'api' 'snapshot'"))
     }
@@ -1495,9 +1327,16 @@ struct CoreBehaviorTests {
         let releaseFirst = AsyncGate()
         let releaseLatest = AsyncGate()
         let calls = AsyncStream<String>.makeStream()
-        let changes = AsyncStream<String>.makeStream()
+        let middle = AgentGroup(id: "w-middle", name: "same label", agents: [])
+        let latest = AgentGroup(id: "w-latest", name: "same label", agents: [])
         let store = SessionStore(
             client: HerdrClient(executable: nil),
+            loadSource: { _ in [
+                loadedSession(name: "first", paneID: "pane"),
+                HerdrClient.LoadedSession(name: "middle", groups: [middle], error: nil),
+                HerdrClient.LoadedSession(name: "latest", groups: [latest], error: nil),
+            ] },
+            loadBranches: { _, _ in [:] },
             focusExistingClient: { _, session in
                 calls.continuation.yield(session)
                 if session == "first" { await releaseFirst.wait() }
@@ -1506,49 +1345,43 @@ struct CoreBehaviorTests {
             },
             sourceDescriptors: [.local]
         )
-        store.onChange = { [weak store] in
-            changes.continuation.yield(store?.pendingFocusWorkspaceID?.workspaceID ?? "none")
-        }
+        await store.refresh()
         defer {
-            store.onChange = nil
             calls.continuation.finish()
-            changes.continuation.finish()
             Task { await releaseFirst.release(); await releaseLatest.release() }
         }
-        let agent = recentAgent("pane", .idle, changedAt: .now)
-        store.focus(agent, in: SessionInfo(name: "first", agents: [agent], online: true))
+        let firstSession = try #require(store.sources[0].sessions.first { $0.name == "first" })
+        let agent = try #require(firstSession.agents.first)
+        store.focus(agent, in: firstSession)
         var callEvents = calls.stream.makeAsyncIterator()
         #expect(await callEvents.next() == "first")
-
-        let middle = AgentGroup(id: "w-middle", name: "same label", agents: [])
-        let latest = AgentGroup(id: "w-latest", name: "same label", agents: [])
         store.focusWorkspace(middle, in: SessionInfo(name: "middle", groups: [middle], online: true))
         store.focusWorkspace(latest, in: SessionInfo(name: "latest", groups: [latest], online: true))
         #expect(store.pendingFocusAgentID == nil)
         #expect(store.pendingFocusWorkspaceID?.workspaceID == "w-latest")
-
         await releaseFirst.release()
-        var changeEvents = changes.stream.makeAsyncIterator()
-        #expect(await changeEvents.next() == "w-latest")
         #expect(await callEvents.next() == "latest")
         #expect(store.pendingFocusWorkspaceID?.workspaceID == "w-latest")
-
+        #expect(store.focusError == nil)
         await releaseLatest.release()
-        #expect(await changeEvents.next() == "none")
+        await waitForNavigationResult(store)
         #expect(store.pendingFocusAgentID == nil)
         #expect(store.pendingFocusWorkspaceID == nil)
         #expect(store.focusError == "Herdr is not installed. Install Herdr or set HERDR_BIN_PATH, then retry.")
+        calls.continuation.finish()
+        #expect(await callEvents.next() == nil, "Superseded middle workspace must not reach client activation")
     }
 
     @Test(.timeLimit(.minutes(1)))
     @MainActor
-    func agentFocusKeepsLatestPendingUntilQueueFinishes() async {
+    func agentFocusKeepsLatestPendingUntilQueueFinishes() async throws {
         let releaseFirst = AsyncGate()
         let releaseLatest = AsyncGate()
         let calls = AsyncStream<String>.makeStream()
-        let changes = AsyncStream<String>.makeStream()
         let store = SessionStore(
             client: HerdrClient(executable: nil),
+            loadSource: { _ in ["first", "middle", "latest"].map { loadedSession(name: $0, paneID: $0) } },
+            loadBranches: { _, _ in [:] },
             focusExistingClient: { _, session in
                 calls.continuation.yield(session)
                 if session == "first" { await releaseFirst.wait() }
@@ -1557,44 +1390,29 @@ struct CoreBehaviorTests {
             },
             sourceDescriptors: [.local]
         )
-        store.onChange = { [weak store] in
-            changes.continuation.yield(store?.pendingFocusAgentID?.paneID ?? "none")
-        }
+        await store.refresh()
         defer {
-            store.onChange = nil
             calls.continuation.finish()
-            changes.continuation.finish()
+            Task { await releaseFirst.release(); await releaseLatest.release() }
         }
-        let first = recentAgent("first", .idle, changedAt: .now)
-        let middle = recentAgent("middle", .idle, changedAt: .now)
-        let latest = recentAgent("latest", .idle, changedAt: .now)
-        store.focus(first, in: SessionInfo(name: "first", agents: [first], online: true))
-        #expect(store.pendingFocusAgentID == RecentAgentItem.ID(
-            sourceID: SourceDescriptor.local.id,
-            sessionName: "first",
-            paneID: first.paneID
-        ))
+        let firstSession = try #require(store.sources[0].sessions.first { $0.name == "first" })
+        let first = try #require(firstSession.agents.first)
+        store.focus(first, in: firstSession)
+        #expect(store.pendingFocusAgentID == AgentFocusID(sourceID: SourceDescriptor.local.id, sessionName: "first", paneID: first.paneID))
         var callEvents = calls.stream.makeAsyncIterator()
         #expect(await callEvents.next() == "first")
-
-        store.focus(middle, in: SessionInfo(name: "middle", agents: [middle], online: true))
-        store.focus(latest, in: SessionInfo(name: "latest", agents: [latest], online: true))
-        let latestID = RecentAgentItem.ID(
-            sourceID: SourceDescriptor.local.id,
-            sessionName: "latest",
-            paneID: latest.paneID
-        )
+        let middleSession = try #require(store.sources[0].sessions.first { $0.name == "middle" })
+        let latestSession = try #require(store.sources[0].sessions.first { $0.name == "latest" })
+        store.focus(try #require(middleSession.agents.first), in: middleSession)
+        store.focus(try #require(latestSession.agents.first), in: latestSession)
+        let latestID = AgentFocusID(sourceID: SourceDescriptor.local.id, sessionName: "latest", paneID: "latest")
         #expect(store.pendingFocusAgentID == latestID)
-
         await releaseFirst.release()
-        var changeEvents = changes.stream.makeAsyncIterator()
-        #expect(await changeEvents.next() == "latest")
         #expect(await callEvents.next() == "latest")
         #expect(store.pendingFocusAgentID == latestID)
         #expect(store.focusError == nil)
-
         await releaseLatest.release()
-        #expect(await changeEvents.next() == "none")
+        await waitForNavigationResult(store)
         #expect(store.pendingFocusAgentID == nil)
         #expect(store.focusError == "Herdr focus failed: session stopped")
         calls.continuation.finish()
@@ -1643,7 +1461,7 @@ struct CoreBehaviorTests {
         var events = changes.stream.makeAsyncIterator()
         while store.pendingFocusAgentID != nil { try #require(await events.next() != nil) }
         #expect(store.selectedSSHAliases.isEmpty)
-        #expect(store.focusError == nil)
+        #expect(store.focusError == "This item is no longer available. Update the list, then retry.")
         #expect(!activated)
         await store.stopAndWait()
     }
@@ -1654,39 +1472,24 @@ struct CoreBehaviorTests {
         let releaseFailure = AsyncGate()
         let store = SessionStore(
             client: HerdrClient(executable: nil),
+            loadSource: { _ in [loadedSession(name: "focus-failure", paneID: "pane")] },
+            loadBranches: { _, _ in [:] },
             focusExistingClient: { _, _ in
                 await releaseFailure.wait()
                 throw GhosttyController.GhosttyError.automationFailed("-1743")
             },
             sourceDescriptors: [.local]
         )
-        let agent = recentAgent("pane", .idle, changedAt: .now)
-        let session = SessionInfo(name: "focus-failure", agents: [agent], online: true)
-        let completion = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        store.onChange = {
-            completion.continuation.yield(())
-            completion.continuation.finish()
-        }
-        defer {
-            store.onChange = nil
-            completion.continuation.finish()
-        }
-
+        await store.refresh()
+        defer { Task { await releaseFailure.release() } }
+        let session = try #require(store.sources[0].sessions.first)
+        let agent = try #require(session.agents.first)
         store.focus(agent, in: session)
-        #expect(store.pendingFocusAgentID == RecentAgentItem.ID(
-            sourceID: SourceDescriptor.local.id,
-            sessionName: session.name,
-            paneID: agent.paneID
-        ))
-
+        #expect(store.pendingFocusAgentID == AgentFocusID(sourceID: SourceDescriptor.local.id, sessionName: session.name, paneID: agent.paneID))
         await releaseFailure.release()
-        var events = completion.stream.makeAsyncIterator()
-        let completed: Void? = await events.next()
-        #expect(completed != nil)
-
+        await waitForNavigationResult(store)
         #expect(store.pendingFocusAgentID == nil)
-        #expect(store.focusError ==
-            "Ghostty Automation denied. Allow Herdling in System Settings → Privacy & Security → Automation.")
+        #expect(store.focusError == "Ghostty Automation denied. Allow Herdling in System Settings → Privacy & Security → Automation.")
     }
 
     @Test
@@ -1712,27 +1515,25 @@ struct CoreBehaviorTests {
 
     @Test(.timeLimit(.minutes(1)))
     @MainActor
-    func failedTargetFocusDoesNotDismissPanelAfterClientReuse() async {
+    func failedTargetFocusDoesNotDismissPanelAfterClientReuse() async throws {
+        let group = AgentGroup(id: "workspace", name: "Main", agents: [])
+        let reuse = AsyncStream<String>.makeStream()
         let store = SessionStore(
             client: HerdrClient(executable: nil),
-            focusExistingClient: { _, _ in true },
+            loadSource: { _ in [HerdrClient.LoadedSession(name: "default", groups: [group], error: nil)] },
+            loadBranches: { _, _ in [:] },
+            focusExistingClient: { _, name in reuse.continuation.yield(name); return true },
             sourceDescriptors: [.local]
         )
+        await store.refresh()
+        defer { reuse.continuation.finish() }
         var panelVisible = true
         store.onClientActivated = { panelVisible = false }
-        let completion = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        store.onChange = {
-            completion.continuation.yield(())
-            completion.continuation.finish()
-        }
-        defer { store.onChange = nil; completion.continuation.finish() }
-        store.focusWorkspace(
-            AgentGroup(id: "workspace", name: "Main", agents: []),
-            in: SessionInfo(name: "default", groups: [], online: true)
-        )
-        var events = completion.stream.makeAsyncIterator()
-        let completed: Void? = await events.next()
-        #expect(completed != nil)
+        let session = try #require(store.sources[0].sessions.first)
+        store.focusWorkspace(group, in: session)
+        await waitForNavigationResult(store)
+        var events = reuse.stream.makeAsyncIterator()
+        #expect(await events.next() == "default", "Failure must occur after actual client reuse, not an unavailable fixture target")
         #expect(panelVisible)
         #expect(store.focusError != nil)
         store.dismissFocusError()
@@ -2144,7 +1945,6 @@ struct CoreBehaviorTests {
     @Test
     @MainActor
     func panelHeightTracksContentWithinBounds() {
-        #expect(PanelHeightMeasurement(header: 39.5, body: 205.25).total == 244.75)
         #expect(StatusItemController.clampedContentHeight(20) == 100)
         #expect(StatusItemController.clampedContentHeight(245.2) == 246)
         #expect(StatusItemController.clampedContentHeight(900) == 900)
@@ -2240,6 +2040,29 @@ struct CoreBehaviorTests {
 
     @Test
     @MainActor
+    func contextMenuRoutesActionsAndDisablesRefreshWhileBusy() throws {
+        _ = NSApplication.shared
+        let probe = ContextMenuActionProbe()
+        for busy in [false, true] {
+            let menu = HerdlingApplicationMenu.makeContext(target: probe, isRefreshing: busy)
+            menu.update()
+            let refreshIndex = try #require(menu.items.firstIndex {
+                $0.action == #selector(ContextMenuActionProbe.refreshSources)
+            })
+            let settingsIndex = try #require(menu.items.firstIndex {
+                $0.action == #selector(ContextMenuActionProbe.openSettings)
+            })
+            #expect(menu.items[refreshIndex].isEnabled == !busy)
+            #expect(menu.items[settingsIndex].isEnabled)
+            if !busy { menu.performActionForItem(at: refreshIndex) }
+            menu.performActionForItem(at: settingsIndex)
+        }
+        #expect(probe.refreshCount == 1)
+        #expect(probe.settingsCount == 2)
+    }
+
+    @Test
+    @MainActor
     func applicationMenuProvidesStandardSettingsAndQuitShortcuts() throws {
         let menu = HerdlingApplicationMenu.make(settingsTarget: NSObject())
         let appMenu = try #require(menu.items.first?.submenu)
@@ -2263,6 +2086,14 @@ struct CoreBehaviorTests {
         first.release()
         #expect(SingleInstanceLock.acquire(identifier: "test", directory: directory) != nil)
     }
+}
+
+@MainActor
+private final class ContextMenuActionProbe: NSObject {
+    var refreshCount = 0
+    var settingsCount = 0
+    @objc func refreshSources() { refreshCount += 1 }
+    @objc func openSettings() { settingsCount += 1 }
 }
 
 private actor SleepRecorder {
@@ -2524,7 +2355,12 @@ private func loadedSession(
     )
 }
 
-private func recentAgent(_ title: String, _ status: AgentStatus, changedAt: Date) -> AgentInfo {
+@MainActor
+private func waitForNavigationResult(_ store: SessionStore) async {
+    while store.navigationAttempt?.phase == .pending { await Task.yield() }
+}
+
+private func fixtureAgent(_ title: String, _ status: AgentStatus, changedAt: Date) -> AgentInfo {
     AgentInfo(
         paneID: title,
         title: title,

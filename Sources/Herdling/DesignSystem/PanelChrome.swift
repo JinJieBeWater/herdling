@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 // The panel's own chrome: whether it is open, how tall its content is, and how its list dissolves
-// into the footer. Everything here is panel-level, not row-level (see `RowChrome.swift`).
+// into the window's lower edge. Everything here is panel-level, not row-level (see `RowChrome.swift`).
 
 /// Whether the panel is on screen. Rows use it to drop hover state left over from the last time it
 /// was open, because no hover exit arrives while the panel is ordered out.
@@ -47,21 +47,12 @@ private struct PanelMaterialBackdrop: NSViewRepresentable {
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
 
-/// The panel's content height, in two parts so a fixed band (a header) can be kept whole while the
-/// body is driven by the content that grows.
-struct PanelHeightMeasurement: Equatable {
-    var header: CGFloat = 0
-    var body: CGFloat = 0
-    var total: CGFloat { header + body }
-}
-
+/// Complete intrinsic list height, including its edge insets.
 struct PanelContentHeightKey: PreferenceKey {
-    static let defaultValue = PanelHeightMeasurement()
+    static let defaultValue: CGFloat = 0
 
-    static func reduce(value: inout PanelHeightMeasurement, nextValue: () -> PanelHeightMeasurement) {
-        let next = nextValue()
-        value.header = max(value.header, next.header)
-        value.body = max(value.body, next.body)
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
@@ -91,12 +82,18 @@ enum AccordionMotion {
 }
 
 extension View {
+    /// Shared content boundary and insets; measurement belongs to the panel's header/list join.
+    func rosterBoundary() -> some View {
+        self
+            // Clip the actual content boundary, so expansion changes the last row automatically.
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.panelContent, style: .continuous))
+            .padding(Theme.Spacing.panelInset)
+    }
+
     /// The panel's surface recipe, scrim included.
     func panelSurface() -> some View { modifier(PanelSurface()) }
 
-    /// Softens a list as it passes under the floating footer: a scroll-driven gradient mask whose
-    /// ramp starts behind the bar and ends at the window edge, so rows ghost beneath the footer
-    /// instead of being cut off by it.
+    /// Softens the lower edge while more content remains below the viewport.
     ///
     /// Not `scrollEdgeEffectStyle`: inside a transparent panel that draws a hard-bounded rectangle.
     func overflowFade() -> some View {
@@ -114,7 +111,7 @@ private struct OverflowFadeMask: ViewModifier {
     @State private var hiddenBelow: CGFloat = 0
     @State private var canScroll = false
 
-    private var band: CGFloat { Theme.Size.footerHeight + Theme.Size.fadeOvershoot }
+    private var band: CGFloat { Theme.Size.scrollFadeHeight }
 
     func body(content: Content) -> some View {
         content
@@ -132,8 +129,6 @@ private struct OverflowFadeMask: ViewModifier {
                 canScroll = new.canScroll
             }
             .mask {
-                // Spans the scroll view's full frame; the footer's safe-area inset would otherwise
-                // shift the gradient onto rows that are at rest.
                 GeometryReader { geometry in
                     LinearGradient(
                         stops: stops(height: geometry.size.height),
@@ -141,7 +136,6 @@ private struct OverflowFadeMask: ViewModifier {
                         endPoint: .bottom
                     )
                 }
-                .ignoresSafeArea()
             }
     }
 

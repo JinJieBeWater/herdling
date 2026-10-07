@@ -3,7 +3,7 @@ import SwiftUI
 // The pieces Settings' panes share. A pane is a stock grouped `Form`, so cards, row insets and
 // hairlines are system-drawn; these only dress a row's own label.
 
-/// A row's label: an optional tinted icon tile, a title, and the subtitle that states a consequence
+/// A row's label: an optional leading glyph, a title, and the subtitle that states a consequence
 /// or a limit the title leaves out.
 struct SettingsLabel: View {
     let title: String
@@ -14,16 +14,7 @@ struct SettingsLabel: View {
     var body: some View {
         HStack(spacing: Theme.Spacing.lg) {
             if let symbol {
-                // Same glyph-to-plate ratio as `RosterTile`, so the two tiles are one object.
-                Image(systemName: symbol)
-                    .font(.system(size: Theme.Size.settingsRowIcon * Theme.Size.tileGlyphRatio, weight: .medium))
-                    .foregroundStyle(tint)
-                    .frame(width: Theme.Size.settingsRowIcon, height: Theme.Size.settingsRowIcon)
-                    .background(
-                        Theme.Colors.tileFill(tint),
-                        in: RoundedRectangle(cornerRadius: Theme.Radius.tile, style: .continuous)
-                    )
-                    .accessibilityHidden(true)
+                RowSymbol(symbol: symbol, tint: tint)
             }
             VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                 Text(title)

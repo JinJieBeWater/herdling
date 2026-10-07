@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// A panel row that reports a failure, laid out like every other row: leading tile, text on the
+/// A panel row that reports a failure, laid out like every other row: leading glyph, text on the
 /// title column, and the actions as the shared trailing pills rather than as a bordered button that
 /// speaks a different language from the rest of the panel.
 struct ErrorRow: View {
@@ -11,12 +11,13 @@ struct ErrorRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: Theme.Spacing.lg) {
-            RosterTile(symbol: "exclamationmark.triangle.fill", tint: Theme.Hue.orange)
-
-            Text(message)
-                .font(Theme.Typography.rowTrailing)
-                .foregroundStyle(Theme.Colors.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: Theme.Spacing.rowContentGap) {
+                RowSymbol(symbol: "exclamationmark.triangle.fill", tint: Theme.Hue.orange)
+                Text(message)
+                    .font(Theme.Typography.rowTrailing)
+                    .foregroundStyle(Theme.Colors.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Spacer(minLength: Theme.Spacing.md)
 

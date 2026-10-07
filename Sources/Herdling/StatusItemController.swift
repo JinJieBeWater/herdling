@@ -53,13 +53,13 @@ final class StatusItemController: NSObject {
     static let panelMinHeight: CGFloat = Theme.Size.panelMinHeight
     static let panelScreenFraction: CGFloat = Theme.Size.panelScreenFraction
     private let store: SessionStore
+    private let browser = NavigationBrowser()
     private let menuBarItem = MenuBarStatusItem()
     private let panel = MenuBarPanel()
     private var settingsController: SettingsWindowController?
+    private var isRefreshing = false
     private lazy var hostingController = NSHostingController(
-        rootView: AgentListView(store: store, onOpenSettings: { [weak self] in
-            self?.openSettings()
-        })
+        rootView: AgentListView(store: store, browser: browser)
     )
     private lazy var outsideClickMonitor = PanelOutsideClickMonitor(
         panel: panel,
@@ -101,6 +101,12 @@ final class StatusItemController: NSObject {
             let glass = NSGlassEffectView()
             glass.style = .regular
             glass.cornerRadius = Theme.Radius.panel
+            // Key-window glass can draw a rectangular rim outside its rounded surface.
+            // Clip the effect itself, not only the SwiftUI content inside it.
+            glass.wantsLayer = true
+            glass.layer?.cornerRadius = Theme.Radius.panel
+            glass.layer?.cornerCurve = .continuous
+            glass.layer?.masksToBounds = true
             glass.tintColor = Theme.Colors.glassTint
             glass.contentView = hostingController.view
             panel.contentView = glass
@@ -111,10 +117,13 @@ final class StatusItemController: NSObject {
 
         store.onChange = { [weak self] in self?.updateStatus() }
         store.onClientActivated = { [weak self] in self?.closePanel() }
+        PanelShortcut.register { [weak self] in self?.togglePanelFromKeyboard() }
         updateStatus()
     }
 
-    deinit {
+    isolated deinit {
+        PanelShortcut.unregister()
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -132,18 +141,7 @@ final class StatusItemController: NSObject {
     private func showContextMenu() {
         if panel.isVisible { closePanel() }
 
-        let menu = NSMenu()
-        let settings = NSMenuItem(title: "Settings", action: #selector(openSettings), keyEquivalent: "")
-        settings.target = self
-        settings.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: "Settings")
-        menu.addItem(settings)
-        menu.addItem(.separator())
-
-        let quit = NSMenuItem(title: "Quit Herdling", action: #selector(quitApp), keyEquivalent: "q")
-        quit.target = self
-        quit.image = NSImage(systemSymbolName: "power", accessibilityDescription: "Quit Herdling")
-        menu.addItem(quit)
-
+        let menu = HerdlingApplicationMenu.makeContext(target: self, isRefreshing: isRefreshing)
         menuBarItem.item.menu = menu
         menuBarItem.item.button?.performClick(nil)
         menuBarItem.item.menu = nil
@@ -157,16 +155,24 @@ final class StatusItemController: NSObject {
         settingsController?.show()
     }
 
-    @objc private func quitApp() {
-        NSApplication.shared.terminate(nil)
+    @objc func refreshSources() {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        Task {
+            defer { isRefreshing = false }
+            await store.refresh()
+        }
     }
 
-    private func openPanel() {
+    private func openPanel(keyboard: Bool = false) {
         guard let button = menuBarItem.item.button,
               let window = button.window,
               let screen = window.screen ?? NSScreen.main
         else { return }
 
+        browser.open(sources: store.sources,
+                     attempt: store.navigationAttempt, keyboard: keyboard,
+                     expandedSourceID: store.expandedSourceID)
         PanelHeightBridge.invalidate()
         hostingController.view.layoutSubtreeIfNeeded()
         resizePanel(button: button, window: window, screen: screen)
@@ -196,6 +202,11 @@ final class StatusItemController: NSObject {
         }
     }
 
+    func togglePanelFromKeyboard() {
+        if panel.isVisible { closePanel() }
+        else { openPanel(keyboard: true) }
+    }
+
     @objc private func screenGeometryChanged(_ notification: Notification) {
         if notification.name == NSWindow.didChangeScreenNotification,
            notification.object as? NSWindow !== menuBarItem.item.button?.window
@@ -211,6 +222,7 @@ final class StatusItemController: NSObject {
     }
 
     private func closePanel() {
+        browser.close()
         PanelHeightBridge.invalidate()
         panel.orderOut(nil)
         panel.makeFirstResponder(nil)
@@ -233,9 +245,12 @@ final class StatusItemController: NSObject {
                       !(self.panel.firstResponder is NSText)
                 else { return false }
 
-                guard keyCode == 53 else { return false }
-                // Settings lives in its own window, so Escape here only ever closes the panel.
-                self.closePanel()
+                switch PanelKeyboard.handle(keyCode, modifiers: event.modifierFlags, browser: self.browser) {
+                case .passThrough: return false
+                case .close: self.closePanel()
+                case .handled: self.panel.makeFirstResponder(nil)
+                case let .navigate(destination): self.store.navigate(to: destination)
+                }
                 return true
             }
             return consumed ? nil : event
@@ -243,6 +258,7 @@ final class StatusItemController: NSObject {
     }
 
     private func updateStatus() {
+        browser.receive(sources: store.sources, attempt: store.navigationAttempt)
         let status = store.menuStatus
         guard status != lastStatus else { return }
         lastStatus = status

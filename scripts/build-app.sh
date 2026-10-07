@@ -15,6 +15,12 @@ fi
 swift build -c "$configuration" >&2
 bin_dir="$(swift build -c "$configuration" --show-bin-path)"
 app="$root/.build/Herdling.app"
+shortcut_resources="$bin_dir/KeyboardShortcuts_KeyboardShortcuts.bundle"
+
+if [[ ! -d "$shortcut_resources" ]]; then
+  printf 'Missing KeyboardShortcuts resources: %s\n' "$shortcut_resources" >&2
+  exit 1
+fi
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
@@ -25,7 +31,9 @@ cp \
   "$root/Resources/herdr-mark.svg" \
   "$root/Resources/THIRD_PARTY_NOTICES.md" \
   "$root/Resources/Herdr-LICENSE.txt" \
+  "$root/Resources/KeyboardShortcuts-LICENSE.txt" \
   "$app/Contents/Resources/"
+cp -R "$shortcut_resources" "$app/Contents/Resources/"
 codesign --force --sign - "$app" >/dev/null
 
 printf '%s\n' "$app"

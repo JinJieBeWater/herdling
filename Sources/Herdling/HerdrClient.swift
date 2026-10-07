@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 struct HerdrClient: Sendable {
@@ -33,9 +34,20 @@ struct HerdrClient: Sendable {
     }
 
     private let executable: String?
+    typealias CommandExecution = @Sendable (String, [String], TimeInterval, Data?) throws -> Data
+    private let runCommand: CommandExecution
 
-    init(executable: String? = HerdrClient.findExecutable()) {
+    init(
+        executable: String? = HerdrClient.findExecutable(),
+        runCommand: @escaping CommandExecution = { executable, arguments, timeout, input in
+            if let input {
+                return try HerdrClient.socketResponse(executable: executable, arguments: arguments, input: input, timeout: timeout)
+            }
+            return try CommandRunner.run(executable, arguments, timeout: timeout)
+        }
+    ) {
         self.executable = executable
+        self.runCommand = runCommand
     }
 
     func load(_ source: SourceDescriptor = .local) async throws -> [LoadedSession] {
@@ -101,25 +113,118 @@ struct HerdrClient: Sendable {
         paneID: String,
         tabID: String? = nil
     ) throws {
-        guard let executable else { throw ClientError.notInstalled }
-        _ = try run(
-            source,
-            executable: executable,
-            commands: Self.agentFocusCommands(session: session, paneID: paneID, tabID: tabID),
-            timeout: 5
-        )
+        if let tabID, !tabID.isEmpty {
+            guard let executable else { throw ClientError.notInstalled }
+            _ = try run(source, executable: executable, commands: [
+                ["--session", session, "tab", "focus", tabID],
+                ["--session", session, "agent", "focus", paneID],
+            ], timeout: 5)
+            return
+        }
+        guard let endpoint = try runningSessions(source).first(where: { $0.name == session }) else {
+            throw ClientError.failed("Session is no longer running.")
+        }
+        let request = try Self.paneFocusRequest(paneID: paneID)
+        do {
+            let response: Data
+            if let alias = source.sshAlias {
+                response = try runCommand("/usr/bin/ssh", Self.sshArguments(
+                    alias: alias,
+                    command: Self.remoteShellCommand(HerdrRemoteSessionMonitor.socketCommand(path: endpoint.socketPath))
+                ), 5, request)
+            } else {
+                response = try runCommand("/usr/bin/nc", ["-U", endpoint.socketPath], 5, request)
+            }
+            try Self.validatePaneFocusResponse(response, paneID: paneID)
+        } catch CommandRunner.Error.timedOut {
+            throw ClientError.timedOut
+        } catch let CommandRunner.Error.failed(message) {
+            throw ClientError.failed(message)
+        }
     }
 
-    /// Herdr 0.9 renders its UI inside each client. Only `workspace.focus`, `tab.focus`, and
-    /// `pane.focus` requests project focus onto every attached client; `agent.focus` alone
-    /// updates server state and marks the agent seen without moving anyone.
-    static func agentFocusCommands(session: String, paneID: String, tabID: String?) -> [[String]] {
-        var commands: [[String]] = []
-        if let tabID, !tabID.isEmpty {
-            commands.append(["--session", session, "tab", "focus", tabID])
+    /// Public pane focus projects onto all shell clients and marks the target tab seen.
+    /// A failure or timeout does not imply that the server left focus/seen unchanged.
+    static func paneFocusRequest(paneID: String) throws -> Data {
+        var request = try JSONSerialization.data(withJSONObject: [
+            "id": "herdling-focus", "method": "pane.focus", "params": ["pane_id": paneID],
+        ])
+        request.append(10)
+        return request
+    }
+
+    private static func validatePaneFocusResponse(_ data: Data, paneID: String) throws {
+        do {
+            guard let response = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  response["id"] as? String == "herdling-focus"
+            else { throw ClientError.invalidResponse("Missing focus response ID.") }
+            if let error = response["error"] {
+                throw ClientError.failed((error as? [String: Any])?["message"] as? String ?? "Pane focus failed.")
+            }
+            guard let result = response["result"] as? [String: Any],
+                  let pane = result["pane"] as? [String: Any],
+                  pane["pane_id"] as? String == paneID
+            else { throw ClientError.invalidResponse("Missing focused pane.") }
+        } catch let error as ClientError {
+            throw error
+        } catch {
+            throw ClientError.invalidResponse(error.localizedDescription)
         }
-        commands.append(["--session", session, "agent", "focus", paneID])
-        return commands
+    }
+
+    /// One NDJSON request on its own connection. Stop at its complete response, not socket EOF.
+    static func socketResponse(executable: String, arguments: [String], input: Data, timeout: TimeInterval) throws -> Data {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        let stdin = Pipe()
+        let stdout = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = stdout
+        process.standardError = FileHandle.nullDevice
+        let request = try JSONSerialization.jsonObject(with: input) as? [String: Any]
+        guard let requestID = request?["id"] as? String else { throw ClientError.invalidResponse("Missing request ID.") }
+        try process.run()
+        defer {
+            try? stdin.fileHandleForWriting.close()
+            try? stdout.fileHandleForReading.close()
+            if process.isRunning {
+                process.terminate()
+                // A misbehaving transport must not keep the focus queue blocked.
+                Thread.sleep(forTimeInterval: 0.02)
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
+            process.waitUntilExit()
+        }
+        guard fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
+            throw CommandRunner.Error.failed("Could not configure socket input.")
+        }
+        try stdin.fileHandleForWriting.write(contentsOf: input)
+        try stdin.fileHandleForWriting.close()
+        var buffer = Data()
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            var descriptor = pollfd(fd: stdout.fileHandleForReading.fileDescriptor, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&descriptor, 1, 50)
+            if ready == -1 {
+                if errno == EINTR { continue }
+                throw CommandRunner.Error.failed("Could not read Herdr socket.")
+            }
+            guard ready > 0 else { continue }
+            let chunk = stdout.fileHandleForReading.availableData
+            guard !chunk.isEmpty else { throw CommandRunner.Error.failed("Herdr socket closed before the focus response.") }
+            buffer.append(chunk)
+            guard buffer.count <= 1_048_576 else { throw ClientError.invalidResponse("Focus response is too large.") }
+            while let newline = buffer.firstIndex(of: 10) {
+                let line = Data(buffer[..<newline])
+                buffer.removeSubrange(...newline)
+                guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                      object["id"] as? String == requestID
+                else { continue }
+                return line
+            }
+        }
+        throw CommandRunner.Error.timedOut
     }
 
     func focusWorkspace(source: SourceDescriptor = .local, session: String, workspaceID: String) throws {
@@ -264,18 +369,19 @@ struct HerdrClient: Sendable {
     ) throws -> Data {
         do {
             if let alias = source.sshAlias {
-                return try CommandRunner.run(
+                return try runCommand(
                     "/usr/bin/ssh",
                     Self.sshArguments(
                         alias: alias,
                         command: Self.remoteCommandSequence(commands)
                     ),
-                    timeout: timeout ?? 7
+                    timeout ?? 7,
+                    nil
                 )
             }
             var data = Data()
             for command in commands {
-                data = try CommandRunner.run(executable, command, timeout: timeout ?? 5)
+                data = try runCommand(executable, command, timeout ?? 5, nil)
             }
             return data
         } catch CommandRunner.Error.timedOut {

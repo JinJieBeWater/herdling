@@ -7,7 +7,8 @@ Herdling 是 [Herdr](https://herdr.dev/) 的 macOS 菜单栏配套工具。它�
 ## 功能
 
 - 按设备、Session、Space 和 worktree 分组 agent，并保留 Herdr 原始顺序。
-- 在 **Recent** 中显示 blocked、done、working 和近期 idle 的 agent。idle 项保留 10 分钟。
+- **Activity** 按 blocked、done、working、最近更新的三个 idle 排列 agent。**Sources** 浏览完整目录，可展开一个来源，也可全部收起。
+- 浏览期间行位置固定、状态实时更新；重新打开重建名单，失败定位保留原目标以便重试。
 - 通过 Herdr Socket 事件流同步本机与远程 Session；必要时使用发现机制和 CLI fallback。
 - 尽量复用现有 Ghostty Herdr client。新 client 默认在 Tab 中打开，也可在设置中改为 Window。
 - 读取 `~/.ssh/config` 中的 SSH 主机，包括 `Include` 文件。
@@ -50,6 +51,7 @@ open .build/Herdling.app
 3. 按 `⌘,` 或右键点击菜单栏项目，打开 **Settings**。
 4. 在 **SSH Sources** 中启用需要的 SSH alias。
 5. 选择新的 Ghostty client 使用 Tab 还是 Window。
+6. 可在 Settings 录制全局呼出快捷键，默认不设置组合。
 
 首次操作 Ghostty 时，macOS 可能请求自动化权限。权限状态会显示在 Settings 中。
 
@@ -72,12 +74,19 @@ ssh -o BatchMode=yes my-server '$SHELL -lc "herdr session list --json"'
 | 操作 | 结果 |
 | --- | --- |
 | 左键点击菜单栏项目 | 打开或关闭 agent 列表 |
-| 右键点击菜单栏项目 | 打开 Settings/Quit 菜单 |
-| 点击 Recent 或设备 | 展开该区段并收起此前区段 |
+| 右键点击菜单栏项目 | 打开 Refresh/Settings/Quit 菜单 |
+| 点击 Sources 中的设备 | 展开或收起目录；展开一个来源时收起前一个 |
 | 点击 agent、worktree、Space 或 Session | 在 Ghostty 中聚焦目标 |
+| 全局呼出快捷键（配置后） | 开关面板；预选目标但不直接定位 |
+| `↑` / `↓` | 移动选择，不定位 |
+| `Enter` | 定位选中目标；来源行只展开或收起目录 |
+| Sources 中的 `←` / `→` | 返回父层，或收起 / 展开来源 |
+| `Tab` / `Shift-Tab` | 在原生控件间移动焦点 |
 | `⌘,` | 打开 Settings |
-| `Esc` | 从 Settings 返回，再次按下关闭面板 |
+| 面板内按 `Esc` | 关闭面板 |
 | `⌘Q` | 退出 Herdling |
+
+Herdr 定位可能将目标 tab 的所有 pane 标为 seen，并影响同一 Session 的多个 shell client。定位失败也可能已改变焦点，不代表回滚，更不代表任务已处理。最近 idle 按 Herdr 的状态更新时间选取，不是导航历史。
 
 ## 开发
 

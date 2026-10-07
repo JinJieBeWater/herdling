@@ -1,0 +1,744 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Herdling · 观察、选择、跳转原型</title>
+  <style>
+    :root { color-scheme: light; --ink:#20242a; --muted:#626b77; --line:#d6dce3; --blue:#2465b3; --blocked:#ac620b; --done:#6b7078; --working:#356eb0; --idle:#777e89; }
+    * { box-sizing:border-box; }
+    body { margin:0; padding:32px 28px 48px; background:#eef1f5; color:var(--ink); font:13px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { max-width:1110px; margin:auto; }
+    h1 { margin:0 0 8px; font-size:24px; font-weight:650; letter-spacing:-.5px; }
+    h2 { margin:0 0 12px; font-size:16px; font-weight:650; }
+    h3 { margin:16px 0 8px; font-size:13px; font-weight:650; }
+    p { margin:6px 0; max-width:78ch; }
+    button, select { font:inherit; color:inherit; }
+    button { border:1px solid #b7c0cd; border-radius:7px; padding:5px 10px; background:#ffffffb8; cursor:pointer; }
+    button:hover { background:#fff; }
+    button:disabled { opacity:.45; cursor:default; }
+    button:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+    select { max-width:100%; background:#fff; border:1px solid #b7c0cd; border-radius:5px; padding:5px; }
+    code { font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; overflow-wrap:anywhere; }
+    .notice { color:var(--blue); font-weight:600; }
+    .subtle { color:var(--muted); }
+    .layout { display:grid; grid-template-columns:420px minmax(0,1fr); gap:20px; margin-top:20px; align-items:start; }
+    .preview { width:420px; min-width:0; padding:0; position:sticky; top:16px; }
+    .menubar { height:32px; display:flex; justify-content:flex-end; align-items:center; border-bottom:1px solid #cbd2db; margin-bottom:10px; }
+    .status-entry { display:flex; align-items:center; gap:9px; height:27px; border:0; border-radius:5px; background:transparent; padding:2px 9px; }
+    .status-entry[aria-expanded="true"] { background:#cbd7e8; }
+    .summary-count { display:inline-flex; align-items:center; gap:3px; font-size:11px; }
+    .glyph { width:11px; height:11px; flex:0 0 11px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+    .glyph-slot { width:22px; height:22px; flex:0 0 22px; display:flex; align-items:center; justify-content:center; }
+    .status-entry > .glyph { height:13px; }
+    .blocked { color:var(--blocked); } .done { color:var(--done); } .working { color:var(--working); } .idle { color:var(--idle); } .offline { color:var(--muted); }
+    .panel-space { min-height:120px; position:relative; }
+    .panel { width:420px; border-radius:26px; padding:8px; background:rgba(250,252,255,.78); box-shadow:0 10px 32px #33476524,0 0 0 1px #ffffffc9; backdrop-filter:blur(18px); font-size:13px; line-height:1.2; }
+    .content { border-radius:18px; overflow:hidden; }
+    .view-row { height:38px; display:flex; gap:3px; align-items:center; padding:0 6px; position:sticky; top:0; }
+    .view-button { padding:5px 8px; border:0; background:transparent; font-size:12px; border-radius:10px; }
+    .view-button[aria-pressed="true"] { background:#00000017; color:var(--ink); font-weight:600; }
+    .update-button { margin-left:auto; padding:5px 6px; border:0; background:transparent; color:var(--blue); font-size:10px; white-space:nowrap; }
+    .roster { max-height:420px; overflow-y:auto; scrollbar-width:thin; }
+    .roster-row { border:0; width:100%; display:flex; text-align:left; align-items:center; gap:6px; padding:0 8px; border-radius:10px; background:transparent; overflow:hidden; }
+    .roster-row + .roster-row { margin-top:2px; }
+    .roster-row + .source-row, .source-row + .workspace-row { margin-top:4px; }
+    .roster-row:hover { background:#0000000b; }
+    .roster-row.selected { background:#00000017; }
+    .roster-row[aria-disabled="true"] { opacity:.52; cursor:not-allowed; }
+    .attention-row { height:40px; }
+    .recent-row { height:40px; }
+    .section-label { height:24px; padding:6px 10px; color:var(--muted); font-size:10px; font-weight:600; }
+    .section-count { margin-left:5px; font-weight:400; }
+    .section-note { padding:5px 10px 9px; color:var(--muted); font-size:10px; line-height:1.4; }
+    .source-row { height:38px; font-weight:600; }
+    .workspace-row, .agent-row { height:32px; }
+    .workspace-row { padding-left:20px; }
+    .agent-row { padding-left:32px; }
+    .row-copy { min-width:0; flex:1; }
+    .row-title { display:flex; align-items:baseline; gap:6px; min-width:0; }
+    .row-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .row-status { margin-left:auto; font-size:10px; white-space:nowrap; }
+    .row-subtitle { display:block; color:var(--muted); font-size:10px; line-height:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .chevron { width:10px; font-size:12px; color:var(--muted); }
+    .empty { padding:28px 12px; color:var(--muted); text-align:center; }
+    .closed-note { padding:50px 24px; text-align:center; color:var(--muted); }
+    .caption { color:var(--muted); font-size:11px; margin:10px 0 18px; }
+    .controls { min-width:0; border-top:1px solid var(--line); padding-top:14px; }
+    .button-row { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; }
+    .controls section + section { border-top:1px solid var(--line); margin-top:18px; padding-top:16px; }
+    details { margin:10px 0; }
+    summary { cursor:pointer; color:var(--muted); font-size:12px; }
+    summary:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+    .advanced { border-top:1px solid var(--line); margin-top:18px; padding-top:16px; }
+    .field { display:block; margin:10px 0; }
+    .field span { display:block; margin-bottom:4px; color:var(--muted); }
+    .scenario-tabs { display:flex; flex-wrap:wrap; gap:5px; }
+    .scenario-tabs button[aria-pressed="true"] { border-color:var(--blue); color:var(--blue); background:#dce8f6; }
+    .steps { margin:10px 0; padding-left:24px; }
+    .steps li { padding:4px 0; }
+    .steps button { text-align:left; }
+    .steps .passed { color:var(--muted); }
+    .target-window { margin-top:20px; border:1px solid #aeb9c7; border-radius:9px; background:#f9fbfd; overflow:hidden; }
+    .window-title { padding:7px 12px; background:#dce3ec; font-size:12px; }
+    .target-body { padding:12px; min-height:130px; }
+    dl { display:grid; grid-template-columns:92px minmax(0,1fr); gap:4px 12px; margin:8px 0; }
+    dt { color:var(--muted); } dd { margin:0; overflow-wrap:anywhere; }
+    .state-area { margin-top:24px; padding-top:16px; border-top:1px solid var(--line); display:grid; grid-template-columns:1fr 1fr; gap:30px; }
+    .state-text { white-space:pre-line; }
+    .log { padding:0 0 0 28px; margin:0; max-height:300px; overflow:auto; }
+    .log li { margin:4px 0; padding-left:4px; }
+    .context-menu { position:absolute; top:0; right:0; z-index:3; padding:5px; width:160px; background:#f4f7fc; border:1px solid #b7c0cd; border-radius:9px; box-shadow:0 5px 15px #22334422; }
+    .context-menu button { display:block; width:100%; text-align:left; border:0; background:transparent; }
+    [hidden] { display:none !important; }
+    @media (max-width:759px) { .layout { grid-template-columns:minmax(0,1fr); gap:24px; } .preview { margin:auto; position:static; } .state-area { grid-template-columns:minmax(0,1fr); } }
+    @media (max-width:500px) { body { padding:20px 8px; } .preview { width:100%; padding:0; } .panel-space { overflow-x:auto; } .menubar { width:100%; } .caption { max-width:420px; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>观察、选择、跳转</h1>
+    <p>验证 Herdling 导航：观察与选择不跳，点击行 / Enter 提交；导航结果与后端状态分开。</p>
+    <p class="notice">模拟数据 · 模拟跳转 · HTML 不验证原生玻璃</p>
+    <details class="explanation">
+      <summary>操作语义与真实 focus 限制</summary>
+      <p class="subtle">菜单栏入口在 0 / 1 / 多个 agent 时都只开关面板。Quick access 包含 Needs attention（Herdr 回报 blocked 或 done）与 Recent jumps（最近三个成功跳转的 agent / pane，与当前需关注项去重）。都不是已读或处理记录，历史不从 idle 列表凑，也不持久化。</p>
+      <p class="subtle">实际 daemon 0.9.0 / CLI 0.9.3：真实 focus 可能把目标 tab 所有 pane 标为 seen（true），同时清掉多个 done 提示；workspace / tab / pane focus 可能影响同 session 多个 shell client。失败也不能承诺零副作用，本原型不执行这些真实操作。</p>
+    </details>
+  </header>
+
+  <div class="layout">
+    <div class="preview">
+      <div class="menubar" aria-label="模拟菜单栏">
+        <button id="status-entry" class="status-entry" data-ui="toggle" data-focus="status-entry" aria-expanded="false" aria-controls="panel" title="点击只开关面板；右键打开模拟菜单"></button>
+      </div>
+      <div class="panel-space">
+        <section id="panel" class="panel" role="dialog" aria-modal="false" aria-label="模拟 Herdling agents 面板" tabindex="-1" hidden></section>
+        <div id="closed-note" class="closed-note">面板已关闭。点击上方整个菜单栏入口，或使用右侧模拟快捷键呼出。</div>
+        <div id="context-menu" class="context-menu" role="menu" aria-label="模拟菜单" hidden>
+          <button role="menuitem" data-ui="context" data-value="Refresh">Refresh（仅模拟快照更新）</button>
+          <button role="menuitem" data-ui="context" data-value="Settings">Settings（仅记录日志）</button>
+          <button role="menuitem" data-ui="context" data-value="Quit">Quit（仅关闭预览面板）</button>
+        </div>
+      </div>
+      <details class="explanation">
+        <summary>尺寸与列表更新说明</summary>
+        <p class="caption">420 宽 · 26 外圆角 · 8 内缩 · 18 内容边界 · 10 行圆角。单一半透明表面，无 footer。Needs attention 先 blocked 再 done，同状态最近变化优先；Recent jumps 按成功顺序倒序。打开期间成员和顺序固定，“状态已变”不是新增未读；Update list 或重新打开才更新名单和排序。</p>
+      </details>
+      <p id="coverage-note" class="caption"></p>
+      <section class="target-window" aria-label="模拟目标窗口">
+        <div class="window-title">模拟目标窗口 · 不连接真实终端</div>
+        <div id="target-window" class="target-body"></div>
+      </section>
+    </div>
+
+    <aside class="controls" aria-label="外部模拟控制">
+      <section>
+        <h2>场景引导</h2>
+        <div id="scenario-tabs" class="scenario-tabs"></div>
+        <p id="scenario-description"></p>
+        <ol id="scenario-steps" class="steps"></ol>
+        <p class="subtle">选场景重置模拟会话；逐步点击，每步都执行动作。</p>
+      </section>
+      <section>
+        <h2>自由操作</h2>
+        <div class="button-row">
+          <button data-ui="keyboard-open">模拟快捷键呼出</button>
+          <button data-ui="key" data-value="ArrowUp">↑ 选择</button>
+          <button data-ui="key" data-value="ArrowDown">↓ 选择</button>
+          <button data-ui="key" data-value="Enter">Enter 提交</button>
+          <button data-ui="key" data-value="Escape">Esc 关闭</button>
+        </div>
+        <details><summary>键盘操作说明</summary><p class="subtle">鼠标打开不预选。快捷键开关同一面板，打开时默认选首个可定位目标。↑ / ↓ 选择，Enter 执行选中项；来源只折叠。← / → 收起、展开来源，← 从子项返回父层。Esc 关闭；不注册 OS 全局快捷键。</p></details>
+        <div class="button-row">
+          <button data-ui="dataset" data-value="zero">0 agents</button>
+          <button data-ui="dataset" data-value="single">1 个 done</button>
+          <button data-ui="dataset" data-value="same">多个同名</button>
+          <button data-ui="dataset" data-value="quiet">零待关注</button>
+        </div>
+        <p class="subtle">切换数据会重置本页会话与历史。</p>
+      </section>
+      <section>
+        <h2>模拟导航结果</h2>
+        <p id="navigation-text" class="state-text" role="status"></p>
+        <label class="field"><span>模拟结果请求</span><select id="result-request" aria-label="模拟结果请求"></select></label>
+        <div class="button-row">
+          <button id="success" data-ui="result" data-value="success">返回成功</button>
+          <button id="failure" data-ui="result" data-value="failure">返回失败</button>
+          <button id="retry" data-ui="retry">重试原目标</button>
+        </div>
+        <details><summary>结果与重试说明</summary><p class="subtle">成功关面板，不改变 agent 运行状态；失败保留原目标。重复提交同目标不重复启动；换目标采用最新请求，旧结果被忽略。可选旧请求返回结果验证忽略行为。Esc 不取消已提交导航。</p></details>
+      </section>
+      <details class="advanced" id="backend-controls">
+        <summary>模拟后端事件（高级自由操作）</summary>
+        <label class="field"><span>事件目标（可与当前选择不同）</span><select id="event-agent" aria-label="后端事件 agent"></select></label>
+        <div class="button-row">
+          <button data-ui="status" data-value="blocked">状态 → blocked</button>
+          <button data-ui="status" data-value="done">状态 → done</button>
+          <button data-ui="status" data-value="working">状态 → working</button>
+          <button data-ui="status" data-value="idle">状态 → idle</button>
+          <button data-ui="remove">目标消失</button>
+          <button data-ui="add">新增同名 done</button>
+        </div>
+        <label class="field"><span>来源</span><select id="event-source" aria-label="后端事件来源"><option value="local">JinJieBeWater</option><option value="remote">kvm</option></select></label>
+        <div class="button-row">
+          <button data-ui="online" data-value="false">来源离线</button>
+          <button data-ui="online" data-value="true">来源恢复</button>
+        </div>
+        <p class="subtle">新成员只提示 Update list，不抢选择。离线 / 消失行仍保留在打开时的快照里，但不能跳转。</p>
+      </details>
+    </aside>
+  </div>
+
+  <section class="state-area">
+    <div>
+      <h2>可读状态</h2>
+      <div id="readable-state"></div>
+      <p class="subtle">All agents：来源标题只折叠；工作区行提交工作区目标；agent 行提交精确 pane。↑ / ↓ 选择可操作行，不导航。跨视图或更新名单按稳定 ID 保留可见选择，不按位置替换。这里简化为来源→工作区→agent 样本；产品保留现有 Session / Space / worktree 层级。</p>
+      <p class="subtle">原型限制：真实客户端焦点投射与失败副作用未在 HTML 中验证。seen 变化不代表用户读懂或处理完结果；这里没有“标为已读”或“处理完成”动作，也不因导航自行改变 done。真实操作的验收边界交由产品规范确认。</p>
+    </div>
+    <div>
+      <h2>动作日志 <small class="subtle">最近 60 条</small></h2>
+      <ol id="action-log" class="log" aria-label="模拟动作日志"></ol>
+    </div>
+  </section>
+</main>
+
+<!-- Portable state model: no DOM, clock, network, storage or terminal calls. -->
+<script id="navigation-model">
+const NavigationModel = (() => {
+  const sources = [
+    { id:'local', name:'JinJieBeWater', online:true },
+    { id:'remote', name:'kvm', online:true }
+  ];
+  const workspaces = [
+    { id:'local-report', source:'local', session:'default', name:'评估报告' },
+    { id:'local-herdling', source:'local', session:'default', name:'herdling' },
+    { id:'remote-report', source:'remote', session:'research', name:'评估报告' },
+    { id:'remote-herdling', source:'remote', session:'default', name:'herdling' }
+  ];
+  const seedAgents = [
+    { id:'local-writer', name:'report-writer', workspace:'local-report', tab:'w12:t1', pane:'w12:p1', status:'done', updated:3 },
+    { id:'local-review', name:'reviewer', workspace:'local-report', tab:'w12:t1', pane:'w12:p2', status:'blocked', updated:5 },
+    { id:'local-ui', name:'navigation', workspace:'local-herdling', tab:'w54:t1', pane:'w54:p1', status:'working', updated:1 },
+    { id:'remote-writer', name:'report-writer', workspace:'remote-report', tab:'w8:t1', pane:'w8:p1', status:'done', updated:2 },
+    { id:'remote-review', name:'reviewer', workspace:'remote-herdling', tab:'w9:t1', pane:'w9:p2', status:'blocked', updated:4 }
+  ];
+  const clone = value => JSON.parse(JSON.stringify(value));
+  const isAttention = agent => ['blocked','done'].includes(agent.status);
+  const key = target => target ? `${target.kind}:${target.id}` : '';
+  const agentById = (state, id) => state.backend.agents.find(agent => agent.id === id);
+  const workspaceById = (state, id) => state.backend.workspaces.find(workspace => workspace.id === id);
+  const sourceById = (state, id) => state.backend.sources.find(source => source.id === id);
+  const onlineAgent = (state, agent) => sourceById(state,workspaceById(state,agent.workspace).source).online;
+  function ordered(state, view) {
+    return state.backend.agents.filter(agent => view !== 'attention' || (isAttention(agent) && onlineAgent(state,agent))).slice().sort((a,b) => {
+      if (view === 'attention') {
+        const priority = (a.status === 'blocked' ? 0 : 1) - (b.status === 'blocked' ? 0 : 1);
+        if (priority) return priority;
+        if (a.updated !== b.updated) return b.updated - a.updated;
+      }
+      const workspaceOrder = state.backend.workspaces.findIndex(workspace => workspace.id === a.workspace) - state.backend.workspaces.findIndex(workspace => workspace.id === b.workspace);
+      return workspaceOrder || state.backend.agents.indexOf(a) - state.backend.agents.indexOf(b);
+    });
+  }
+  function snapshot(state) {
+    state.frozen = {
+      agents:clone([...state.backend.agents,...state.history.filter(entry => !agentById(state,entry.target.id)).map(entry => entry.agent)]),
+      attention:ordered(state,'attention').map(agent => agent.id),
+      recent:recent(state).map(entry => entry.target.id),
+      all:ordered(state,'all').map(agent => agent.id),
+      workspaces:clone(state.backend.workspaces), sources:clone(state.backend.sources)
+    };
+  }
+  function pendingList(state) {
+    if (!state.open) return false;
+    return ['attention','all'].some(view => JSON.stringify(ordered(state,view).map(agent => agent.id)) !== JSON.stringify(state.frozen[view])) || JSON.stringify(recent(state).map(entry => entry.target.id)) !== JSON.stringify(state.frozen.recent);
+  }
+  function recent(state) {
+    const attentionIds = new Set(ordered(state,'attention').map(agent => agent.id));
+    return state.history.filter(entry => !attentionIds.has(entry.target.id) && !unavailable(state,entry.target));
+  }
+  function getTarget(state, ref) {
+    if (!ref) return null;
+    const agent = ref.kind === 'agent' ? agentById(state,ref.id) : null;
+    const workspace = workspaceById(state,agent ? agent.workspace : ref.id);
+    if (!workspace || (ref.kind === 'agent' && !agent)) return null;
+    const source = sourceById(state,workspace.source);
+    if (!source) return null;
+    return { kind:ref.kind, id:ref.id, sourceId:source.id, source:source.name, session:workspace.session,
+      workspaceId:workspace.id, workspace:workspace.name, pane:agent ? agent.pane : null, tab:agent ? agent.tab : null, agent:agent ? agent.name : null };
+  }
+  function unavailable(state, ref) {
+    const target = getTarget(state,ref);
+    if (!target) return '目标已消失';
+    if (!sourceById(state,target.sourceId).online) return '来源离线';
+    return '';
+  }
+  function rows(state) {
+    if (!state.open) return [];
+    const frozenAgent = id => state.frozen.agents.find(agent => agent.id === id);
+    const agentRow = id => {
+      const before = frozenAgent(id);
+      const live = agentById(state,id);
+      const agent = live || before;
+      const workspace = state.frozen.workspaces.find(workspace => workspace.id === agent.workspace);
+      const source = sourceById(state,workspace.source);
+      const ref = { kind:'agent', id };
+      return { type:'agent', ref, key:key(ref), agent, workspace, source, missing:!live,
+        changed:!!live && before.status !== live.status, reason:unavailable(state,ref) };
+    };
+    const withRecovery = result => {
+      const nav = state.navigation;
+      if (['pending','failed'].includes(nav.phase) && nav.target && !result.some(row => row.key === key(nav.target))) {
+        const ref = {kind:nav.target.kind,id:nav.target.id};
+        result.push({type:'recovery',group:'recovery',ref,key:key(ref),target:nav.target,reason:unavailable(state,ref)});
+      }
+      return result;
+    };
+    if (state.view === 'quick') return withRecovery([...state.frozen.attention.map(id => ({...agentRow(id),group:'attention'})),...state.frozen.recent.map(id => ({...agentRow(id),group:'recent'}))]);
+    const result = [];
+    for (const frozenSource of state.frozen.sources) {
+      const source = sourceById(state,frozenSource.id);
+      result.push({ type:'source', source, ref:{kind:'source',id:source.id}, key:`source:${source.id}` });
+      if (state.collapsed[source.id]) continue;
+      for (const workspace of state.frozen.workspaces.filter(workspace => workspace.source === source.id)) {
+        const ref = { kind:'workspace', id:workspace.id };
+        result.push({ type:'workspace', workspace, source, ref, key:key(ref), reason:unavailable(state,ref) });
+        result.push(...state.frozen.all.filter(id => frozenAgent(id).workspace === workspace.id).map(agentRow));
+      }
+    }
+    return withRecovery(result);
+  }
+  const selectable = state => rows(state).filter(row => row.ref && !row.reason);
+  function keepSelection(state) {
+    if (state.selected && !selectable(state).some(row => row.key === key(state.selected))) state.selected = null;
+  }
+  function fold(state, source, collapsed = !state.collapsed[source]) {
+    if (!state.open || state.view !== 'all') return;
+    state.collapsed[source] = collapsed;
+    keepSelection(state);
+    log(state,`来源${collapsed ? '折叠' : '展开'}；不导航。`);
+  }
+  function log(state, message) {
+    state.sequence++;
+    state.log.push({ sequence:state.sequence, message });
+    state.log = state.log.slice(-60);
+  }
+  function open(state, keyboard) {
+    state.open = true;
+    state.view = 'quick';
+    snapshot(state);
+    state.selected = keyboard ? (selectable(state)[0]?.ref || null) : null;
+    log(state,keyboard ? '快捷键呼出：Quick access；选择首个可跳目标（需关注优先，再选历史），没有提交导航。' : '鼠标打开：Quick access；没有预选，没有导航。');
+  }
+  function commit(state, ref, retry = false) {
+    if (!ref) { log(state,'没有选择；不提交导航。'); return; }
+    if (!['agent','workspace'].includes(ref.kind)) { log(state,'此项不是定位目标。'); return; }
+    const reason = unavailable(state,ref);
+    if (reason) { log(state,`拒绝导航：${reason}。`); return; }
+    if (!retry && !rows(state).some(row => row.key === key(ref))) { log(state,'目标不在当前可见名单；不提交导航。'); return; }
+    if (state.navigation.phase === 'pending' && key(state.navigation.target) === key(ref)) { log(state,'同目标已 pending；不重复启动。'); return; }
+    if (!retry) state.selected = clone(ref);
+    state.navigation = { phase:'pending', target:getTarget(state,ref), error:'', request:state.nextRequest++ };
+    state.requests.push({id:state.navigation.request,target:clone(state.navigation.target)});
+    state.requests = state.requests.slice(-20);
+    const target = state.navigation.target;
+    log(state,`${retry ? '重试' : '提交'}导航：${target.source} / ${target.session} / ${target.workspace}${target.pane ? ' / '+target.pane : '（工作区）'}；等待模拟结果。`);
+  }
+  function init(dataset = 'same') {
+    let agents = clone(seedAgents);
+    if (dataset === 'zero') agents = [];
+    if (dataset === 'single') agents = agents.filter(agent => agent.id === 'local-writer');
+    if (dataset === 'same-tab') agents = agents.filter(agent => agent.workspace === 'local-report').map(agent => ({...agent,status:'done'}));
+    if (dataset === 'quiet') agents = agents.map(agent => ({ ...agent, status:agent.id === 'local-ui' ? 'working' : 'idle' }));
+    const state = { backend:{sources:clone(sources),workspaces:clone(workspaces),agents}, frozen:null,
+      open:false,view:'quick',selected:null,collapsed:{},navigation:{phase:'idle',target:null,error:''},
+      landed:null,sequence:0,log:[],nextAgent:1,nextRequest:1,backendRevision:5,requests:[],history:[],successfulJumps:0,context:false,scenario:null,step:0 };
+    snapshot(state);
+    log(state,'载入模拟数据；没有真实连接，没有持久化。');
+    return state;
+  }
+  function reduce(previous, action) {
+    if (action.type === 'RESET') {
+      const state = init(action.dataset);
+      state.scenario = action.scenario || null;
+      return state;
+    }
+    const state = clone(previous);
+    switch (action.type) {
+      case 'TOGGLE':
+        if (state.open) { state.open = false; log(state,'菜单栏入口关闭面板；已提交导航不变。'); }
+        else open(state,false);
+        state.context = false;
+        break;
+      case 'KEYBOARD_OPEN':
+        if (state.open) { state.open = false; log(state,'快捷键关闭面板；已提交导航不变。'); }
+        else open(state,true);
+        state.context = false;
+        break;
+      case 'CLOSE': state.open = false; state.context = false; log(state,`${action.origin === 'outside' ? '外部点击' : 'Esc'}只关面板；已提交导航与目标窗口不回滚。`); break;
+      case 'VIEW':
+        if (!state.open) break;
+        state.view = action.view;
+        keepSelection(state);
+        log(state,`切到 ${state.view === 'quick' ? 'Quick access' : 'All agents'}；不导航。`);
+        break;
+      case 'COLLAPSE':
+        fold(state,action.source);
+        break;
+      case 'SELECT_SOURCE':
+        if (state.open && state.view === 'all' && sourceById(state,action.source)) state.selected = {kind:'source',id:action.source};
+        break;
+      case 'HORIZONTAL': {
+        if (!state.open || state.view !== 'all' || !state.selected) break;
+        if (state.selected.kind === 'source') fold(state,state.selected.id,action.direction < 0);
+        else if (action.direction < 0) {
+          const target = getTarget(state,state.selected);
+          if (target) state.selected = state.selected.kind === 'agent' ? {kind:'workspace',id:target.workspaceId} : {kind:'source',id:target.sourceId};
+          keepSelection(state);
+          log(state,'选择父层；不导航。');
+        }
+        break;
+      }
+      case 'MOVE': {
+        if (!state.open) { log(state,'面板已关闭；方向键不导航。'); break; }
+        const available = selectable(state);
+        if (!available.length) { state.selected = null; log(state,'没有可选择的跳转目标。'); break; }
+        const index = available.findIndex(row => row.key === key(state.selected));
+        const nextIndex = index < 0 ? (action.direction > 0 ? 0 : available.length - 1) : Math.max(0,Math.min(available.length-1,index+action.direction));
+        state.selected = clone(available[nextIndex].ref);
+        log(state,`选择 ${key(state.selected)}；没有提交导航。`);
+        break;
+      }
+      case 'ENTER':
+        if (!state.open) log(state,'面板已关闭；Enter 不提交。');
+        else if (state.selected?.kind === 'source') fold(state,state.selected.id);
+        else commit(state,state.selected);
+        break;
+      case 'NAVIGATE': if (state.open) commit(state,action.target); break;
+      case 'RESULT': {
+        if (action.request && action.request !== state.navigation.request) { log(state,`忽略过时请求 #${action.request} 的结果；最新目标不变。`); break; }
+        if (state.navigation.phase !== 'pending') { log(state,'没有 pending 导航；忽略模拟结果。'); break; }
+        const reason = unavailable(state,state.navigation.target);
+        if (reason || !action.success) {
+          state.navigation.phase = 'failed';
+          state.navigation.error = reason || action.error || '模拟连接失败';
+          log(state,`导航失败：${state.navigation.error}；保留原目标，不改运行状态。`);
+        } else {
+          state.navigation.phase = 'succeeded';
+          state.landed = clone(state.navigation.target);
+          if (state.navigation.target.kind === 'agent') {
+            const target = clone(state.navigation.target);
+            const identity = value => `${value.sourceId}/${value.session}/${value.pane}`;
+            const entry = {target,agent:clone(agentById(state,target.id)),success:++state.successfulJumps};
+            state.history = [entry,...state.history.filter(item => identity(item.target) !== identity(target))].slice(0,3);
+          }
+          state.open = false;
+          log(state,`模拟导航成功，关闭面板；目标窗口更新，运行状态未改变。${state.navigation.target.kind === 'agent' ? '仅此成功目标进入最近跳转历史。' : '工作区跳转不计入 agent / pane 历史。'}`);
+        }
+        break;
+      }
+      case 'RETRY':
+        if (state.navigation.phase === 'failed') commit(state,state.navigation.target,true);
+        else log(state,'没有失败导航可重试。');
+        break;
+      case 'REFRESH':
+        snapshot(state); keepSelection(state);
+        log(state,'显式 Update list：采用当前名单与排序；选择按 ID 保留，不导航。');
+        break;
+      case 'BACKEND_STATUS': {
+        const agent = agentById(state,action.id);
+        if (agent) { if (agent.status !== action.status) agent.updated = ++state.backendRevision; agent.status = action.status; log(state,`后端状态：${agent.name} [${agent.id}] → ${action.status}；不是新增未读。`); }
+        else log(state,'后端事件目标已消失；忽略状态变更。');
+        break;
+      }
+      case 'BACKEND_STATUSES': {
+        const revision = ++state.backendRevision;
+        for (const id of action.ids) {
+          const agent = agentById(state,id);
+          if (agent) { if (agent.status !== action.status) agent.updated = revision; agent.status = action.status; }
+        }
+        log(state,`独立后端事件：${action.ids.join('、')} → ${action.status}；不表示已读或处理完成，与导航结果分开。`);
+        break;
+      }
+      case 'BACKEND_ADD': {
+        const id = `new-writer-${state.nextAgent++}`;
+        state.backend.agents.push({id,name:'report-writer',workspace:'remote-report',tab:'w8:t1',pane:`w8:p${state.nextAgent+2}`,status:'done',updated:++state.backendRevision});
+        log(state,`后端新增 ${id}；打开期间不插入列表、不抢选择。`);
+        break;
+      }
+      case 'BACKEND_REMOVE':
+        state.backend.agents = state.backend.agents.filter(agent => agent.id !== action.id);
+        state.history = state.history.filter(entry => entry.target.id !== action.id);
+        log(state,`后端移除 ${action.id}；快照行保留但不能跳，历史不再保留退出的 pane。`);
+        break;
+      case 'BACKEND_ONLINE': {
+        const source = sourceById(state,action.source);
+        if (source) { source.online = action.online; log(state,`后端来源：${source.name}${source.online ? '恢复在线' : '离线'}；不导航。`); }
+        break;
+      }
+      case 'CONTEXT': state.context = !state.context; break;
+      case 'CONTEXT_ACTION':
+        state.context = false;
+        if (action.name === 'Refresh') { snapshot(state); keepSelection(state); log(state,'模拟 Refresh：只更新本页快照，没有请求真实后端。'); }
+        else if (action.name === 'Quit') { state.open = false; log(state,'模拟 Quit：只关闭预览面板，不退出任何真实程序。'); }
+        else log(state,'模拟 Settings：只记录动作，不打开系统偏好或更改设置。');
+        break;
+      case 'STEP_DONE': state.step++; break;
+    }
+    if (action.type.startsWith('BACKEND_')) {
+      // Never insert, reorder or auto-select on backend events.
+      if (state.navigation.phase === 'pending') {
+        const reason = unavailable(state,state.navigation.target);
+        if (reason) { state.navigation.phase = 'failed'; state.navigation.error = reason; log(state,`pending 目标失效：${reason}；保留原目标，不能返回成功。`); }
+      }
+    }
+    return state;
+  }
+  return { init,reduce,rows,selectable,pendingList,getTarget,unavailable,key,agentById,workspaceById,sourceById,isAttention,onlineAgent,recent };
+})();
+</script>
+
+<!-- Disposable DOM shell. Every mutation goes through NavigationModel.reduce. -->
+<script id="navigation-ui">
+(() => {
+  const M = NavigationModel;
+  let state = M.init();
+  const $ = id => document.getElementById(id);
+  const escape = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
+  const icons = {
+    blocked:'M14 8a6 6 0 1 1-12 0a6 6 0 1 1 12 0ZM6 6l4 4m0-4-4 4',
+    done:'M14 8a6 6 0 1 1-12 0a6 6 0 1 1 12 0Zm-10 0 2.7 2.7 5-5',
+    working:'M8 2a6 6 0 1 1 0 12a6 6 0 1 1 0-12ZM8 2v12',
+    idle:'M14 8a6 6 0 1 1-12 0a6 6 0 1 1 12 0Z',
+    unknown:'M14 8a6 6 0 1 1-12 0a6 6 0 1 1 12 0ZM6 6c0-2 4-2 4 0 0 1-2 1-2 3m0 2v.1',
+    local:'M2 3h12v8H2zM1 13h14', remote:'M2 2h12v4H2zM2 10h12v4H2zM8 6v4M4 4h.1M4 12h.1',
+    workspace:'M1.5 4h5l1.5 2h6.5v7h-13z', offline:'m3 3 10 10M13 3 3 13'
+  };
+  const glyph = (name, extra = '', slot = false) => {
+    const svg = `<svg class="glyph ${extra}" aria-hidden="true" viewBox="0 0 16 16"><path d="${icons[name] || icons.idle}"></path></svg>`;
+    return slot ? `<span class="glyph-slot" aria-hidden="true">${svg}</span>` : svg;
+  };
+  const scenarios = [
+    { id:'single', label:'单个完成', dataset:'single', description:'只有一个 done：入口仍只开面板，选择不等于跳转，成功也不自行清 done。', steps:[
+      ['鼠标点击入口，只打开面板',{type:'TOGGLE'}],
+      ['↓ 选择唯一 agent，不跳转',{type:'MOVE',direction:1}],
+      ['Enter 提交精确 pane',{type:'ENTER'}],
+      ['模拟返回成功，关面板',{type:'RESULT',success:true}],
+      ['重新打开，done 仍由后端回报',{type:'TOGGLE'}]
+    ]},
+    { id:'same', label:'多个同名', dataset:'same', description:'report-writer 跨 JinJieBeWater / kvm 同名。先选择本机，再选择远端；只最后提交的 ID 决定目标。', steps:[
+      ['快捷键呼出并选择首个可跳 agent',{type:'KEYBOARD_OPEN'}],
+      ['↓ 只移动选择',{type:'MOVE',direction:1}],
+      ['切到 All agents，不导航',{type:'VIEW',view:'all'}],
+      ['点击 kvm 的 report-writer，提交 w8:p1',{type:'NAVIGATE',target:{kind:'agent',id:'remote-writer'}}],
+      ['返回成功，核对 source / session / workspace / pane',{type:'RESULT',success:true}]
+    ]},
+    { id:'quiet', label:'零待关注', dataset:'quiet', description:'agent 仍在运行，但没有 blocked / done，也没有成功跳转历史。Quick access 为空；不能从 idle agent 凑历史。All agents 保留工作区导航。', steps:[
+      ['鼠标打开空 Quick access',{type:'TOGGLE'}],
+      ['切 All agents 查看运行中的 agent',{type:'VIEW',view:'all'}],
+      ['折叠 JinJieBeWater 来源，不跳转',{type:'COLLAPSE',source:'local'}],
+      ['展开来源，不跳转',{type:'COLLAPSE',source:'local'}],
+      ['点击 herdling 工作区（不是 agent pane）',{type:'NAVIGATE',target:{kind:'workspace',id:'local-herdling'}}],
+      ['返回成功，目标为工作区',{type:'RESULT',success:true}],
+      ['重新打开，默认仍是 Quick access；工作区跳转没有伪造 agent 历史',{type:'TOGGLE'}]
+    ]},
+    { id:'failure', label:'跳转失败', dataset:'same', description:'失败保留目标可重试。Esc 只关面板；结果仍能完成已提交导航，不回滚到旧目标。', steps:[
+      ['鼠标打开面板',{type:'TOGGLE'}],
+      ['点击本机 report-writer，提交导航',{type:'NAVIGATE',target:{kind:'agent',id:'local-writer'}}],
+      ['返回失败，面板与原目标保留',{type:'RESULT',success:false}],
+      ['重试原目标',{type:'RETRY'}],
+      ['Esc 关闭，不撤销 pending',{type:'CLOSE'}],
+      ['返回成功，仍落到已提交目标',{type:'RESULT',success:true}]
+    ]},
+    { id:'tab-side-effect', label:'同 tab 状态变化后失败', dataset:'same-tab', description:'w12:t1 内两条 done。提交导航后，独立后端事件回报两条 idle，再模拟终端激活失败。idle 不是处理完成；失败也不保证没有后端副作用。', steps:[
+      ['鼠标打开，两条 done 同在 w12:t1',{type:'TOGGLE'}],
+      ['点击 report-writer，提交 w12:p1',{type:'NAVIGATE',target:{kind:'agent',id:'local-writer'}}],
+      ['独立后端事件：同 tab 两条都报 idle',{type:'BACKEND_STATUSES',ids:['local-writer','local-review'],status:'idle'}],
+      ['模拟终端激活失败；保留失败目标',{type:'RESULT',success:false,error:'模拟终端激活失败；后端已回报 idle，不能承诺失败零副作用'}],
+      ['关闭面板；不清掉失败记录',{type:'CLOSE'}],
+      ['重新打开：Last jump 保留恢复入口，不计入需关注数',{type:'TOGGLE'}],
+      ['重试同一目标，即使它已不再需关注',{type:'RETRY'}],
+      ['返回成功；仍不自行改变后端状态',{type:'RESULT',success:true}]
+    ]},
+    { id:'updates', label:'运行时更新 / 离线', dataset:'same', description:'打开时固定名单与顺序，状态实时变。新成员等待 Update list，选择不被抢；离线与消失目标都拒绝跳转。', steps:[
+      ['快捷键呼出，记住选中的 ID',{type:'KEYBOARD_OPEN'}],
+      ['选中行状态变 working；行不移走',{type:'BACKEND_STATUS',id:'local-review',status:'working'}],
+      ['新增同名 done，只提示 Update list',{type:'BACKEND_ADD'}],
+      ['显式更新名单；不再可见的选择清空，不换成别的 ID',{type:'REFRESH'}],
+      ['kvm 离线，已有行即时不可跳',{type:'BACKEND_ONLINE',source:'remote',online:false}],
+      ['尝试跳到离线 report-writer，被拒绝',{type:'NAVIGATE',target:{kind:'agent',id:'remote-writer'}}],
+      ['kvm 恢复在线',{type:'BACKEND_ONLINE',source:'remote',online:true}],
+      ['本机 report-writer 消失，快照行保留',{type:'BACKEND_REMOVE',id:'local-writer'}],
+      ['尝试跳到已消失 pane，被拒绝',{type:'NAVIGATE',target:{kind:'agent',id:'local-writer'}}],
+      ['重新打开：先关面板',{type:'CLOSE'}],
+      ['再开面板，采用最新名单与顺序',{type:'TOGGLE'}]
+    ]},
+    { id:'keyboard-tree', label:'键盘浏览层级', dataset:'same', description:'上下键也能选择来源。来源上的 Enter 或左右键只折叠，不定位；子项上的左键返回父层。', steps:[
+      ['鼠标打开，不预选',{type:'TOGGLE'}],
+      ['切换 All agents',{type:'VIEW',view:'all'}],
+      ['向下选择首个来源，不跳转',{type:'MOVE',direction:1}],
+      ['Enter 收起来源，不跳转',{type:'ENTER'}],
+      ['向右展开来源，不跳转',{type:'HORIZONTAL',direction:1}],
+      ['向下选择工作区，不跳转',{type:'MOVE',direction:1}],
+      ['向左返回来源，不跳转',{type:'HORIZONTAL',direction:-1}],
+      ['向左收起来源，不跳转',{type:'HORIZONTAL',direction:-1}]
+    ]},
+    { id:'return-recent', label:'返回最近成功目标', dataset:'single', description:'done 经后端回报 idle 后仍能返回同一 pane。Recent jumps 只来自成功导航，不是已读或处理记录；失败不制造历史。', steps:[
+      ['鼠标打开 Quick access',{type:'TOGGLE'}],
+      ['点击 report-writer，提交 w12:p1',{type:'NAVIGATE',target:{kind:'agent',id:'local-writer'}}],
+      ['返回成功，记录一次 agent / pane 跳转',{type:'RESULT',success:true}],
+      ['独立后端事件：report-writer → idle',{type:'BACKEND_STATUS',id:'local-writer',status:'idle'}],
+      ['快捷键呼出；无需关注项，首选真实 Recent jumps',{type:'KEYBOARD_OPEN'}],
+      ['Enter 再提交同一历史目标',{type:'ENTER'}],
+      ['返回失败，不增加历史记录',{type:'RESULT',success:false}],
+      ['重试原目标',{type:'RETRY'}],
+      ['返回成功；同一 pane 去重，不累积重复项',{type:'RESULT',success:true}]
+    ]}
+  ];
+  function targetFields(target) {
+    if (!target) return '<p class="subtle">尚无模拟跳转。只有导航返回成功才更新此窗口。</p>';
+    return `<dl><dt>source</dt><dd>${escape(target.source)}</dd><dt>session</dt><dd>${escape(target.session)}</dd><dt>workspace</dt><dd>${escape(target.workspace)} <code>${escape(target.workspaceId)}</code></dd>${target.tab ? `<dt>tab</dt><dd><code>${escape(target.tab)}</code></dd>` : ''}<dt>pane</dt><dd>${target.pane ? `<code>${escape(target.pane)}</code>` : '工作区导航 · 未指定 pane'}</dd>${target.agent ? `<dt>agent</dt><dd>${escape(target.agent)} <code>${escape(target.id)}</code></dd>` : ''}</dl>`;
+  }
+  function rowHTML(row) {
+    const selected = M.key(state.selected) === row.key;
+    if (row.type === 'source') return `<button class="roster-row source-row ${selected ? 'selected' : ''}" data-ui="collapse" data-id="${escape(row.source.id)}" data-focus="${row.key}" aria-current="${selected}" aria-expanded="${!state.collapsed[row.source.id]}">${glyph(row.source.id,'',true)}<span class="row-copy">${escape(row.source.name)}</span><span class="row-status">${row.source.online ? '' : '离线'}</span><span class="chevron">${state.collapsed[row.source.id] ? '›' : '⌄'}</span></button>`;
+    const nav = state.navigation;
+    const navigationMatches = M.key(nav.target) === row.key && ['pending','failed'].includes(nav.phase);
+    const feedback = navigationMatches ? `<span class="row-status" title="${escape(nav.error || 'Opening target')}">${nav.phase === 'pending' ? 'Opening…' : row.reason ? 'Unavailable' : 'Failed · Retry'}</span>` : '';
+    if (row.type === 'recovery') {
+      const target = row.target;
+      const context = `${target.source} / ${target.session} / ${target.workspace} / ${target.pane || 'Workspace'}`;
+      const symbol = target.kind === 'workspace' ? 'workspace' : row.reason ? 'offline' : M.agentById(state,target.id)?.status || 'unknown';
+      return `<button class="roster-row recent-row ${selected ? 'selected' : ''}" data-ui="${nav.phase === 'failed' ? 'retry' : 'navigate'}" data-kind="${row.ref.kind}" data-id="${escape(row.ref.id)}" data-focus="${row.key}" ${row.reason ? 'disabled' : ''} aria-disabled="${!!row.reason}" aria-label="${escape(context+'；'+(row.reason || nav.error || '正在定位'))}" title="${escape(context+'；'+(row.reason || nav.error || '正在定位'))}">${glyph(symbol,symbol,true)}<span class="row-copy"><span class="row-title"><span class="row-name">${escape(target.agent || target.workspace)}</span>${feedback}</span><span class="row-subtitle">${escape(context)}</span></span></button>`;
+    }
+    const accessibleLabel = row.type === 'workspace' ? `${row.source.name} / ${row.workspace.session} / ${row.workspace.name}，打开工作区${row.reason ? '，'+row.reason : ''}` : `${row.agent.name}，${row.source.name} / ${row.workspace.session} / ${row.workspace.name} / ${row.agent.pane}，${row.reason || row.agent.status}，打开精确 pane${row.changed ? '，状态已变，不是新增未读' : ''}`;
+    const attributes = `data-ui="navigate" data-kind="${row.ref.kind}" data-id="${escape(row.ref.id)}" data-focus="${row.key}" aria-label="${escape(accessibleLabel+(navigationMatches ? '；'+(nav.error || '正在定位') : ''))}" aria-disabled="${!!row.reason}" ${row.reason ? 'disabled' : ''} aria-current="${selected ? 'true' : 'false'}"`;
+    if (row.type === 'workspace') return `<button class="roster-row workspace-row ${selected ? 'selected' : ''}" ${attributes} title="打开工作区，不指定 agent pane${row.reason ? '：'+escape(row.reason) : ''}">${glyph('workspace','',true)}<span class="row-name">${escape(row.workspace.name)}</span><span class="row-status subtle">${row.reason || escape(row.workspace.session)}</span>${feedback}</button>`;
+    const status = row.missing ? '已消失' : row.reason ? row.reason : row.agent.status;
+    const subtitle = `${row.source.name} / ${row.workspace.session} / ${row.workspace.name} / ${row.agent.pane}`;
+    const all = state.view === 'all';
+    const rowClass = all ? 'agent-row' : row.group === 'recent' ? 'recent-row' : 'attention-row';
+    return `<button class="roster-row ${rowClass} ${selected ? 'selected' : ''}" ${attributes} title="${escape(subtitle)}；${escape(status)}${navigationMatches ? '；'+escape(nav.error || 'Opening target') : ''}${row.changed ? '；状态已变，不是新增未读' : ''}">${glyph(row.reason ? 'offline' : row.agent.status,row.reason ? 'offline' : row.agent.status,true)}<span class="row-copy"><span class="row-title"><span class="row-name">${escape(row.agent.name)}</span>${row.changed ? '<span class="row-status subtle">状态已变</span>' : ''}<span class="row-status ${row.reason ? 'offline' : row.agent.status}">${escape(status)}</span>${feedback}</span>${all ? '' : `<span class="row-subtitle">${escape(subtitle)}</span>`}</span>${all ? `<span class="row-status subtle">${escape(row.agent.pane)}</span>` : ''}</button>`;
+  }
+  function render() {
+    const activeFocus = document.activeElement?.dataset?.focus;
+    const rosterScroll = $('panel').querySelector('.roster')?.scrollTop || 0;
+    const sameRosterView = $('panel').dataset.view === state.view;
+    const eventAgent = $('event-agent').value;
+    const resultRequest = Number($('result-request').value);
+    const list = M.rows(state);
+    const attentionCount = state.backend.agents.filter(agent => M.isAttention(agent) && M.onlineAgent(state,agent)).length;
+    const offlineSources = state.backend.sources.filter(source => !source.online);
+    const workingCount = state.backend.agents.filter(agent => agent.status === 'working' && M.onlineAgent(state,agent)).length;
+    const statusCounts = ['blocked','working','done','idle','unknown'].map(status => ({status,count:state.backend.agents.filter(agent => agent.status === status && M.onlineAgent(state,agent)).length})).filter(item => item.count);
+    const counts = statusCounts.map(item => `<span class="summary-count" title="${item.status}">${glyph(item.status)}${item.count}</span>`).join('');
+    $('status-entry').innerHTML = `${counts || `<span class="summary-count">${glyph('idle')}0</span>`}${offlineSources.length ? glyph('offline') : ''}`;
+    $('status-entry').setAttribute('aria-expanded',String(state.open));
+    $('status-entry').setAttribute('aria-label',`Herdling 模拟入口，在线状态：${statusCounts.map(item => `${item.status} ${item.count}`).join('，') || '0 agents'}，${offlineSources.length} 个离线来源；点击只开关面板`);
+    $('panel').hidden = !state.open;
+    $('closed-note').hidden = state.open;
+    const emptyText = offlineSources.length === state.backend.sources.length ? '所有来源离线，状态不可用' : attentionCount ? '名单已变化，请点 Update list' : `当前没有快捷目标<br><small>运行中 ${workingCount} · 可切到顶部 All agents</small>`;
+    const attentionRows = list.filter(row => row.group === 'attention');
+    const recentRows = list.filter(row => row.group === 'recent');
+    const recoveryRows = list.filter(row => row.group === 'recovery');
+    const quickHTML = `<div class="section-label" title="当前在线 blocked + done，不是未读数">Needs attention<span class="section-count">${attentionCount}</span></div>${attentionRows.map(rowHTML).join('')}${!attentionRows.length && (recentRows.length || recoveryRows.length) ? `<div class="section-note">${attentionCount ? 'Update list to show new targets' : 'No agents need attention'}</div>` : ''}${recentRows.length ? '<div class="section-label">Recent jumps</div>'+recentRows.map(rowHTML).join('') : ''}${recoveryRows.length ? '<div class="section-label">Last jump</div>'+recoveryRows.map(rowHTML).join('') : ''}${!list.length ? `<div class="empty">${emptyText}</div>` : ''}`;
+    $('panel').innerHTML = `<div class="content"><div class="view-row" aria-label="视图"><button class="view-button" data-ui="view" data-value="quick" data-focus="view-quick" aria-pressed="${state.view === 'quick'}">Quick access</button><button class="view-button" data-ui="view" data-value="all" data-focus="view-all" aria-pressed="${state.view === 'all'}">All agents</button>${M.pendingList(state) ? '<button class="update-button" data-ui="refresh" data-focus="update-list" title="名单或排序变化；不是未读数">Update list</button>' : ''}</div><div class="roster">${state.view === 'quick' ? quickHTML : list.map(rowHTML).join('')}</div></div>`;
+    $('panel').dataset.view = state.view;
+    $('panel').querySelector('.roster').scrollTop = sameRosterView && !['TOGGLE','KEYBOARD_OPEN','RESET'].includes(lastActionType) ? rosterScroll : 0;
+    $('coverage-note').textContent = offlineSources.length ? `覆盖不完整：${offlineSources.map(source => source.name).join('、')} 离线。计数只含在线来源；离线 / 消失行不可跳。` : '计数实时，名单固定快照；状态已变不是新增未读。';
+    $('context-menu').hidden = !state.context;
+    $('target-window').innerHTML = targetFields(state.landed);
+    const navigation = state.navigation;
+    const phaseNames = {idle:'未提交',pending:'pending · 等待外部结果',failed:'失败 · 原目标保留',succeeded:'成功 · 已展示模拟目标'};
+    $('navigation-text').innerHTML = `<strong>${phaseNames[navigation.phase]}</strong>${navigation.request ? ` · 请求 #${navigation.request}` : ''}${navigation.error ? `<br>${escape(navigation.error)}` : ''}${navigation.target ? `<br>${escape(navigation.target.source)} / ${escape(navigation.target.session)} / ${escape(navigation.target.workspace)} / ${escape(navigation.target.pane || '工作区')}` : ''}`;
+    $('result-request').innerHTML = state.requests.length ? state.requests.map(request => `<option value="${request.id}">#${request.id} ${escape(request.target.source)} / ${escape(request.target.workspace)} / ${escape(request.target.pane || '工作区')}${request.id === navigation.request ? '（最新）' : '（旧请求）'}</option>`).join('') : '<option value="">无导航请求</option>';
+    const priorRequestStillExists = state.requests.some(request => request.id === resultRequest);
+    $('result-request').value = String(priorRequestStillExists && !['NAVIGATE','ENTER','RETRY'].includes(lastActionType) ? resultRequest : navigation.request || '');
+    $('success').disabled = navigation.phase !== 'pending';
+    $('failure').disabled = navigation.phase !== 'pending';
+    $('retry').disabled = navigation.phase !== 'failed' || !!M.unavailable(state,navigation.target);
+    const eventCandidates = [...state.backend.agents,...state.frozen.agents.filter(agent => !M.agentById(state,agent.id))];
+    $('event-agent').innerHTML = eventCandidates.length ? eventCandidates.map(agent => {
+      const workspace = M.workspaceById(state,agent.workspace);
+      const source = M.sourceById(state,workspace.source);
+      return `<option value="${escape(agent.id)}">${escape(agent.name)} — ${escape(source.name)} / ${escape(workspace.name)} / ${escape(agent.pane)}${M.agentById(state,agent.id) ? '' : '（已消失）'}</option>`;
+    }).join('') : '<option value="">无 agent</option>';
+    if (eventCandidates.some(agent => agent.id === eventAgent)) $('event-agent').value = eventAgent;
+    document.querySelectorAll('[data-ui="status"],[data-ui="remove"]').forEach(button => { button.disabled = !$('event-agent').value || !M.agentById(state,$('event-agent').value); });
+    $('scenario-tabs').innerHTML = scenarios.map(scenario => `<button data-ui="scenario" data-value="${scenario.id}" aria-pressed="${state.scenario === scenario.id}">${scenario.label}</button>`).join('');
+    const scenario = scenarios.find(item => item.id === state.scenario);
+    $('scenario-description').textContent = scenario ? scenario.description : '选择一个场景开始；也可直接自由操作。';
+    $('scenario-steps').innerHTML = scenario ? scenario.steps.map(([label],index) => `<li class="${index < state.step ? 'passed' : ''}"><button data-ui="step" data-value="${index}" ${index !== state.step ? 'disabled' : ''}>${index < state.step ? '已执行：' : ''}${escape(label)}</button></li>`).join('') : '';
+    const selected = state.selected ? M.getTarget(state,state.selected) : null;
+    const selectedSource = state.selected?.kind === 'source' ? M.sourceById(state,state.selected.id) : null;
+    const chosenLabel = selectedSource ? `${selectedSource.name} [${M.key(state.selected)}] · 展开/收起` : selected ? `${selected.agent || selected.workspace} [${M.key(state.selected)}]${M.unavailable(state,state.selected) ? ' · 当前不可跳' : ''}` : state.selected ? `${M.key(state.selected)} · 已消失，不可跳` : '无';
+    const frozenAttention = state.frozen.attention.join(', ') || '空';
+    const frozenRecent = state.frozen.recent.join(', ') || '空';
+    const historyText = state.history.length ? state.history.map(entry => `${entry.target.agent} / ${entry.target.source} / ${entry.target.pane}（成功 #${entry.success}）`).join('；') : '无；不会用 idle agent 填充';
+    $('readable-state').innerHTML = `<dl><dt>面板</dt><dd>${state.open ? '打开' : '关闭'} / ${state.view === 'quick' ? 'Quick access' : 'All agents'}</dd><dt>当前选择</dt><dd>${escape(chosenLabel)}</dd><dt>导航</dt><dd>${phaseNames[navigation.phase]}</dd><dt>后端状态</dt><dd>${state.backend.agents.length} agents，在线当前 blocked + done = ${attentionCount}（不是未读）</dd><dt>打开时快照</dt><dd>${state.frozen.attention.length} 需关注 / ${state.frozen.recent.length} 最近成功 / ${state.frozen.all.length} 全部成员；顺序固定</dd><dt>成功历史</dt><dd>${escape(historyText)}；最多三个 agent / pane，退出本页即丢失，不代表已读或处理完</dd><dt>更新提示</dt><dd>${M.pendingList(state) ? '名单或排序已变化；等待显式更新 / 重开' : '无待更新名单'}</dd><dt>快照顺序 ID</dt><dd>Needs attention: <code>${escape(frozenAttention)}</code><br>Recent jumps: <code>${escape(frozenRecent)}</code></dd><dt>真实副作用</dt><dd>无网络、无系统操作、无持久化；不模拟 seen 清除</dd></dl>`;
+    $('action-log').innerHTML = state.log.map(entry => `<li value="${entry.sequence}">${escape(entry.message)}</li>`).join('');
+    if (activeFocus) [...document.querySelectorAll('[data-focus]')].find(element => element.dataset.focus === activeFocus)?.focus({preventScroll:true});
+  }
+  let lastActionType = '';
+  function dispatch(action) { lastActionType = action.type; state = M.reduce(state,action); render(); }
+  function keyboard(key) {
+    const actions = {ArrowUp:{type:'MOVE',direction:-1},ArrowDown:{type:'MOVE',direction:1},ArrowLeft:{type:'HORIZONTAL',direction:-1},ArrowRight:{type:'HORIZONTAL',direction:1},Enter:{type:'ENTER'},Escape:{type:'CLOSE'}};
+    if (actions[key]) dispatch(actions[key]);
+  }
+  document.addEventListener('click', event => {
+    const button = event.target.closest('button[data-ui]');
+    if (!button) {
+      // External simulation controls are not part of simulated desktop hit testing.
+      if (state.open && !event.target.closest('#panel,.controls,.menubar,.context-menu,.explanation')) dispatch({type:'CLOSE',origin:'outside'});
+      return;
+    }
+    if (button.disabled) return;
+    const ui = button.dataset.ui, value = button.dataset.value;
+    const targetAgent = $('event-agent').value;
+    const actions = {
+      toggle:{type:'TOGGLE'},'keyboard-open':{type:'KEYBOARD_OPEN'},view:{type:'VIEW',view:value},
+      collapse:{type:'COLLAPSE',source:button.dataset.id},navigate:{type:'NAVIGATE',target:{kind:button.dataset.kind,id:button.dataset.id}},
+      refresh:{type:'REFRESH'},result:{type:'RESULT',success:value === 'success',request:Number($('result-request').value)},retry:{type:'RETRY'},
+      status:{type:'BACKEND_STATUS',id:targetAgent,status:value},remove:{type:'BACKEND_REMOVE',id:targetAgent},
+      add:{type:'BACKEND_ADD'},online:{type:'BACKEND_ONLINE',source:$('event-source').value,online:value === 'true'},
+      context:{type:'CONTEXT_ACTION',name:value},dataset:{type:'RESET',dataset:value}
+    };
+    if (ui === 'key') keyboard(value);
+    else if (ui === 'scenario') {
+      const scenario = scenarios.find(item => item.id === value);
+      dispatch({type:'RESET',dataset:scenario.dataset,scenario:scenario.id});
+    } else if (ui === 'step') {
+      const scenario = scenarios.find(item => item.id === state.scenario);
+      if (scenario && Number(value) === state.step) {
+        const currentStep = state.step;
+        dispatch(scenario.steps[currentStep][1]);
+        dispatch({type:'STEP_DONE'});
+        const next = document.querySelector(`[data-ui="step"][data-value="${state.step}"]`);
+        if (next) next.focus({preventScroll:true});
+      }
+    } else if (actions[ui]) dispatch(actions[ui]);
+    if (ui === 'keyboard-open') (state.open ? $('panel') : $('status-entry')).focus({preventScroll:true});
+  });
+  $('status-entry').addEventListener('contextmenu', event => { event.preventDefault(); dispatch({type:'CONTEXT'}); });
+  $('event-agent').addEventListener('change',render);
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && (state.open || state.context)) { event.preventDefault(); keyboard(event.key); return; }
+    if (!state.open || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (event.target.closest('select,input,textarea') || !['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Enter'].includes(event.key)) return;
+    const sourceButton = event.target.closest('[data-ui="collapse"]');
+    if (['ArrowLeft','ArrowRight'].includes(event.key) && sourceButton) dispatch({type:'SELECT_SOURCE',source:sourceButton.dataset.id});
+    // Tabbed buttons keep their own Enter action. Arrow selection focuses panel.
+    if (event.key === 'Enter' && event.target.closest('button,summary')) return;
+    event.preventDefault(); keyboard(event.key);
+    if (event.key !== 'Enter') $('panel').focus({preventScroll:true});
+    const selected = [...$('panel').querySelectorAll('[data-focus]')].find(element => element.dataset.focus === M.key(state.selected));
+    if (selected && event.key !== 'Enter') selected.scrollIntoView({block:'nearest'});
+  });
+  render();
+})();
+</script>
+</body>
+</html>

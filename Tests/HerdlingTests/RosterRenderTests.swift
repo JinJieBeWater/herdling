@@ -3,8 +3,8 @@ import SwiftUI
 import Testing
 @testable import Herdling
 
-/// The render harness: lays the panel, its footer, Settings and the states out with real AppKit
-/// geometry and writes PNGs under `/tmp/herdling-render`.
+/// The render harness: lays the panel, Settings and the states out with real AppKit
+/// geometry and writes PNGs to a fresh directory for every run.
 ///
 /// It is one test on purpose. It asserts only that each surface laid out at its expected size —
 /// which is what catches a view that collapsed to nothing — and its real job is the artifact: a
@@ -15,8 +15,11 @@ import Testing
 @Suite
 @MainActor
 struct RosterRenderTests {
+    private let directory = URL(fileURLWithPath: "/tmp/herdling-render-\(UUID().uuidString)")
+
     @Test
     func rendersEverySurfaceInBothAppearances() async throws {
+        print("Render artifacts: \(directory.path)")
         let store = await PreviewFixtures.loadedStore()
         defer { store.stop() }
 
@@ -24,16 +27,29 @@ struct RosterRenderTests {
             let name = scheme == .dark ? "dark" : "light"
             try render(
                 AgentListView(store: store),
-                size: NSSize(width: Theme.Size.panelWidth, height: 1_200),
+                size: NSSize(width: Theme.Size.panelWidth, height: 360),
                 scheme: scheme,
-                to: "roster-\(name)"
+                to: "quick-\(name)"
+            )
+            let browser = NavigationBrowser(sources: store.sources)
+            browser.setMode(.all)
+            browser.toggleSource(SourceDescriptor.local.id)
+            try render(
+                AgentListView(store: store, browser: browser),
+                size: NSSize(width: Theme.Size.panelWidth, height: 560),
+                scheme: scheme,
+                to: "all-\(name)"
             )
             try render(
-                PanelFooter(store: store, onOpenSettings: {})
-                    .frame(width: Theme.Size.panelWidth),
-                size: NSSize(width: Theme.Size.panelWidth, height: Theme.Size.footerHeight),
+                SessionRoster(store: store, source: .local, session: PreviewFixtures.nestedSession(),
+                              branches: [:], showHeader: true, indent: 12)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 8)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .panelSurface(),
+                size: NSSize(width: Theme.Size.panelWidth, height: 320),
                 scheme: scheme,
-                to: "footer-\(name)"
+                to: "nested-\(name)"
             )
             try render(
                 SettingsView(store: store),
@@ -72,7 +88,9 @@ struct RosterRenderTests {
             defer: false
         )
         window.appearance = appearance
+        window.isReleasedWhenClosed = false
         window.contentView = hosting
+        defer { window.close() }
         // Behind everything and never activated: the layout has to happen, nothing has to be seen.
         window.orderBack(nil)
         hosting.layoutSubtreeIfNeeded()
@@ -81,6 +99,9 @@ struct RosterRenderTests {
         for _ in 0..<2 {
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
+        // Saved expansion and the measured panel height can animate in successive turns.
+        // Capture their settled geometry, not a half-clipped accordion.
+        RunLoop.current.run(until: Date().addingTimeInterval(Theme.Duration.expand * 2))
         hosting.layoutSubtreeIfNeeded()
 
         guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
@@ -90,7 +111,6 @@ struct RosterRenderTests {
         hosting.cacheDisplay(in: hosting.bounds, to: rep)
         #expect(rep.pixelsWide == Int(size.width * 2), "\(name) rendered at the wrong width")
 
-        let directory = URL(fileURLWithPath: "/tmp/herdling-render")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         guard let png = rep.representation(using: .png, properties: [:]) else {
             Issue.record("could not encode \(name) as PNG")

@@ -1,4 +1,3 @@
-import CoreGraphics
 import Foundation
 
 enum BranchSummary: Equatable {
@@ -10,10 +9,6 @@ enum RosterLayout {
     static func expandedSourceID(saved: String, available: [String]) -> String? {
         guard !saved.isEmpty else { return nil }
         return available.contains(saved) ? saved : available.first
-    }
-
-    static func groupHeaderHeight(branchSummary: BranchSummary?) -> CGFloat {
-        branchSummary == nil ? 26 : 38
     }
 
     static func showsSessionHeader(name: String, sourceSessionCount: Int) -> Bool {
@@ -70,8 +65,8 @@ struct RosterSpace: Identifiable, Sendable {
     /// comparing the display name somewhere in the view.
     var isOnlyItsPrimaryWorktree: Bool { worktrees.isEmpty }
 
-    func displayedWorktrees(showEmptyMain: Bool = true) -> [RosterWorktree] {
-        (showEmptyMain || !primary.agents.isEmpty ? [RosterWorktree(name: "Main", group: primary)] : []) + worktrees.map {
+    func displayedWorktrees() -> [RosterWorktree] {
+        [RosterWorktree(name: "Main", group: primary)] + worktrees.map {
             RosterWorktree(name: worktreeName($0), group: $0)
         }
     }
