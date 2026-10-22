@@ -7,11 +7,23 @@ import Testing
 ///
 /// Checks row roles, expanded spacing budgets and complete panel height through rendered layout.
 ///
-/// There is deliberately nothing here about margins *as drawn*: `glassEffect` paints its rim with
-/// its own inset, so pixel-measuring it produced failures that were never layout bugs.
+/// Visible shell clearance belongs to PanelChromeTests and native panel captures; these checks
+/// cover layout budgets and complete window height.
 @Suite
 @MainActor
 struct PanelLayoutTests {
+    @Test func agentActionMenuUsesThePanelCornerAndFitsShortPanelsWithoutResizingThem() {
+        let parent = NSRect(x: 100, y: 100, width: 420, height: 300)
+        let screen = NSRect(x: 0, y: 0, width: 1000, height: 1000)
+        #expect(AgentActionsMenuController.frame(parent: parent, contentSize: NSSize(width: 320, height: 140), visibleFrame: screen)
+                == NSRect(x: 187, y: 113, width: 320, height: 140))
+        let short = NSRect(x: 100, y: 870, width: 420, height: 100)
+        let fitted = AgentActionsMenuController.frame(parent: short, contentSize: NSSize(width: 320, height: 140), visibleFrame: screen)
+        #expect(fitted.maxX == 507)
+        #expect(fitted.maxY <= 987 && fitted.minY >= 13)
+        #expect(fitted.height == 140, "Menu owns its height even when taller than the roster")
+    }
+
     @Test
     func allPanelAllowsItsEmptySessionDirectoryToCollapseAndExpand() {
         let store = PreviewFixtures.makeStore()
@@ -29,9 +41,9 @@ struct PanelLayoutTests {
                         MainActor.assumeIsolated { measurement.height = value }
                     }
             }
-            // 38pt controls + 4pt header/list gap + two 38pt sources + 4pt source gap + 16pt insets,
+            // 38pt controls + 4pt header/list gap + two 38pt sources + 4pt source gap + 21pt insets,
             // plus the expanded directory's 4pt clearance and 32pt default-session Open action.
-            #expect(measurement.height == (expanded ? 174 : 138))
+            #expect(measurement.height == (expanded ? 179 : 143))
         }
     }
 
@@ -50,10 +62,10 @@ struct PanelLayoutTests {
                         MainActor.assumeIsolated { measurement.height = value }
                     }
             }
-            // Fixed controls, 4pt header/list gap, two source headers, 4pt source gap and insets = 138.
+            // Fixed controls, 4pt header/list gap, two source headers, 4pt source gap and insets = 143.
             // Expanded fixture adds 4pt + eleven 32pt rows + eight 2pt row gaps
             // + two 8pt group gaps = 388. No extra padding after the last agent.
-            #expect(measurement.height == (expanded ? 526 : 138))
+            #expect(measurement.height == (expanded ? 531 : 143))
         }
     }
 

@@ -10,7 +10,11 @@ struct SourceOutline: View {
     let onToggle: () -> Void
 
     private var counts: [AgentStatusCount] {
-        AgentStatusCount.summarize(source.sessions.flatMap(\.agents))
+        let counts = source.sessions.flatMap { store.statusCounts($0.agents, sourceID: source.id, sessionName: $0.name) }
+        return [AgentStatus.blocked, .done, .working, .idle, .unknown].compactMap { status in
+            let count = counts.filter { $0.status == status }.reduce(0) { $0 + $1.count }
+            return count == 0 ? nil : AgentStatusCount(status: status, count: count)
+        }
     }
 
     private var summaryText: String {

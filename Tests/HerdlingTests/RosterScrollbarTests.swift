@@ -15,7 +15,7 @@ struct RosterScrollbarTests {
         #expect(scroll.scrollerStyle == .overlay)
         #expect(scroller.scrollerStyle == .overlay, "Replacement must opt into native overlay fading too")
         #expect(scroll.hasVerticalScroller, "Overflowing content needs a managed native overlay")
-        #expect(scroll.contentView.bounds.width == 404, "Scrollbar must not reserve a legacy gutter")
+        #expect(scroll.contentView.bounds.width == 420, "Viewport spans the panel; rows keep their own symmetric 13pt inset")
         #expect(scroll.documentView!.bounds.height > scroll.contentView.bounds.height)
         let knob = scroller.rect(for: .knob)
         #expect(knob.width == 6, "Scrolling thumb must use Tinycast's 6pt surface, not the native broad knob")
@@ -43,6 +43,28 @@ struct RosterScrollbarTests {
     }
 
     @Test
+    func hoveredTrackAddsNoBackgroundBesideTheFullWidthRows() throws {
+        let hosted = host()
+        defer { hosted.window.close() }
+        let scroller = try #require(findScrollView(hosted.view)?.verticalScroller)
+        try hover(scroller, window: hosted.window)
+        let image = try #require(NSBitmapImageRep(bitmapDataPlanes: nil,
+            pixelsWide: Int(scroller.bounds.width * 2), pixelsHigh: Int(scroller.bounds.height * 2),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: image)
+        NSGraphicsContext.current?.cgContext.scaleBy(x: 2, y: 2)
+        scroller.drawKnobSlot(in: scroller.rect(for: .knobSlot), highlight: true)
+        NSGraphicsContext.restoreGraphicsState()
+        let maxAlpha = (0..<image.pixelsWide).flatMap { x in
+            (0..<image.pixelsHigh).map { image.colorAt(x: x, y: $0)!.alphaComponent }
+        }.max() ?? 0
+        #expect(maxAlpha == 0, "Only the thumb may paint; hover cannot introduce a competing full track")
+        #expect(scroller.target === findScrollView(hosted.view))
+    }
+
+    @Test
     func sourceDisclosureInkStaysOutsideTheNativeScrollHitArea() throws {
         let previous = NSApplication.shared.appearance
         NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
@@ -67,6 +89,48 @@ struct RosterScrollbarTests {
     }
 
     @Test
+    func fullWidthSourceSurfaceAndKeyboardOutlineStayBesideFixedWidthThumb() throws {
+        let previous = NSApplication.shared.appearance
+        NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
+        defer { NSApplication.shared.appearance = previous }
+        let hosted = host(mode: .all)
+        defer { hosted.window.close() }
+        let scroller = try #require(findScrollView(hosted.view)?.verticalScroller)
+        func snapshot() throws -> NSBitmapImageRep {
+            scroller.isHidden = true
+            let image = try #require(hosted.view.bitmapImageRepForCachingDisplay(in: hosted.view.bounds))
+            hosted.view.cacheDisplay(in: hosted.view.bounds, to: image)
+            return image
+        }
+        func alpha(_ image: NSBitmapImageRep, _ x: CGFloat) -> CGFloat {
+            let scale = CGFloat(image.pixelsWide) / 420
+            return image.colorAt(x: Int(x * scale), y: Int(69 * scale))!.alphaComponent
+        }
+        let ordinary = try snapshot()
+        #expect(alpha(ordinary, 406) > alpha(ordinary, 417) + 0.03,
+                "Ordinary source highlight must keep the full right edge, not a permanent empty lane")
+        #expect(abs(alpha(ordinary, 14) - alpha(ordinary, 406)) < 0.01,
+                "Source surface must keep symmetric 13pt content boundaries")
+        let normal = scroller.convert(scroller.rect(for: .knob), to: hosted.view)
+        #expect(normal.width == 6)
+        #expect(normal.minX >= 413 && normal.maxX <= 419,
+                "Painted thumb belongs outside the row, in the existing right margin")
+        try hover(scroller, window: hosted.window)
+        let hovered = scroller.convert(scroller.rect(for: .knob), to: hosted.view)
+        #expect(hovered.minX == normal.minX && hovered.width == normal.width,
+                "Hover must change ink, not expand toward the source rounded edge")
+        #expect(abs(alpha(try snapshot(), 406) - alpha(ordinary, 406)) < 0.01)
+        hosted.browser.moveSelection(by: 1)
+        settle(hosted.view)
+        #expect(hosted.browser.selection == .source("local"))
+        let keyboard = try snapshot()
+        #expect(alpha(keyboard, 406) > alpha(ordinary, 406), "Keyboard outline must reach the same full row edge")
+        #expect(abs(alpha(keyboard, hovered.midX) - alpha(ordinary, 417)) < 0.01,
+                "Under the thumb, only the panel scrim may remain—not source wash or keyboard outline")
+        #expect(hosted.store.navigationAttempt == nil)
+    }
+
+    @Test
     func wheelAndKeyboardSelectionStillScrollTheNativeViewport() throws {
         let hosted = host()
         defer { hosted.window.close() }
@@ -85,7 +149,7 @@ struct RosterScrollbarTests {
         #expect(scroller.doubleValue == 1)
         let end = scroller.rect(for: .knob)
         #expect(abs((scroller.isFlipped ? end.maxY : end.minY) -
-                    (scroller.isFlipped ? scroller.bounds.maxY - 3 : 3)) < 0.01)
+                    (scroller.isFlipped ? scroller.bounds.maxY - 8 : 8)) < 0.01)
         let ids = hosted.browser.quickIDs
         hosted.browser.moveSelection(by: 1)
         settle(hosted.view)
@@ -105,7 +169,7 @@ struct RosterScrollbarTests {
         try await Task.sleep(for: .milliseconds(80))
         settle(hosted.view)
         #expect(scroll.scrollerStyle == .overlay)
-        #expect(scroll.contentView.bounds.width == 404)
+        #expect(scroll.contentView.bounds.width == 420)
         #expect(scroll.verticalScroller is RosterScroller)
     }
 

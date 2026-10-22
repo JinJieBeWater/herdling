@@ -17,8 +17,10 @@ enum Theme {
         static let lg: CGFloat = 10
         static let xl: CGFloat = 12
 
-        /// Equal clearance around the roster where content follows the panel's corners.
-        static let panelInset = md
+        /// Shared horizontal background boundary for navigation and roster.
+        static let panelInset: CGFloat = 13
+        /// Visible bottom clearance shares the same shell inset as the sides.
+        static let panelBottomInset = panelInset
 
         /// Distances between boxes, independent of the padding inside each row.
         static let sectionSpacing = xs
@@ -26,7 +28,13 @@ enum Theme {
         static let rowGap = xxs
         static let sectionBodyGap = xs
         static let navigationHeaderGap = xs
+        /// The compact surface sits inside a taller native click area.
+        static let navigationVisualInset = (Size.navigationHeaderHeight - Size.navigationControlHeight) / 2
+        static let navigationTopInset = panelInset - navigationVisualInset
         static let rowContentGap = sm
+        /// Account for the narrower navigation slot without changing its glyph treatment.
+        static let navigationContentInset = md + (Size.rowIcon - Size.navigationIcon) / 2
+        static let navigationContentGap = rowContentGap + (Size.rowIcon - Size.navigationIcon) / 2
         /// Content rows and section headers have separate internal padding, not separate fonts.
         static let rowVertical: CGFloat = 5
         static let sectionHeaderVertical: CGFloat = 8
@@ -39,11 +47,14 @@ enum Theme {
     enum Radius {
         /// Outer surface and the inset content boundary.
         static let panel: CGFloat = 26
-        static let panelContent = panel - Spacing.panelInset
+        static let panelContent = CGSize(width: panel - Spacing.panelInset,
+                                         height: panel - Spacing.panelBottomInset)
         /// Row corners away from the content boundary.
         static let row: CGFloat = 10
         /// Compact navigation surfaces, independent of their larger click area.
         static let navigationControl: CGFloat = 8
+        static let agentActions: CGFloat = 12
+        static let menuRow: CGFloat = 6
     }
 
     // MARK: - Size
@@ -63,6 +74,9 @@ enum Theme {
         static let navigationHeaderHeight: CGFloat = 38
         static let navigationControlHeight: CGFloat = 28
         static let navigationIcon: CGFloat = 14
+        static let agentActionsWidth: CGFloat = 208
+        static let menuRowHeight: CGFloat = 28
+        static let menuIcon: CGFloat = 18
         /// Neutral outline distinguishes keyboard selection from an expanded header.
         static let keyboardSelectionStroke: CGFloat = 1
         /// A trailing action pill's height.
@@ -118,6 +132,9 @@ enum Theme {
         static var navigationSymbol: NSImage.SymbolConfiguration {
             NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
         }
+        static var menuSymbol: NSImage.SymbolConfiguration {
+            NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        }
         /// A disclosure chevron.
         static let chevron = Font.system(size: 10, weight: .semibold)
         /// The glyph inside a trailing action pill.
@@ -139,9 +156,9 @@ enum Theme {
     }
 
     enum Scrollbar {
-        static let thinWidth: CGFloat = 6
-        static let expandedWidth: CGFloat = 10
-        static let inset: CGFloat = 3
+        static let width: CGFloat = 6
+        static let edgeInset: CGFloat = 1
+        static let verticalInset: CGFloat = 8
         static let minimumThumb: CGFloat = 28
     }
 
@@ -168,16 +185,21 @@ enum Theme {
         static let selection = ramp(dark: 0.10, light: 0.09)
         /// Mouse hover, always fainter than selection.
         static let rowHover = ramp(dark: 0.05, light: 0.045)
+        /// Compact commands use a quieter wash than the roster's selected surfaces.
+        static let menuSelection = ramp(dark: 0.065, light: 0.055)
 
         /// Alpha 1, so a call site can dim it with `.opacity` and land on the value it replaced.
         static let textPrimary = ramp(dark: 1.0, light: 1.0)
+        static let mutedTitle = ramp(dark: 0.70, light: 0.70)
+        static let mutedWorkingOpacity = 0.65
         static let textSecondary = ramp(dark: 0.60, light: 0.60)
         static let textTertiary = ramp(dark: 0.40, light: 0.42)
+        /// Stock grouped Form text follows native semantic ink, not the glass palette ramp.
+        static let settingsSecondary = Color.secondary
 
         static let scrollThumb = ramp(dark: 0.30, light: 0.30)
         static let scrollThumbHover = ramp(dark: 0.42, light: 0.42)
         static let scrollThumbDrag = ramp(dark: 0.50, light: 0.50)
-        static let scrollRail = ramp(dark: 0.10, light: 0.10)
 
         /// The panel glass's own tint, laid on by AppKit before the scrim.
         static let glassTint = NSColor(white: 1, alpha: 0.04)

@@ -5,6 +5,11 @@ enum NavigationDestination: Hashable, Sendable {
     case workspace(sourceID: String, sessionName: String, workspaceID: String)
     case session(sourceID: String, sessionName: String)
 
+    var agentFocusID: AgentFocusID? {
+        guard case let .agent(sourceID, sessionName, paneID) = self else { return nil }
+        return AgentFocusID(sourceID: sourceID, sessionName: sessionName, paneID: paneID)
+    }
+
     var sourceID: String {
         switch self {
         case let .agent(sourceID, _, _), let .workspace(sourceID, _, _), let .session(sourceID, _):

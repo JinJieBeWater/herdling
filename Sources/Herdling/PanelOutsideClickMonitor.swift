@@ -44,6 +44,9 @@ final class PanelOutsideClickMonitor {
         guard panel.isVisible else { return }
         if panel.frame.contains(screenPoint) { return }
         if windowID == ObjectIdentifier(panel) { return }
+        if panel.childWindows?.contains(where: { child in
+            child.isVisible && (windowID == ObjectIdentifier(child) || child.frame.contains(screenPoint))
+        }) == true { return }
         if statusItems.contains(where: { windowID == $0.button?.window.map(ObjectIdentifier.init) }) { return }
         if isOnStatusButton(screenPoint) { return }
         onDismiss()

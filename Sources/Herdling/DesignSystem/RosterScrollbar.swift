@@ -1,17 +1,6 @@
 import AppKit
 import SwiftUI
 
-private struct RosterScrollbarClearanceKey: EnvironmentKey {
-    static let defaultValue: CGFloat = .zero
-}
-
-extension EnvironmentValues {
-    var rosterScrollbarClearance: CGFloat {
-        get { self[RosterScrollbarClearanceKey.self] }
-        set { self[RosterScrollbarClearanceKey.self] = newValue }
-    }
-}
-
 /// Style the roster's backing scroller, leaving scrolling and overlay fading to AppKit.
 struct RosterScrollbarAttachment: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { Attachment() }
@@ -76,17 +65,16 @@ final class RosterScroller: NSScroller {
 
     override func rect(for part: NSScroller.Part) -> NSRect {
         guard part == .knob || part == .knobSlot else { return super.rect(for: part) }
-        let trackHeight = max(0, bounds.height - Theme.Scrollbar.inset * 2)
-        let expanded = hovered || dragging
-        let width = part == .knobSlot || expanded ? Theme.Scrollbar.expandedWidth : Theme.Scrollbar.thinWidth
-        let x = bounds.maxX - Theme.Scrollbar.inset - (Theme.Scrollbar.expandedWidth + width) / 2
+        let trackHeight = max(0, bounds.height - Theme.Scrollbar.verticalInset * 2)
+        let width = Theme.Scrollbar.width
+        let x = bounds.maxX - Theme.Scrollbar.edgeInset - width
         if part == .knobSlot {
-            return NSRect(x: x, y: Theme.Scrollbar.inset, width: width, height: trackHeight)
+            return NSRect(x: x, y: Theme.Scrollbar.verticalInset, width: width, height: trackHeight)
         }
         guard isEnabled, knobProportion < 1 else { return .zero }
         let height = min(trackHeight, max(Theme.Scrollbar.minimumThumb, trackHeight * knobProportion))
         let fraction = min(1, max(0, doubleValue))
-        let y = Theme.Scrollbar.inset + (isFlipped ? fraction : 1 - fraction) * (trackHeight - height)
+        let y = Theme.Scrollbar.verticalInset + (isFlipped ? fraction : 1 - fraction) * (trackHeight - height)
         return NSRect(x: x, y: y, width: width, height: height)
     }
 
@@ -97,9 +85,7 @@ final class RosterScroller: NSScroller {
     }
 
     override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {
-        guard isEnabled, knobProportion < 1, hovered || dragging else { return }
-        NSColor(Theme.Colors.scrollRail).setFill()
-        capsule(rect(for: .knobSlot)).fill()
+        // Keep the native slot hit geometry, without painting an independent track.
     }
 
     private func capsule(_ rect: NSRect) -> NSBezierPath {

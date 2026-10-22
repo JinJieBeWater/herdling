@@ -9,6 +9,132 @@ import Vision
 struct NavigationPanelTests {
     private let directory = URL(fileURLWithPath: "/tmp/herdling-navigation-render-\(UUID().uuidString)")
 
+    @Test func mouseInspectionEmphasisEndsWithTheMenuWhileKeyboardFocusRemainsDistinct() throws {
+        let store = PreviewFixtures.makeStore()
+        let agent = AgentInfo(paneID: "inspect", title: "Inspection fixture", status: .working,
+                              workspace: "fixture", cwd: "/fixture", updatedAt: .now)
+        let sources = [SourceInfo(descriptor: .local, sessions: [SessionInfo(name: "default", agents: [agent], online: true)], online: true)]
+        let browser = NavigationBrowser()
+        browser.open(sources: sources, attempt: nil, keyboard: false, expandedSourceID: nil)
+        let target = NavigationDestination.agent(sourceID: "local", sessionName: "default", paneID: "inspect")
+        let row = QuickNavigationRow(store: store, browser: browser, destination: target).environment(\.navigationBrowser, browser)
+        let normal = try render(row, height: 40, name: "inspection-base")
+        let parent = MenuBarPanel()
+        parent.setFrame(NSRect(x: 100, y: 100, width: 420, height: 300), display: false)
+        parent.orderBack(nil)
+        let menu = AgentActionsMenuController(parent: parent, store: store, browser: browser)
+        defer { menu.dismiss(returnFocus: false); parent.orderOut(nil) }
+        menu.present(for: target)
+        let inspecting = try render(row, height: 40, name: "inspection-open")
+        menu.dismiss()
+        let dismissed = try render(row, height: 40, name: "inspection-dismissed")
+        func png(_ image: CGImage) -> Data? { NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) }
+        #expect(png(inspecting) != png(normal), "The open menu briefly identifies its target")
+        #expect(png(dismissed) == png(normal), "Mouse inspection must not leave a keyboard focus wash or outline")
+        #expect(browser.selection == .destination(target), "Visual emphasis is separate from exact target identity")
+        browser.moveSelection(by: -1)
+        let keyboard = try render(row, height: 40, name: "inspection-keyboard")
+        #expect(png(keyboard) != png(normal), "Actual keyboard browsing still shows clear focus")
+        #expect(store.navigationAttempt == nil)
+    }
+
+    @Test(arguments: [ColorScheme.light, .dark])
+    func mutingLowersRowInkWithoutAddingABadgeOrLosingTheWorkingState(scheme: ColorScheme) throws {
+        for activity in [true, false] {
+            let store = PreviewFixtures.makeStore()
+            let agent = AgentInfo(paneID: "worker", title: "Worker", status: .working,
+                                  workspace: "fixture", cwd: "/fixture", updatedAt: .now)
+            let source = SourceInfo(descriptor: .local, sessions: [SessionInfo(name: "default", agents: [agent], online: true)], online: true)
+            let browser = NavigationBrowser(sources: [source])
+            let target = NavigationDestination.agent(sourceID: "local", sessionName: "default", paneID: "worker")
+            let row = activity ? AnyView(QuickNavigationRow(store: store, browser: browser, destination: target))
+                : AnyView(AgentRow(agent: agent, enabled: true, isFocusPending: false, action: {}, indent: 0, store: store, destination: target))
+            let view = row.environment(\.navigationBrowser, browser).background(scheme == .dark ? Color.black : Color.white)
+            let height: CGFloat = activity ? 40 : 32
+            let name = "muted-\(scheme)-\(activity)"
+            let normal = try render(view, height: height, name: name + "-normal", scheme: scheme)
+            store.setObserveOnly(true, for: target)
+            let muted = try render(view, height: height, name: name + "-muted", scheme: scheme)
+            let before = NSBitmapImageRep(cgImage: normal), after = NSBitmapImageRep(cgImage: muted)
+            let scale = CGFloat(normal.width) / 420
+            func titleInk(_ bitmap: NSBitmapImageRep) -> CGFloat {
+                (0..<normal.height).reduce(0) { sum, y in
+                    sum + (Int(35 * scale)..<Int(200 * scale)).reduce(0) { sum, x in
+                        let c = bitmap.colorAt(x: x, y: y)!.usingColorSpace(.deviceRGB)!
+                        let brightness = (c.redComponent + c.greenComponent + c.blueComponent) / 3
+                        return sum + (scheme == .dark ? brightness : 1 - brightness)
+                    }
+                }
+            }
+            let normalInk = titleInk(before), quietInk = titleInk(after)
+            #expect(quietInk < normalInk * 0.9, "Muted rows must draw less attention, not add another prominent glyph")
+            #expect(quietInk > normalInk * 0.55, "Muted titles must remain legible")
+            #expect(normal.width == muted.width && normal.height == muted.height)
+            #expect(try text(in: muted).contains("Worker"))
+            #expect(browser.presentation(for: target).status == .working)
+            func workingChroma(_ bitmap: NSBitmapImageRep) -> CGFloat {
+                (0..<normal.height).reduce(0) { sum, y in
+                    sum + (Int(8 * scale)..<Int(30 * scale)).reduce(0) { sum, x in
+                        let c = bitmap.colorAt(x: x, y: y)!.usingColorSpace(.deviceRGB)!
+                        return sum + max(c.redComponent, c.greenComponent, c.blueComponent) - min(c.redComponent, c.greenComponent, c.blueComponent)
+                    }
+                }
+            }
+            let chroma = workingChroma(after), ordinaryChroma = workingChroma(before)
+            #expect(chroma > ordinaryChroma * 0.4 && chroma < ordinaryChroma * 0.8, "Working keeps its real hue at a quieter visual weight")
+            store.setObserveOnly(false, for: target)
+            let restored = try render(view, height: height, name: name + "-restored", scheme: scheme)
+            #expect(try text(in: restored).contains("Worker"))
+            #expect(NSBitmapImageRep(cgImage: restored).representation(using: .png, properties: [:]) == before.representation(using: .png, properties: [:]), "Unmuting restores normal ink without moving the content")
+        }
+    }
+
+    @Test
+    func observedRowKeepsRealStateAndLegibleTitleWithoutAttentionEmphasis() throws {
+        let store = PreviewFixtures.makeStore()
+        let agent = AgentInfo(paneID: "child", title: "Child worker", status: .blocked,
+                              workspace: "fixture", cwd: "/fixture", updatedAt: .now)
+        let source = SourceInfo(descriptor: .local, sessions: [SessionInfo(name: "default", agents: [agent], online: true)], online: true)
+        let browser = NavigationBrowser(sources: [source])
+        let destination = NavigationDestination.agent(sourceID: "local", sessionName: "default", paneID: "child")
+        let row = QuickNavigationRow(store: store, browser: browser, destination: destination).environment(\.navigationBrowser, browser)
+        let normal = try render(row, height: 40, name: "observe-normal")
+        store.setObserveOnly(true, for: destination)
+        let quiet = try render(row, height: 40, name: "observe-quiet")
+        let caption = try text(in: quiet)
+        #expect(caption.contains("Child worker"))
+        #expect(!caption.contains("Observe only"), "An add-on policy does not consume the normal row's text budget")
+        #expect(!caption.contains("Needs input"))
+        func chromaticGlyphPixels(_ image: CGImage) -> Int {
+            let bitmap = NSBitmapImageRep(cgImage: image)
+            let scale = CGFloat(bitmap.pixelsWide) / 420
+            return (Int(8 * scale)..<Int(32 * scale)).reduce(0) { count, y in
+                count + (Int(8 * scale)..<Int(30 * scale)).count { x in
+                    guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB), color.alphaComponent > 0.4 else { return false }
+                    return max(color.redComponent, color.greenComponent, color.blueComponent)
+                        - min(color.redComponent, color.greenComponent, color.blueComponent) > 0.1
+                }
+            }
+        }
+        #expect(chromaticGlyphPixels(normal) > 10)
+        #expect(chromaticGlyphPixels(quiet) == 0, "Blocked shape remains but no longer uses attention ink")
+        #expect(browser.presentation(for: destination).status == .blocked)
+        browser.moveSelection(by: 1)
+        #expect(browser.activateSelection() == destination)
+        browser.receive(sources: [source], attempt: NavigationAttempt(destination: destination, title: agent.title, subtitle: "fixture", phase: .pending, message: nil))
+        #expect(try text(in: render(row, height: 40, name: "observe-opening")).contains("Opening"))
+        browser.receive(sources: [source], attempt: NavigationAttempt(destination: destination, title: agent.title, subtitle: "fixture", phase: .failed, message: "Fixture error"))
+        #expect(try text(in: render(row, height: 40, name: "observe-retry")).contains("Retry"))
+        let workingAgent = AgentInfo(paneID: "child", title: "Child worker", status: .working,
+                                     workspace: "fixture", cwd: "/fixture", updatedAt: .now)
+        let workingSource = SourceInfo(descriptor: .local, sessions: [SessionInfo(name: "default", agents: [workingAgent], online: true)], online: true)
+        browser.receive(sources: [workingSource], attempt: nil)
+        let working = try render(row, height: 40, name: "observe-working")
+        #expect(chromaticGlyphPixels(working) > 10, "Working stays visible in its real status colour")
+        #expect(try !text(in: working).contains("Observe only"))
+        #expect(store.navigationAttempt == nil)
+    }
+
     @Test
     func viewNamesDescribeTheirContentAndOfflineCountHasMeaning() throws {
         let online = SourceInfo(descriptor: .local, sessions: [], online: true)
@@ -45,7 +171,7 @@ struct NavigationPanelTests {
             let scale = CGFloat(bitmap.pixelsWide) / Theme.Size.panelWidth
             return try #require(bitmap.colorAt(x: Int(x * scale), y: Int(y * scale))).alphaComponent
         }
-        let wash = try alpha(bitmap, x: 4, y: 19)
+        let wash = try alpha(bitmap, x: Theme.Spacing.navigationVisualInset + 4, y: 19)
         let firstClearColumn = try #require((5..<200).first { try alpha(bitmap, x: CGFloat($0), y: 19) < 0.01 })
         let gap = CGFloat(firstClearColumn) + 1
         #expect(wash > 0.01 && wash < 0.25, "Current view owns one faint selected background")
@@ -62,7 +188,7 @@ struct NavigationPanelTests {
         #expect(store.navigationAttempt == nil)
         let selectedImage = try snapshot(hosted.view, name: "connected-header-selected")
         let selectedBitmap = NSBitmapImageRep(cgImage: selectedImage)
-        #expect(try alpha(selectedBitmap, x: 4, y: 19) < 0.01)
+        #expect(try alpha(selectedBitmap, x: Theme.Spacing.navigationVisualInset + 4, y: 19) < 0.01)
         #expect(try alpha(selectedBitmap, x: gap, y: 19) < 0.01, "Adjacent option backgrounds need a clear gap")
         #expect(try alpha(selectedBitmap, x: gap + 6, y: 19) > 0.01)
         let visible = try text(in: selectedImage)
@@ -198,7 +324,8 @@ struct NavigationPanelTests {
                     .environment(\.navigationBrowser, browser)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            let expected = 38 + 4 + listHeight + 16
+            // Top hit-area inset8 + visual margin5 =13 visible; footer is13.
+            let expected = 38 + 4 + listHeight + 21
             for viewport in [CGFloat(120), 700] {
                 let capture = NavigationMeasuredHeight()
                 let hosted = host(

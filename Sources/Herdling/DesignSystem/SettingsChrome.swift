@@ -22,7 +22,7 @@ struct SettingsLabel: View {
                 if let subtitle {
                     Text(subtitle)
                         .font(Theme.Typography.groupLabel)
-                        .foregroundStyle(Theme.Colors.textSecondary)
+                        .foregroundStyle(Theme.Colors.settingsSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .truncationMode(.middle)
                 }

@@ -59,8 +59,9 @@ struct PanelSymbolTests {
         }
         // De-composite the selection wash; otherwise its alpha turns faint edge pixels into ink.
         let scale = CGFloat(actual.pixelsWide) / 420
-        let background = try #require(actual.colorAt(x: Int(3 * scale), y: Int(22 * scale))).alphaComponent
-        let a = ink(actual, width: 420, rect: CGRect(x: 5, y: 7, width: 20, height: 30), background: background)
+        let inset = Theme.Spacing.navigationVisualInset
+        let background = try #require(actual.colorAt(x: Int((inset + 3) * scale), y: Int(22 * scale))).alphaComponent
+        let a = ink(actual, width: 420, rect: CGRect(x: inset + 5, y: 7, width: 20, height: 30), background: background)
         let b = ink(expected, width: 44, rect: CGRect(x: 0, y: 0, width: 44, height: 44))
         #expect(b > 30)
         #expect(abs(a - b) <= 3, "Navigation controls use Medium rather than list Regular: \(a) vs \(b) ink pixels")

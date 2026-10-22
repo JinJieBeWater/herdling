@@ -5,6 +5,74 @@ import Testing
 
 @Suite @MainActor
 struct NavigationBrowserTests {
+    @Test func agentInspectionSelectsOnlyVisibleExactIdentitiesWithoutNavigation() {
+        let sources = [source(.local, agents: [agent("same", .working, time: 1)]),
+                       source(.remote("kvm"), agents: [agent("same", .working, time: 2)])]
+        let browser = NavigationBrowser()
+        browser.open(sources: sources, attempt: nil, keyboard: false, expandedSourceID: nil)
+        let remote = target("same", source: "ssh:kvm")
+        let order = browser.quickIDs
+        #expect(browser.selectForInspection(remote))
+        #expect(browser.selection == .destination(remote))
+        #expect(browser.attempt == nil)
+        #expect(browser.quickIDs == order)
+        browser.receive(sources: [], attempt: nil)
+        #expect(browser.selectForInspection(remote), "Frozen unavailable identity can still be inspected")
+        #expect(browser.activateSelection() == nil)
+        #expect(!browser.selectForInspection(target("unseen")))
+        #expect(!browser.selectForInspection(.session(sourceID: "local", sessionName: "default")))
+        #expect(browser.selection == .destination(remote))
+    }
+
+    @Test func mutingImmediatelyLowersPriorityAndUnmutingRestoresItWithoutChangingSelection() {
+        let sources = [source(.local, agents: [agent("attention", .blocked, time: 1), agent("running", .working, time: 2)])]
+        let browser = NavigationBrowser()
+        browser.open(sources: sources, attempt: nil, keyboard: true, expandedSourceID: nil)
+        browser.receive(sources: sources, attempt: nil, observedAgentIDs: [target("attention").agentFocusID!])
+        #expect(browser.quickIDs == [target("running"), target("attention")])
+        #expect(browser.selection == .destination(target("attention")))
+        #expect(browser.presentation(for: target("attention")).status == .blocked)
+        browser.receive(sources: sources, attempt: nil, observedAgentIDs: [])
+        #expect(browser.quickIDs == [target("attention"), target("running")])
+        #expect(browser.selection == .destination(target("attention")))
+        #expect(browser.attempt == nil)
+    }
+
+    @Test func manualObservationAddsKnownIdleWithoutRecruitingNewLiveArrivals() {
+        let initial = [agent("main", .working, time: 1), agent("old-idle", .idle, time: 0)]
+            + (1...3).map { agent("idle-\($0)", .idle, time: Double($0)) }
+        let browser = NavigationBrowser()
+        browser.open(sources: [source(.local, agents: initial)], attempt: nil, keyboard: true, expandedSourceID: nil)
+        let selection = browser.selection
+        let observed = Set(["old-idle", "late-arrival"].map { AgentFocusID(sourceID: "local", sessionName: "default", paneID: $0) })
+        browser.receive(sources: [source(.local, agents: initial + [agent("late-arrival", .blocked, time: 99)])], attempt: nil, observedAgentIDs: observed)
+        #expect(browser.quickIDs == [target("main"), target("idle-3"), target("idle-2"), target("idle-1"), target("old-idle")])
+        #expect(browser.selection == selection)
+        browser.receive(sources: [source(.local, agents: initial)], attempt: nil, observedAgentIDs: [])
+        #expect(browser.quickIDs.last == target("old-idle"), "An explicit change preserves visit membership and target identity")
+        browser.close()
+        browser.open(sources: [source(.local, agents: initial)], attempt: nil, keyboard: false, expandedSourceID: nil)
+        #expect(!browser.quickIDs.contains(target("old-idle")), "Normal recent-idle policy resumes on the next visit")
+    }
+    @Test func allMutedStatesFollowNormalAgentsAndRemainLiveAndNavigable() {
+        let agents = [agent("main-done", .done, time: 50), agent("child-blocked", .blocked, time: 100), agent("coordinator", .working, time: 1),
+                      agent("child-working", .working, time: 90), agent("child-idle", .idle, time: 0),
+                      agent("child-unknown", .unknown, time: 0)] + (1...4).map { agent("idle-\($0)", .idle, time: Double($0)) }
+        let observed = Set(["child-blocked", "child-working", "child-idle", "child-unknown"].map {
+            AgentFocusID(sourceID: "local", sessionName: "default", paneID: $0)
+        })
+        let browser = NavigationBrowser()
+        browser.open(sources: [source(.local, agents: agents)], attempt: nil, keyboard: true, expandedSourceID: nil, observedAgentIDs: observed)
+        #expect(browser.quickIDs == [target("main-done"), target("coordinator"), target("idle-4"), target("idle-3"), target("idle-2"),
+                                     target("child-blocked"), target("child-working"), target("child-idle"), target("child-unknown")])
+        let order = browser.quickIDs
+        browser.receive(sources: [source(.local, agents: [agent("child-blocked", .done, time: 200), agent("coordinator", .working, time: 1)])], attempt: nil)
+        #expect(browser.quickIDs == order)
+        #expect(browser.presentation(for: target("child-blocked")).status == .done)
+        browser.moveSelection(by: 1)
+        browser.moveSelection(by: 1)
+        #expect(browser.activateSelection() == target("child-blocked"), "Unavailable rows are skipped but a quiet destination still navigates")
+    }
     private func target(_ pane: String, source: String = "local") -> NavigationDestination {
         .agent(sourceID: source, sessionName: "default", paneID: pane)
     }

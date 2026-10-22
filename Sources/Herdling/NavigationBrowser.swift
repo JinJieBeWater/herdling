@@ -20,10 +20,14 @@ final class NavigationBrowser {
 
     private(set) var mode: Mode = .quick
     private(set) var selection: NavigationRowID?
+    private(set) var inspectionSelection: NavigationRowID?
+    private var keyboardDriven = false
+    var keyboardSelection: NavigationRowID? { keyboardDriven && inspectionSelection == nil ? selection : nil }
     private(set) var expandedSourceID: String?
     private(set) var quickIDs: [NavigationDestination] = []
     private(set) var attempt: NavigationAttempt?
     private var latestSources: [SourceInfo]
+    private var observedAgentIDs: Set<AgentFocusID> = []
     private var isOpen = false
     private struct Label { let title: String; let subtitle: String }
     private var labels: [NavigationDestination: Label] = [:]
@@ -76,25 +80,46 @@ final class NavigationBrowser {
         latestSources.contains { $0.online && ($0.sessions.isEmpty || $0.sessions.contains(where: \.online)) }
     }
 
-    init(sources: [SourceInfo] = []) {
+    init(sources: [SourceInfo] = [], observedAgentIDs: Set<AgentFocusID> = []) {
         latestSources = sources
+        self.observedAgentIDs = observedAgentIDs
         rebuildSnapshot()
     }
 
-    func open(sources: [SourceInfo], attempt: NavigationAttempt?, keyboard: Bool, expandedSourceID: String?) {
+    func open(sources: [SourceInfo], attempt: NavigationAttempt?, keyboard: Bool, expandedSourceID: String?, observedAgentIDs: Set<AgentFocusID> = []) {
         latestSources = sources
+        self.observedAgentIDs = observedAgentIDs
         self.attempt = attempt
         self.expandedSourceID = RosterLayout.expandedSourceID(saved: expandedSourceID ?? "", available: sources.map(\.id))
         isOpen = true
         mode = .quick
         selection = nil
+        inspectionSelection = nil
+        keyboardDriven = keyboard
         rebuildSnapshot()
         if keyboard { selection = visibleRows.first(where: canSelect) }
     }
 
-    func close() { isOpen = false }
-    func receive(sources: [SourceInfo], attempt: NavigationAttempt?) {
+    func close() { isOpen = false; inspectionSelection = nil; keyboardDriven = false }
+    func receive(sources: [SourceInfo], attempt: NavigationAttempt?, observedAgentIDs: Set<AgentFocusID>? = nil) {
         latestSources = sources
+        if let observedAgentIDs, observedAgentIDs != self.observedAgentIDs {
+            self.observedAgentIDs = observedAgentIDs
+            if isOpen {
+                // Policy changes explicitly reorder the visit; live arrivals still stay out.
+                let ranked = candidates
+                quickIDs += ranked.filter { isObserveOnly($0) && !quickIDs.contains($0) && labels[$0] != nil }
+                let priorities = Dictionary(uniqueKeysWithValues: ranked.enumerated().map { ($0.element, $0.offset) })
+                quickIDs = quickIDs.enumerated().sorted { left, right in
+                    let quietLeft = isObserveOnly(left.element), quietRight = isObserveOnly(right.element)
+                    if quietLeft != quietRight { return !quietLeft }
+                    let priorityLeft = priorities[left.element] ?? .max
+                    let priorityRight = priorities[right.element] ?? .max
+                    if priorityLeft != priorityRight { return priorityLeft < priorityRight }
+                    return left.offset < right.offset
+                }.map(\.element)
+            }
+        }
         self.attempt = attempt
         for destination in labels.keys {
             if let resolved = destination.resolve(in: sources) { labels[destination] = label(for: resolved) }
@@ -119,6 +144,7 @@ final class NavigationBrowser {
         keepSelection()
     }
     func moveSelection(by direction: Int) {
+        keyboardDriven = true
         let rows = visibleRows
         let step = direction < 0 ? -1 : 1
         var index = (selection.flatMap { rows.firstIndex(of: $0) } ?? (step > 0 ? -1 : rows.count)) + step
@@ -129,6 +155,7 @@ final class NavigationBrowser {
     }
     func horizontal(_ direction: Int) {
         guard mode == .all, let selection else { return }
+        keyboardDriven = true
         if case let .source(id) = selection {
             if direction > 0 { expandedSourceID = id }
             else if expandedSourceID == id { expandedSourceID = nil }
@@ -141,7 +168,20 @@ final class NavigationBrowser {
         guard case let .destination(destination) = selection, isAvailable(destination) else { return nil }
         return destination
     }
-    func clearSelection() { selection = nil }
+    func clearSelection() { selection = nil; inspectionSelection = nil; keyboardDriven = false }
+
+    func beginInspection() { inspectionSelection = selection }
+    func endInspection(keyboard: Bool) { inspectionSelection = nil; keyboardDriven = keyboard }
+
+    /// Inspection selects a frozen identity; availability gates navigation, not inspection.
+    @discardableResult
+    func selectForInspection(_ destination: NavigationDestination) -> Bool {
+        let row = NavigationRowID.destination(destination)
+        guard destination.agentFocusID != nil, visibleRows.contains(row) else { return false }
+        selection = row
+        keyboardDriven = false
+        return true
+    }
 
     func isAvailable(_ destination: NavigationDestination) -> Bool {
         destination.resolve(in: latestSources)?.isAvailable == true
@@ -247,23 +287,32 @@ final class NavigationBrowser {
             case .unknown: 4
             }
         }
-        let records = latestSources.filter(\.online).flatMap { source in
-            source.sessions.filter(\.online).flatMap { session in
-                session.agents.filter { $0.status != .unknown }.map {
-                    (NavigationDestination.agent(sourceID: source.id, sessionName: session.name, paneID: $0.paneID), $0)
+        let records = latestSources.flatMap { source in
+            source.sessions.flatMap { session in
+                session.agents.compactMap { agent -> (NavigationDestination, AgentInfo)? in
+                    let destination = NavigationDestination.agent(sourceID: source.id, sessionName: session.name, paneID: agent.paneID)
+                    guard isObserveOnly(destination) || (source.online && session.online && agent.status != .unknown) else { return nil }
+                    return (destination, agent)
                 }
             }
         }
         var idleCount = 0
         return records.enumerated().sorted { left, right in
             let a = left.element.1, b = right.element.1
-            if a.status != b.status { return rank(a.status) < rank(b.status) }
+            let observingA = isObserveOnly(left.element.0), observingB = isObserveOnly(right.element.0)
+            if observingA != observingB { return !observingA }
+            let priorityA = rank(a.status), priorityB = rank(b.status)
+            if priorityA != priorityB { return priorityA < priorityB }
             if a.updatedAt != b.updatedAt { return a.updatedAt > b.updatedAt }
             return left.offset < right.offset
         }.filter { record in
-            guard record.element.1.status == .idle else { return true }
+            guard record.element.1.status == .idle, !isObserveOnly(record.element.0) else { return true }
             idleCount += 1
             return idleCount <= 3
         }.map { $0.element.0 }
+    }
+
+    private func isObserveOnly(_ destination: NavigationDestination) -> Bool {
+        destination.agentFocusID.map(observedAgentIDs.contains) ?? false
     }
 }

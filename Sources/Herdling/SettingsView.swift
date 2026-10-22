@@ -33,7 +33,7 @@ struct SettingsView: View {
             let aliases = store.availableSSHAliases
             if aliases.isEmpty {
                 Text("No aliases found in ~/.ssh/config")
-                    .foregroundStyle(Theme.Colors.textSecondary)
+                    .foregroundStyle(Theme.Colors.settingsSecondary)
             }
             ForEach(aliases, id: \.self) { alias in
                 let isEnabled = store.selectedSSHAliases.contains(alias)
@@ -107,7 +107,7 @@ struct SettingsView: View {
         Section {
             LabeledContent {
                 Text(store.automationStatus)
-                    .foregroundStyle(Theme.Colors.textSecondary)
+                    .foregroundStyle(Theme.Colors.settingsSecondary)
                     .lineLimit(1)
             } label: {
                 SettingsLabel(

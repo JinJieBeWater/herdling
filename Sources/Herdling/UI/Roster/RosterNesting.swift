@@ -29,7 +29,7 @@ struct SessionRoster: View {
     }
 
     private var summaryText: String {
-        AgentStatusCount.summarize(session.agents).primaryStatusText
+        store.statusCounts(session.agents, sourceID: source.id, sessionName: session.name).primaryStatusText
     }
 
     private var spaces: [RosterSpace] { RosterLayout.spaces(from: session.groups) }
@@ -141,7 +141,7 @@ struct SpaceSection: View {
                 // The same header row a worktree draws — same mark, same weight, same readout
                 // column, and the same click: open this workspace in Ghostty. A header that looks
                 // like the others but does nothing is worse than no header at all.
-                let counts = AgentStatusCount.summarize(collapsed.group.agents)
+                let counts = store.statusCounts(collapsed.group.agents, sourceID: source.id, sessionName: session.name)
                 GroupHeaderRow(
                     leading: counts.first.map {
                         RowSymbol(
@@ -240,7 +240,7 @@ struct WorktreeSection: View {
         self.indent = indent
     }
 
-    private var counts: [AgentStatusCount] { AgentStatusCount.summarize(group.agents) }
+    private var counts: [AgentStatusCount] { store.statusCounts(group.agents, sourceID: source.id, sessionName: session.name) }
 
     private var branchSummary: BranchSummary? {
         RosterLayout.branchSummary(for: group.agents, resolved: resolvedBranches)
@@ -333,10 +333,11 @@ struct AgentRow: View {
     let indent: CGFloat
     var store: SessionStore? = nil
     var destination: NavigationDestination? = nil
+    private var observeOnly: Bool { destination.map { store?.isObserveOnly($0) == true } ?? false }
 
     private var accessibilityText: String {
         let base = "\(agent.title), \(agent.status.rosterLabel)"
-        return base + (isFocusPending ? ", opening in Ghostty" : "")
+        return base + (observeOnly ? ", muted" : "") + (isFocusPending ? ", opening in Ghostty" : "")
     }
 
     var body: some View {
@@ -348,9 +349,10 @@ struct AgentRow: View {
             action: action
         ) { isHovered in
             HStack(spacing: Theme.Spacing.rowContentGap) {
-                RowSymbol(symbol: agent.status.indicatorSymbolName, tint: agent.status.badgeTint)
+                RowSymbol(symbol: agent.status.indicatorSymbolName, tint: agent.status.badgeTint(observeOnly: observeOnly))
                 Text(agent.title)
                     .font(Theme.Typography.rowTitle)
+                    .foregroundStyle(observeOnly && enabled ? Theme.Colors.mutedTitle : Theme.Colors.textPrimary)
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
@@ -364,5 +366,8 @@ struct AgentRow: View {
             // on one column instead of the arrow hanging 12pt further out.
             Color.clear.frame(width: Theme.Size.chevron)
         }
+        .agentActions(destination)
+        .help((observeOnly ? "Muted · " : "") + (isFocusPending ? "Opening" : enabled ? agent.status.rosterLabel.capitalized : "Unavailable")
+              + "\n" + agent.title + "\n" + (destination.map { [$0.sourceID, $0.sessionName, agent.paneID].joined(separator: " / ") } ?? agent.paneID))
     }
 }

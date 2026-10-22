@@ -7,7 +7,8 @@ Herdling is a macOS menu bar companion for [Herdr](https://herdr.dev/). It shows
 ## Features
 
 - Groups agents by machine, session, Space, and worktree while preserving Herdr order.
-- **Activity** shows agents in priority order: blocked, done, working, then the three most recently updated idle agents. **Sources** opens the full directory; expand one source or keep them all closed.
+- **Activity** prioritizes normally followed agents: blocked, done, working, then the three most recently updated idle agents. **Sources** opens the full directory; expand one source or keep them all closed.
+- Check **Mute** in an agent's secondary actions menu to keep its live status without adding blocked/done to attention counts. Muted rows use lighter title and status ink, without an extra badge; Activity moves them below normal agents immediately. Unmuting restores normal priority. Mouse actions keep the viewport in place; keyboard focus follows the selected target. Running counts, navigation and the Sources hierarchy remain unchanged; the choice is saved locally.
 - Keeps rows in place while browsing, with live status; reopen to rebuild the list. Failed jumps retain their target for retry.
 - Updates local and remote sessions through Herdr's socket event stream, with discovery and CLI fallback where needed.
 - Reuses an existing Ghostty Herdr client when possible. New clients open in a tab by default; Settings can switch this to a window.
@@ -75,6 +76,7 @@ ssh -o BatchMode=yes my-server '$SHELL -lc "herdr session list --json"'
 | --- | --- |
 | Left-click menu bar item | Open or close roster |
 | Right-click menu bar item | Open Refresh/Settings/Quit menu |
+| Right-click an agent | Select it for inspection and open its fixed-corner actions menu; toggle Mute without navigation or a seen change |
 | Click a machine in Sources | Toggle its directory; expanding one closes the previous source |
 | Click an agent, worktree, Space, or session | Focus it in Ghostty |
 | Global panel shortcut (when configured) | Toggle panel; select a target without navigating |

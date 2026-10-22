@@ -7,7 +7,8 @@ Herdling 是 [Herdr](https://herdr.dev/) 的 macOS 菜单栏配套工具。它�
 ## 功能
 
 - 按设备、Session、Space 和 worktree 分组 agent，并保留 Herdr 原始顺序。
-- **Activity** 按 blocked、done、working、最近更新的三个 idle 排列 agent。**Sources** 浏览完整目录，可展开一个来源，也可全部收起。
+- **Activity** 优先显示正常关注项，按 blocked、done、working、最近更新的三个 idle 排列。**Sources** 浏览完整目录，可展开一个来源，也可全部收起。
+- 在 agent 的附加操作菜单中勾选 **Mute（静默）**，行使用更轻的标题与状态色，不新增徽标；Activity中该项立即移到普通项之后，取消时恢复普通优先级。鼠标操作不追滚，键盘焦点跟随原目标；真实状态、运行计数和定位能力保留，blocked／done不计入关注汇总。普通状态刷新不挪行，Sources层级不变；本机偏好会记住。
 - 浏览期间行位置固定、状态实时更新；重新打开重建名单，失败定位保留原目标以便重试。
 - 通过 Herdr Socket 事件流同步本机与远程 Session；必要时使用发现机制和 CLI fallback。
 - 尽量复用现有 Ghostty Herdr client。新 client 默认在 Tab 中打开，也可在设置中改为 Window。
@@ -75,6 +76,7 @@ ssh -o BatchMode=yes my-server '$SHELL -lc "herdr session list --json"'
 | --- | --- |
 | 左键点击菜单栏项目 | 打开或关闭 agent 列表 |
 | 右键点击菜单栏项目 | 打开 Refresh/Settings/Quit 菜单 |
+| 右键点击 agent | 选中检查目标，打开固定角落的操作菜单；勾选／取消 Mute 不定位、不改变 seen |
 | 点击 Sources 中的设备 | 展开或收起目录；展开一个来源时收起前一个 |
 | 点击 agent、worktree、Space 或 Session | 在 Ghostty 中聚焦目标 |
 | 全局呼出快捷键（配置后） | 开关面板；预选目标但不直接定位 |

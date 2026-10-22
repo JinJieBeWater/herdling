@@ -22,12 +22,11 @@ struct HoverRow<Content: View>: View {
 
     @State private var isHovered = false
     @Environment(\.panelIsOpen) private var panelIsOpen
-    @Environment(\.rosterScrollbarClearance) private var scrollbarClearance
     @Environment(\.navigationBrowser) private var navigationBrowser
     @Environment(\.navigationRowID) private var navigationRowID
 
     private var keyboardSelected: Bool {
-        navigationRowID != nil && navigationBrowser?.selection == navigationRowID
+        navigationRowID != nil && navigationBrowser?.keyboardSelection == navigationRowID
     }
 
     private var available: Bool {
@@ -53,7 +52,7 @@ struct HoverRow<Content: View>: View {
         Button(action: action) {
             HStack(spacing: Theme.Spacing.lg) { content(isHovered && available) }
                 .padding(.leading, Theme.Spacing.md + indent)
-                .padding(.trailing, Theme.Spacing.md + scrollbarClearance)
+                .padding(.trailing, Theme.Spacing.md)
                 .padding(.vertical, verticalPadding)
                 .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
                 .contentShape(Rectangle())
@@ -63,15 +62,7 @@ struct HoverRow<Content: View>: View {
         .accessibilityLabel(accessibilityText)
         .modifier(OptionalAccessibilityHint(hint: accessibilityHint))
         .background {
-            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
-                .fill(fill)
-        }
-        .overlay {
-            if keyboardSelected {
-                RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
-                    .strokeBorder(Theme.Colors.textSecondary, lineWidth: Theme.Size.keyboardSelectionStroke)
-                    .allowsHitTesting(false)
-            }
+            RosterRowSurface(fill: fill, keyboardSelected: keyboardSelected)
         }
         .accessibilityValue(navigationValue)
         .onHover { isHovered = $0 }
@@ -83,7 +74,41 @@ struct HoverRow<Content: View>: View {
     private var fill: Color {
         guard available else { return .clear }
         if isSelected || keyboardSelected { return Theme.Colors.selection }
-        return isHovered ? Theme.Colors.rowHover : .clear
+        let inspected = navigationRowID != nil && navigationBrowser?.inspectionSelection == navigationRowID
+        return isHovered || inspected ? Theme.Colors.rowHover : .clear
+    }
+}
+
+/// One visible contour for both ink layers, including rows meeting the container's curved edge.
+private struct RosterRowSurface: View {
+    let fill: Color
+    let keyboardSelected: Bool
+    @Environment(\.rosterContentSize) private var contentSize
+
+    var body: some View {
+        GeometryReader { geometry in
+            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous).fill(fill)
+                .overlay {
+                    if keyboardSelected {
+                        let contour = contour(in: geometry)
+                        contour.stroke(Theme.Colors.textSecondary, lineWidth: Theme.Size.keyboardSelectionStroke * 2)
+                            .clipShape(contour)
+                    }
+                }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func contour(in geometry: GeometryProxy) -> Path {
+        let row = RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+            .path(in: CGRect(origin: .zero, size: geometry.size))
+        guard contentSize.width > 0, contentSize.height > 0 else { return row }
+        let bounds = geometry.frame(in: .named(RosterCoordinateSpace.content))
+        let container = RoundedRectangle(cornerSize: Theme.Radius.panelContent, style: .continuous)
+            .path(in: CGRect(x: Theme.Spacing.panelInset, y: 0,
+                             width: contentSize.width - Theme.Spacing.panelInset * 2, height: contentSize.height))
+            .applying(CGAffineTransform(translationX: -bounds.minX, y: -bounds.minY))
+        return row.intersection(container)
     }
 }
 
@@ -101,7 +126,7 @@ private struct OptionalAccessibilityHint: ViewModifier {
 
 /// A bare leading glyph shared by groups, sources, statuses, errors and Settings.
 struct RowSymbol: View {
-    enum Role { case list, navigation }
+    enum Role { case list, navigation, menu }
     let symbol: String
     let tint: Color?
     var slotSize: CGFloat = Theme.Size.rowIcon
@@ -110,13 +135,21 @@ struct RowSymbol: View {
     var body: some View {
         Group {
             if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
-                .withSymbolConfiguration(role == .navigation ? Theme.Glyph.navigationSymbol : Theme.Glyph.leadingSymbol) {
+                .withSymbolConfiguration(configuration) {
                 Image(nsImage: image).renderingMode(.template)
             }
         }
         .foregroundStyle(tint ?? Theme.Colors.textTertiary)
         .frame(width: slotSize, height: slotSize)
         .accessibilityHidden(true)
+    }
+
+    private var configuration: NSImage.SymbolConfiguration {
+        switch role {
+        case .list: Theme.Glyph.leadingSymbol
+        case .navigation: Theme.Glyph.navigationSymbol
+        case .menu: Theme.Glyph.menuSymbol
+        }
     }
 }
 

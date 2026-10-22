@@ -10,25 +10,30 @@ struct NavigationPanel: View {
         VStack(spacing: Theme.Spacing.navigationHeaderGap) {
             NavigationHeader(browser: browser)
                 .navigationHeight(.header)
+                .padding(.horizontal, Theme.Spacing.panelInset)
             ScrollViewReader { proxy in
                 ScrollView {
                     NavigationList(store: store, browser: browser)
-                        .environment(\.rosterScrollbarClearance, Theme.Spacing.md)
                         .fixedSize(horizontal: false, vertical: true)
                         .navigationHeight(.list)
+                        .padding(.horizontal, Theme.Spacing.panelInset)
                         .background(RosterScrollbarAttachment())
                 }
                 .overflowFade()
                 .scrollBounceBehavior(.basedOnSize)
-                .onChange(of: browser.selection) { _, selection in
+                .onChange(of: browser.keyboardSelection) { _, selection in
                     if let selection { proxy.scrollTo(selection) }
+                }
+                .onChange(of: browser.quickIDs) { _, _ in
+                    if browser.mode == .quick, let selection = browser.keyboardSelection { proxy.scrollTo(selection) }
                 }
             }
         }
-        .rosterBoundary()
+        .rosterBoundary(topInset: Theme.Spacing.navigationTopInset)
         .onPreferenceChange(NavigationHeightKey.self) { parts in
             // Measure intrinsic content, never the constrained scroll viewport.
-            measuredHeight = parts.values.reduce(0, +) + Theme.Spacing.navigationHeaderGap + Theme.Spacing.panelInset * 2
+            measuredHeight = parts.values.reduce(0, +) + Theme.Spacing.navigationHeaderGap
+                + Theme.Spacing.navigationTopInset + Theme.Spacing.panelBottomInset
         }
         .preference(key: PanelContentHeightKey.self, value: measuredHeight)
     }
@@ -99,6 +104,7 @@ private struct NavigationModeSwitch: View {
 
     private func option(_ title: String, symbol: String, mode: NavigationBrowser.Mode) -> some View {
         NavigationModeOption(title: title, symbol: symbol, selected: browser.mode == mode,
+                             meetsShellCorner: mode == .quick,
                              selection: selection, action: { browser.setMode(mode) })
     }
 }
@@ -107,6 +113,7 @@ private struct NavigationModeOption: View {
     let title: String
     let symbol: String
     let selected: Bool
+    let meetsShellCorner: Bool
     let selection: Namespace.ID
     let action: () -> Void
     @State private var hovered = false
@@ -114,18 +121,23 @@ private struct NavigationModeOption: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: Theme.Spacing.rowContentGap) {
+            HStack(spacing: Theme.Spacing.navigationContentGap) {
                 RowSymbol(symbol: symbol, tint: selected || hovered ? Theme.Colors.textPrimary : Theme.Colors.textSecondary,
                           slotSize: Theme.Size.navigationIcon, role: .navigation)
                 Text(title)
             }
                 .font(Theme.Typography.navigationModeLabel)
                 .foregroundStyle(selected || hovered ? Theme.Colors.textPrimary : Theme.Colors.textSecondary)
-                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.horizontal, Theme.Spacing.navigationContentInset)
                 .frame(height: Theme.Size.navigationControlHeight)
                 .background {
                     if selected {
-                        RoundedRectangle(cornerRadius: Theme.Radius.navigationControl, style: .continuous)
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: meetsShellCorner ? Theme.Radius.panelContent.width : Theme.Radius.navigationControl,
+                            bottomLeadingRadius: Theme.Radius.navigationControl,
+                            bottomTrailingRadius: Theme.Radius.navigationControl,
+                            topTrailingRadius: Theme.Radius.navigationControl,
+                            style: .continuous)
                             .fill(Theme.Colors.selection)
                             .matchedGeometryEffect(id: "active-view", in: selection)
                     }
@@ -224,6 +236,12 @@ struct QuickNavigationRow: View {
 
     private var presentation: NavigationRowPresentation { browser.presentation(for: destination) }
     private var pending: Bool { browser.attempt?.destination == destination && browser.attempt?.phase == .pending }
+    private var observeOnly: Bool { store.isObserveOnly(destination) }
+    private var readout: String? {
+        if pending || !presentation.available { return statusText }
+        if observeOnly { return nil }
+        return presentation.status == .idle || presentation.status == .working ? nil : statusText
+    }
     private var statusText: String {
         if pending { return "Opening" }
         guard presentation.available else { return "Unavailable" }
@@ -239,23 +257,23 @@ struct QuickNavigationRow: View {
         HoverRow(
             minHeight: Theme.Size.quickRowHeight, verticalPadding: 0,
             enabled: presentation.available,
-            accessibilityText: "\(presentation.title), \(presentation.subtitle), \(statusText)",
+            accessibilityText: "\(presentation.title), \(presentation.subtitle), \(statusText)" + (observeOnly ? ", muted" : ""),
             action: { store.navigate(to: destination) }
         ) { isHovered in
             HStack(spacing: Theme.Spacing.rowContentGap) {
                 RowSymbol(
                     symbol: presentation.status?.indicatorSymbolName ?? "arrow.up.right",
-                    tint: presentation.status?.badgeTint
+                    tint: presentation.status?.badgeTint(observeOnly: observeOnly)
                 )
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: Theme.Spacing.lg) {
                         Text(presentation.title)
                             .font(Theme.Typography.rowTitle)
-                            .foregroundStyle(Theme.Colors.textPrimary)
+                            .foregroundStyle(observeOnly && presentation.available ? Theme.Colors.mutedTitle : Theme.Colors.textPrimary)
                             .lineLimit(1)
                         Spacer(minLength: Theme.Spacing.xs)
-                        if pending || !presentation.available || (presentation.status != .idle && presentation.status != .working) {
-                            Text(statusText)
+                        if let readout {
+                            Text(readout)
                                 .font(Theme.Typography.rowTrailing)
                                 .foregroundStyle(Theme.Colors.textSecondary)
                                 .lineLimit(1)
@@ -271,5 +289,8 @@ struct QuickNavigationRow: View {
             NavigationRowFeedback(store: store, destination: destination, isHovered: isHovered, showsIdleArrow: false)
         }
         .navigationRow(.destination(destination))
+        .agentActions(destination)
+        .help((observeOnly ? "Muted · " : "") + statusText.capitalized + "\n" + presentation.title + "\n"
+              + [destination.sourceID, destination.sessionName, destination.agentFocusID?.paneID].compactMap { $0 }.joined(separator: " / "))
     }
 }

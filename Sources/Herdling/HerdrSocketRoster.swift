@@ -63,6 +63,8 @@ actor HerdrSocketRoster {
     }
 
     func addConnection(_ connection: HerdrSocketConnection, for endpoint: HerdrSocketEndpoint) {
+        guard connections[endpoint.path]?.id != connection.id else { return }
+        connections[endpoint.path]?.stop()
         connections[endpoint.path] = connection
     }
 

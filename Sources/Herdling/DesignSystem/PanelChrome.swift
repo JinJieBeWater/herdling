@@ -11,9 +11,35 @@ private struct PanelOpenKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
+    @Entry var rosterContentSize: CGSize = .zero
+
     var panelIsOpen: Bool {
         get { self[PanelOpenKey.self] }
         set { self[PanelOpenKey.self] = newValue }
+    }
+}
+
+enum RosterCoordinateSpace: Hashable { case content }
+
+private struct RosterBoundary: ViewModifier {
+    let topInset: CGFloat
+    @State private var size = CGSize.zero
+
+    func body(content: Content) -> some View {
+        content
+            .coordinateSpace(name: RosterCoordinateSpace.content)
+            .environment(\.rosterContentSize, size)
+            .onGeometryChange(for: CGSize.self, of: { $0.size }) { size = $0 }
+            .mask {
+                RoundedRectangle(cornerSize: Theme.Radius.panelContent, style: .continuous)
+                    .padding(.horizontal, Theme.Spacing.panelInset)
+                    .overlay(alignment: .trailing) {
+                        Rectangle().frame(width: Theme.Spacing.panelInset)
+                    }
+                    .foregroundStyle(Theme.Colors.textPrimary)
+            }
+            .padding(.top, topInset)
+            .padding(.bottom, Theme.Spacing.panelBottomInset)
     }
 }
 
@@ -82,12 +108,9 @@ enum AccordionMotion {
 }
 
 extension View {
-    /// Shared content boundary and insets; measurement belongs to the panel's header/list join.
-    func rosterBoundary() -> some View {
-        self
-            // Clip the actual content boundary, so expansion changes the last row automatically.
-            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.panelContent, style: .continuous))
-            .padding(Theme.Spacing.panelInset)
+    /// Inset content contour plus transparent outer scrollbar space; children own horizontal insets.
+    func rosterBoundary(topInset: CGFloat? = nil) -> some View {
+        modifier(RosterBoundary(topInset: topInset ?? Theme.Spacing.panelInset))
     }
 
     /// The panel's surface recipe, scrim included.

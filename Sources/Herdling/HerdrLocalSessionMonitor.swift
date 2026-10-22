@@ -391,7 +391,10 @@ final class HerdrSocketConnection: @unchecked Sendable {
         process.standardError = FileHandle.nullDevice
         process.terminationHandler = { [weak self] _ in self?.finish() }
         outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            guard let self else { return }
+            guard let self else {
+                handle.readabilityHandler = nil
+                return
+            }
             let data = handle.availableData
             if data.isEmpty { self.finish(); return }
             self.queue.async { self.consume(data) }

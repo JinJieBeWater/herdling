@@ -63,6 +63,11 @@ Herdling 是一个**只展示列表的菜单栏下拉面板**：无边框面板�
 | `rowGap 2` | 同组正文行、树内标题与第一行子项之间；正文中心节奏为 34pt |
 | `sectionBodyGap 4` | 顶层标题与展开正文之间；放在折叠体内，收起时一起消失 |
 | `navigationHeaderGap 4` | 固定视图顶栏与列表之间；不靠行内 padding 隔开两块背景 |
+| `panelInset 13` | 顶栏与名单共用的左右背景边界 |
+| `panelBottomInset 13` | 与侧边共用同一外壳留白；已确认替换原来的8pt底边 |
+| `navigationVisualInset 5` | 38pt点击区与居中28pt表面的单侧余量 |
+| `navigationTopInset 8` | 顶部点击区留白；加上5pt表面余量后，可见底块到外壳为13pt |
+| `navigationContentInset 12` / `navigationContentGap 10` | 补偿14pt导航槽与22pt名单槽的半宽差；导航组首项与名单的图标中心在32pt，未缩进标题从49pt开始 |
 | `groupGap 8` | 相邻来源子组、session、空间和 worktree 组之间 |
 | `sectionSpacing 4` | 顶层 section 之间；展开前后均为 4pt，组内间距不变，不加尾部 padding |
 | `rowContentGap 6` | 前导图标槽与标题之间；标题副标和尾部槽位仍用 `lg` |
@@ -73,32 +78,53 @@ Herdling 是一个**只展示列表的菜单栏下拉面板**：无边框面板�
 快速入口的两行身份使用 `quickRowHeight 40`，顶部视图切换使用 `navigationHeaderHeight 38`；不是给全部目录行增加行高。
 
 
+### 静默 agent
+
+Activity和Sources的agent行右键先选中检查目标，再打开同一紧凑命令菜单；不提交定位。只保留`Open`和用勾选表达本机偏好的`Mute`两行，不重复目标标题、不设分隔线或快捷键帽；目标身份保留在窗口的辅助功能标题中。按来源＋Session＋pane保存，不推断父子关系。静默项不增加铃铛、角标、策略文字或操作列，而以更轻的标题与状态色表达。菜单作为独立原生玻璃子面板，固定沿主面板右下13pt内容边界展开，不跟随点击位置，不撑大名单；屏幕边缘不足时适配可用区域。不引入Tinycast的底栏或动作搜索。
+
+菜单内方向键切换动作，Return／Space执行，Escape只收菜单并归还名单焦点。右键检查只在菜单显示期间使用轻底色，关闭后消退，不留下键盘描边。键盘操作才保留明确焦点框，仍绑定精确身份。点击菜单外的名单先收菜单，消费这次点击，不穿透定位，并结束鼠标检查强调；点击应用外仍收起整个面板。正常点击、滚动、键盘浏览和原有快捷键不变。
+
+Activity保持同一列表，没有折叠区或新页签。普通项全部在前，静默项全部在后；两组内部按blocked、done、working、idle、unknown及状态时间排列。静默idle不占普通idle最近三项名额。切换静默偏好立即重排当前成员，选择仍绑定原身份；可追加本次已知但尚未进入Activity的静默身份，不招入浏览期间的新到达者。取消静默立即恢复普通优先级；本次成员保留，下次打开恢复普通idle限制。普通状态刷新不挪行。Sources保留原来源、Session及工作区层级与顺序。
+
+静默标题保留正常字号与字重，使用普通标题约70%的墨色；working保留蓝色与真实字形，墨色约65%，副标题维持次级色。blocked字形用中性色，不重复强调完成／blocked。不整行加透明度、不改变行高、前导槽或标题锚点，帮助及辅助功能保留`Muted`与真实状态。Opening、Unavailable及定位失败反馈不弱化。鼠标静默后当前视口不追滚到下移目标；键盘操作继续显示精确选择并跟随重排。点击与定位保持原协议；标记动作本身不提交定位，也不修改Herdr的seen。
+
+菜单栏及来源／Session／工作组汇总保留静默项的working等常态数量，排除它们的blocked／done关注数量。来源连接故障照常显示。偏好保存在注入的UserDefaults，沿用原存储键与身份，不重置已有标记；临时掉线保留标记，已确认在线快照中消失的pane或删除的来源移除对应标记。
+
 ### Radius
 
-`panel 26` · `panelContent 18`（`panel − panelInset`）· `row 10` · `navigationControl 8`
+#### 全UI的角色规则
+
+Tinycast使用方圆控件族：较矮的bar control为8pt，名单行为10pt。Herdling的28pt导航表面使用8pt普通角，与32／38／40pt名单的10pt普通角保持相近的曲率比例；不把13pt外壳留白套成导航四角的半径。只有接近外壳转角的位置适配13pt内轮廓：Activity的左上角，以及末行真正与底部相交的角。短行内动作和原生系统控件保留各自形状；裸图标没有底板。
+
+名单的底色与键盘框共用同一条可见轮廓：底色沿统一容器边界裁切一次，键盘框沿普通行与容器的交集路径描边。先把底色画成交集再叠容器遮罩会重复抗锯齿，让边缘变淡；只裁切10pt描边又会在首末角留下断口。边界测量留在设计系统，不向来源、会话、worktree、agent逐层传递首末标记；不改变行高、命中区或滚动布局。
+
+设置窗的副标题和说明使用系统secondary色，不把玻璃名单的alpha ramp套到原生Form上。菜单栏标记保留独立的小尺寸与template渲染，不跟面板一起放大。
+
+`panel 26` · `panelContent (13, 13)`（两轴均为 `panel − panelInset`）· `row 10` · `navigationControl 8`
 
 按相邻轮廓分配圆角，不让所有元素使用同一个半径：
 
 | 元素 | 规则 |
 | --- | --- |
 | 面板 | 26pt；玻璃根层裁剪与 SwiftUI 都用连续曲线 |
-| 贴顶首行高亮 | 顶部与左右都内缩 `panelInset`（8pt）；上两角 18pt，下两角保留 10pt |
-| 贴底末行高亮 | 底部与左右同样内缩 8pt；下两角 18pt，上两角保留 10pt |
+| 贴顶首行高亮 | 可见表面距外壳13pt；命中区的5pt余量不计入可见底块 |
+| 贴底末行高亮 | 距外壳13pt，内边界两轴均使用13pt连续曲线；底色与键盘框一起校准，不单独扩底部padding |
 | 普通行与内部相邻角 | 10pt，32pt 正文行高下不做成胶囊 |
-| 顶栏选项 | 28pt视觉表面居于38pt点击区中央，8pt圆角；不贴外层轮廓 |
+| 顶栏选项 | 28pt视觉表面居于38pt点击区中央；上、左可见留白13pt；普通角8pt，仅Activity左上角适配13pt外壳内轮廓；Sources不做成胶囊 |
 | 前导图标 | 透明槽位，不绘制底板，因此没有图标底板圆角 |
 | 行内操作 | 高 20pt 的胶囊，保留动作按钮与内容行的区别 |
+| Agent附加操作菜单 | 独立玻璃子面板，208×68pt、12pt连续角；两行各28pt、6pt普通角，13pt Regular中性字形居于18pt透明槽位；轻选中底色，不做大按钮。13pt锚点跟随主面板内容边界，菜单内侧6pt，不沿用主面板26pt半径 |
 | Settings 分组与系统控件 | 由原生 `Form`、Picker、Toggle 绘制，不覆盖系统圆角 |
 
-列表内容整体用 18pt 连续圆角裁切，再统一内缩 8pt；各行自身仍画 10pt 圆角。顶部切换行与列表共用这个边界，计入完整测量高度。首末边界跟随真实内容，不沿树逐层传递位置标记。这不是要求所有嵌套元素都同心；图标和行内按钮仍使用各自规则。
+列表内容边界使用 `RoundedRectangle(cornerSize: CGSize(width: 13, height: 13), style: .continuous)`；各行自身仍画10pt圆角。顶部切换行与名单各自负责左右13pt内缩，不再额外内收导航按钮组。38pt点击区顶部仍留8pt，加上5pt表面余量形成13pt可见留白；底部统一13pt，完整高度计入8+13pt。验收比较真实底色到外壳的直边和转角距离，不以列对齐或圆角中心相同代替。离线提示与名单尾部内容区共享距右侧21pt的右边界；读数仍保留各自的箭头或chevron槽位。名单滚动视口保持420pt全宽，行背景宽394pt，边界遮罩在右侧边距开放滚动条绘制空间。首末边界跟随真实内容，计入完整测量高度，不沿树逐层传递位置标记。
 
-圆角矩形统一 `.continuous`；内容边界由整体裁切处理，不把首末行四角一起放大。独立的圆形／胶囊控件保留各自形状。
+圆角矩形统一 `.continuous`；首末行只沿真正相交的容器边缘转弯，不把四角一起放大。普通行填充由整体遮罩裁切一次；键盘框沿相交后的封闭路径描边。整体遮罩保留文字与滚动条边界。独立圆形／胶囊控件保留各自形状。
 
 ### Size
 
 `panelWidth 420` · `panelMinHeight 100` · `panelTopMargin 0` · `panelBottomMargin 16` · `panelScreenFraction 0.85` · `rowIcon 22` · `rowMinHeight 32` · `actionPill 20` · `progressIndicator 12` · `chevron 12` · `scrollFadeHeight 24` · `menuBarGlyphWidth 11` · `menuBarGlyphHeight 13` · `settingsWidth 560` · `settingsHeight 560` · `settingsMinHeight 420`
 
-`rowIcon` 是行首图标的**固定槽位**。比槽位小的 glyph（状态点）居中放进槽位，而不是把槽位缩到自身大小 —— 这样每行的标题都从同一个 x 开始，展开/折叠时列不会左右跳。导航不参与目录标题列，使用独立 `navigationIcon 14`；`navigationControlHeight 28`只决定表面，`navigationHeaderHeight 38`仍决定点击区与测量高度。
+`rowIcon` 是行首图标的**固定槽位**。比槽位小的glyph居中放进槽位，而不是把槽位缩到自身大小，展开/折叠时标题列不会左右跳。导航保留独立 `navigationIcon 14`，通过12pt水平内缩与10pt图文间距补偿槽位差，不复制名单22pt槽；导航与未缩进名单的图标中心、标题起点对齐。`navigationControlHeight 28`只决定表面，`navigationHeaderHeight 38`仍决定点击区与测量高度。
 
 ### Typography
 
@@ -114,7 +140,7 @@ Herdling 是一个**只展示列表的菜单栏下拉面板**：无边框面板�
 
 ### Glyphs
 
-SF Symbol 的显式字号，也是 token：`leading 11 semibold` · `chevron 10 semibold` · `actionSymbol 9 semibold` · `focusArrow 10` · `emptyState 15 medium` · `menuBar 11 medium` · `menuBarDigit 11 semibold monospaced`
+SF Symbol 的显式字号，也是 token：`leading 14 regular` · `navigation 14 medium` · `chevron 10 semibold` · `actionSymbol 9 semibold` · `focusArrow 10` · `emptyState 15 medium` · `menuBar 11 medium` · `menuBarDigit 11 semibold monospaced`
 
 菜单栏那三个是菜单栏自己的尺度（画进 image，不是画在面板里），所以自带数字，不借行的。
 
@@ -158,7 +184,7 @@ SF Symbol 的显式字号，也是 token：`leading 11 semibold` · `chevron 10 
   3. 最后 `.clipShape(RoundedRectangle(panel, .continuous))`。
   26 以下回落到 `NSVisualEffectView(material: .menu)`，同样盖 scrim。**scrim 在玻璃之上、内容之下**；顺序反了亮色模式会脏。
 - **玻璃根层也裁圆角。** `NSGlassEffectView.cornerRadius` 与 SwiftUI 的 `clipShape` 不足以约束 key window 状态下的全部玻璃绘制；玻璃根 `CALayer` 用同一个 `Theme.Radius.panel`、与 SwiftUI 一致的 `.continuous` 曲线，并启用 `masksToBounds`。保留键盘焦点和窗口阴影。验收时面板必须仍是 key window：失焦会让矩形痕迹消失，截图可能因此漏报。
-- **列表四边统一内缩 `panelInset`（8pt）。** 首行上角与末行下角跟随面板内轮廓，内部相邻角保持普通行形状；不留操作条或 safe-area 占位。
+- **名单背景左右13pt，末行底部保留8pt。** 首末边界跟随面板内轮廓，内部相邻角保持普通行形状；顶栏点击区顶部8pt加上表面余量后，可见留白为13pt。不留操作条或safe-area占位。
 - **菜单操作独立于列表。** 右键或 Control-click 状态项打开原生菜单：Refresh、Settings、分隔线、Quit Herdling。刷新期间禁用 Refresh，并防止重复启动。Settings 的 `⌘,` 和退出的 `⌘Q` 继续通过应用菜单提供。
 
 ---
@@ -169,10 +195,10 @@ SF Symbol 的显式字号，也是 token：`leading 11 semibold` · `chevron 10 
 
 行为与验收范围见 [Agent 查看与定位设计](agent-navigation-design.md)。HTML 原型不代替原生验收。
 
-- 顶栏用 **Activity / Sources** 互斥视图切换，左对齐，两个选项之间保留 xs（4pt）。Activity 用波形图标表示状态动态，Sources 用服务器图标表示本机和 SSH 来源；14pt Medium 裸字形使用独立14pt槽，后接6pt布局间距和8pt水平内缩，没有图标盘。当前选项复用selection；未选中项保持透明，悬停仅提亮图标与文字。28pt视觉表面居于38pt点击区中央，8pt圆角；没有整条底板、共用轨道、下划线、常驻边框或第二层玻璃，也不出现两个并列底色块。每次打开进入 Activity：在线 blocked → done → working → 最近三个 idle；各等级按 Herdr 的状态更新时间由新到旧，同时间保留来源快照顺序。整个列表平铺，不显示分组标题或额外数量；idle 不依赖成功定位记录。
+- 顶栏用 **Activity / Sources** 互斥视图切换，两个选项之间保留xs（4pt），按钮背景与名单共享13pt左边界。Activity用波形表示状态动态，Sources用服务器表示本机和SSH来源；14pt Medium裸字形使用独立14pt槽，后接10pt布局间距和12pt水平内缩，没有图标盘。图标中心与未缩进名单同在32pt，文字从49pt开始。当前选项复用selection；未选中项保持透明，悬停仅提亮图标与文字。28pt视觉表面居于38pt点击区中央，上、左外壳留白均13pt；普通角8pt，仅Activity左上角沿13pt外壳内轮廓转弯。没有整条底板、共用轨道、下划线、常驻边框或第二层玻璃，也不出现两个并列底色块。每次打开进入Activity：在线blocked → done → working → 最近三个idle；各等级按Herdr的状态更新时间由新到旧，同时间保留来源快照顺序。整个列表平铺，不显示分组标题或额外数量；idle不依赖成功定位记录。
 - 顶栏选项使用系统 callout Regular（macOS 默认12pt），两项及选中前后的字号、字重相同；选中靠底色与文字明暗区分。列表标题仍为 body，分组标题仍为 subheadline Medium。
 - 顶栏离线提示显示橙色网络图标和 `1 offline` 这类短文案，help/辅助功能提供来源名称与状态；覆盖部分 Session 不可用的来源。文案不挤进12pt数字槽。快速列表不再放整行离线警告。右侧不显示重复的 working、ready，左侧状态图标与完整辅助功能状态保留；Needs input、Completed、Opening、不可用状态与 Retry 保留。
-- **顶部与行共用边界，不强迫同一标题列。** 控件只保留一层md内容内缩；短导航组合按自身光学间距排布，目录仍保留22pt槽和原标题列。整条顶栏保持透明。空摘要不参与尾部布局，Retry与状态数量的右缘保持一致。
+- **顶部与未缩进名单共享背景、图标和文字锚点。** 短导航保留14pt槽、12pt内缩和10pt图文间距；名单保留22pt槽、8pt内缩和6pt图文间距，以不同的角色预算对齐图标中心和标题起点。整条顶栏保持透明。空摘要不参与尾部布局，Retry与状态数量的右缘保持一致。
 - 顶栏与列表之间保留 navigationHeaderGap，参与完整高度测量。快速列表空态只是一行次级文字，占40pt；不再加大图标、working 数量或重复的 Sources 入口。空快照有新状态时显示简短 reopen 提示，不自动插入新目标。
 - 副标题默认只显示工作区，本机来源名及 default Session 隐去。远程、非默认 Session 或同名目标需要区分时补齐身份；完整 ID 始终保留在 help/辅助功能中。
 - **Sources** 复用来源→Session→Space/worktree→agent 的目录和来源展开偏好。最多展开一个，允许全部收起：有效已保存来源优先，空偏好保持全部收起，失效偏好回退到第一个来源；点当前来源收起，点其他来源关闭前一个并展开该项。来源折叠不执行定位；agent、工作区、Session 各自定位自己的真实 ID。
@@ -257,11 +283,13 @@ SF Symbol 的显式字号，也是 token：`leading 11 semibold` · `chevron 10 
 
 ### 细滚动条
 
-名单滚动条遵循 Tinycast 的细条外观，不复用其 AGPL 实现：滚动时 thumb 为 6pt，悬停或拖动时为 10pt，轨道为淡色胶囊。绘制距视口边缘 3pt，thumb 按内容比例变化，最短 28pt；内容未溢出时不显示。
+名单滚动条使用独立实现的6pt细条。普通状态隐藏；滚动、悬停和拖动时宽度都为6pt，只改变深浅，不画整条背景轨道。thumb 按内容比例变化，最短28pt；上下8pt留白避开面板外圆角；内容未溢出时不显示。
 
-使用 AppKit 的 overlay `NSScroller`，只替换绘制；保留原生拖动、轨道点击、滚轮、自动淡出和辅助功能。覆盖系统 scroller 样式变化仅限名单，不修改系统偏好或 Settings。视口不保留 legacy gutter；名单行的尾部内容额外留 8pt 净空，让箭头与读数处于原生点击区之外，标题列、整行高亮与视口宽度不变。短名单同样保留这份净空，展开时尾列不跳动。
+使用AppKit的overlay `NSScroller`，只替换绘制；保留原生拖动、轨道点击、滚轮、自动淡出和辅助功能。覆盖系统scroller样式变化仅限名单，不修改系统偏好或Settings。滚动视口横跨420pt面板，名单内容与固定顶栏各保留左右13pt边距；细条仍画在x413–419，距面板右边缘1pt，与行背景右边x407留6pt间隙。宽于细条的原生命中区可以延伸进空白内边距，不能覆盖箭头或读数。
 
-不改变名单固有高度、键盘 `scrollTo`、24pt 底部渐隐或定位动作。自动淡出时序沿用 AppKit，不另建计时器。
+行高亮和键盘轮廓四态保持394pt完整宽度，左右边界对称，文字不随滚动条显隐移动。删除此前仅挪文字的额外8pt净空；不保留18pt固定单边槽。内容边界横向13pt、纵向18pt，底部保留8pt留白；右侧滚动条另获透明绘制空间，不增加玻璃层或可见面板背景。
+
+保留行高和固有高度测量、键盘 `scrollTo`、24pt 底部渐隐与定位动作。当前自动淡出时序沿用 AppKit，不另建计时器。
 
 ---
 

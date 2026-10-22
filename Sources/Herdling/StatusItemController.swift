@@ -59,8 +59,10 @@ final class StatusItemController: NSObject {
     private var settingsController: SettingsWindowController?
     private var isRefreshing = false
     private lazy var hostingController = NSHostingController(
-        rootView: AgentListView(store: store, browser: browser)
+        rootView: AgentListView(store: store, browser: browser,
+                               showAgentActions: { [weak self] destination in self?.showAgentActions(destination) })
     )
+    private var agentActions: AgentActionsMenuController?
     private lazy var outsideClickMonitor = PanelOutsideClickMonitor(
         panel: panel,
         statusItems: [menuBarItem.item],
@@ -172,7 +174,7 @@ final class StatusItemController: NSObject {
 
         browser.open(sources: store.sources,
                      attempt: store.navigationAttempt, keyboard: keyboard,
-                     expandedSourceID: store.expandedSourceID)
+                     expandedSourceID: store.expandedSourceID, observedAgentIDs: store.observedAgentIDs)
         PanelHeightBridge.invalidate()
         hostingController.view.layoutSubtreeIfNeeded()
         resizePanel(button: button, window: window, screen: screen)
@@ -222,6 +224,7 @@ final class StatusItemController: NSObject {
     }
 
     private func closePanel() {
+        agentActions?.dismiss(returnFocus: false)
         browser.close()
         PanelHeightBridge.invalidate()
         panel.orderOut(nil)
@@ -245,6 +248,8 @@ final class StatusItemController: NSObject {
                       !(self.panel.firstResponder is NSText)
                 else { return false }
 
+                if self.agentActions?.handleKeyDown(event) == true { return true }
+
                 switch PanelKeyboard.handle(keyCode, modifiers: event.modifierFlags, browser: self.browser) {
                 case .passThrough: return false
                 case .close: self.closePanel()
@@ -258,7 +263,8 @@ final class StatusItemController: NSObject {
     }
 
     private func updateStatus() {
-        browser.receive(sources: store.sources, attempt: store.navigationAttempt)
+        browser.receive(sources: store.sources, attempt: store.navigationAttempt, observedAgentIDs: store.observedAgentIDs)
+        agentActions?.reposition()
         let status = store.menuStatus
         guard status != lastStatus else { return }
         lastStatus = status
@@ -283,6 +289,7 @@ final class StatusItemController: NSObject {
             ),
             display: true
         )
+        agentActions?.reposition()
     }
 
     private func resizePanel(button: NSStatusBarButton, window: NSWindow, screen: NSScreen) {
@@ -298,6 +305,12 @@ final class StatusItemController: NSObject {
             visibleFrame: screen.visibleFrame
         )
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
+        agentActions?.reposition()
+    }
+
+    private func showAgentActions(_ destination: NavigationDestination) {
+        if agentActions == nil { agentActions = AgentActionsMenuController(parent: panel, store: store, browser: browser) }
+        agentActions?.present(for: destination)
     }
 
     static func clampedContentHeight(_ height: CGFloat) -> CGFloat {
