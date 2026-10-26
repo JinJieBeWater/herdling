@@ -9,17 +9,17 @@ Herdling 的界面规范。设计语言来自 [Tinycast](https://tinycast.dev/)�
 ## 平台分档
 
 - **macOS 15 是地板**：滚动边缘渐隐使用 `onScrollGeometryChange`（15+）。
-- **macOS 26 是视觉层级的分档**：面板玻璃由 `NSGlassEffectView` 提供（26+），以下退回 `.menu` 材质 + scrim。面板照常工作，只是少一层折射。
+- **macOS 26 是视觉层级的分档**：面板玻璃由 `NSGlassEffectView` 提供（26+），与系统右键菜单同为 Liquid Glass；以下退回 `.menu` 材质。面板照常工作，只是少一层折射。
 
 ## 一眼看过去
 
-Herdling 是一个**只展示列表的菜单栏下拉面板**：无边框面板，系统玻璃或材质之上压一层 scrim；没有灰底照排。面板上的墨色走固定 alpha ramp。内容溢出时底边渐隐。刷新、设置和退出放在状态项右键菜单，不设独立底栏。
+Herdling 是一个**只展示列表的菜单栏下拉面板**：无边框面板，背景以菜单栏图标右键弹出的原生 `NSMenu` 为参照，直接使用系统玻璃，不压 scrim、不加 tint；没有灰底照排。面板上的墨色走固定 alpha ramp。内容溢出时底边渐隐。刷新、设置和退出放在状态项右键菜单，不设独立底栏。
 
 暗色是基准，亮色是同一套几何配反转的墨。
 
 五条承重规则，按优先级：
 
-1. **表面 = scrim 压在 behind-window 模糊上。** 不用实底、不用灰。
+1. **表面 = 原生菜单同款玻璃。** 不用实底、不用灰，不叠 scrim 或 tint；`NSVisualEffectView(.menu)` 只是 26 以下的回落，不等于 26+ 原生菜单的质感。
 2. **一套 alpha ramp。** 暗面白墨、亮面黑墨，同一组 stops。
 3. **只有一层玻璃。** 面板是 NSGlassEffectView，视图中不叠第二层 `glassEffect`。
 4. **边缘渐隐。** 内容超过窗口时淡出底边；滚到底时恢复实色。
@@ -148,18 +148,14 @@ SF Symbol 的显式字号，也是 token：`leading 14 regular` · `navigation 1
 
 | token | 暗 | 亮 | 用在哪 |
 | --- | --- | --- | --- |
-| `panelScrim` | black **0.40** | white **0.55** | 面板 scrim，压在玻璃上 |
 | `selection` | white 0.10 | black 0.09 | 当前视图、展开中的分组 header、可用的键盘选中行 |
 | `rowHover` | white 0.05 | black 0.045 | 鼠标悬停填充（永远比 selection 淡） |
 | `textPrimary` | white 1.00 | black 1.00 | 行标题、正文 |
 | `textSecondary` | white 0.60 | black 0.60 | 次要标签、状态词 |
 | `textTertiary` | white 0.40 | black 0.42 | 占位、快捷键提示 |
-| `glassTint` | — | — | 面板玻璃自己的 tint（white 0.04），scrim 之前 |
 | `fadeFloor` | — | — | 底部渐隐最深只到 0.25：行留影子，不消失 |
 
 **色相**（`Theme.Hue`）按色相命名而不是按角色：`blue` · `purple` · `orange`（警示）· `green`。设置和状态需要强调时使用语义色；来源不再用蓝／紫区分，本机和 SSH 靠符号、文字及辅助功能表达，均使用 `textSecondary`。**本地/SSH 的符号判断只在 `SourceInfo.rosterSymbol` 里写一次**。
-
-`panelScrim` 是 ramp 的**逆向**（暗面压暗、亮面提亮），所以它是 `adaptive` 对，不是 `ramp`。
 
 `StatusPalette`（`AgentStatusPresentation.swift`）不在 `Theme` 里，它是状态的语义色，自带四路自适应。
 
@@ -179,11 +175,12 @@ SF Symbol 的显式字号，也是 token：`leading 14 regular` · `navigation 1
 
 - **窗口**：无边框 `NSPanel`，`isOpaque = false`、`backgroundColor = .clear`、`.popUpMenu` level、`hasShadow`、`animationBehavior = .none`。位置贴着菜单栏 item 下沿，左右被屏幕可见区域夹住（`StatusItemController.panelOrigin` 已实现，不改）。
 - **表面配方**，顺序固定：
-  1. macOS 26+：`NSGlassEffectView(style: .regular)` 作为窗口 contentView，`cornerRadius = panel`；
-  2. 内容根视图盖一层 `panelScrim`；
+  1. macOS 26+：`panelGlass(wrapping:cornerRadius:)` 生成 `NSGlassEffectView(style: .regular)`，不设 `tintColor`，作为窗口 contentView；主面板与附加操作菜单共用，各传自己的圆角；
+  2. 内容直接放在玻璃上，不盖 scrim；
   3. 最后 `.clipShape(RoundedRectangle(panel, .continuous))`。
-  26 以下回落到 `NSVisualEffectView(material: .menu)`，同样盖 scrim。**scrim 在玻璃之上、内容之下**；顺序反了亮色模式会脏。
-- **玻璃根层也裁圆角。** `NSGlassEffectView.cornerRadius` 与 SwiftUI 的 `clipShape` 不足以约束 key window 状态下的全部玻璃绘制；玻璃根 `CALayer` 用同一个 `Theme.Radius.panel`、与 SwiftUI 一致的 `.continuous` 曲线，并启用 `masksToBounds`。保留键盘焦点和窗口阴影。验收时面板必须仍是 key window：失焦会让矩形痕迹消失，截图可能因此漏报。
+  26 以下回落到 `NSVisualEffectView(material: .menu)`。验收在真实桌面上与原生右键菜单并排比较；VM 或离屏截图只证明透出背景，不证明玻璃质感一致。
+- **玻璃始终保持激活外观。** Liquid Glass 只在激活外观下折射背景，非 key 窗口会变平。原生 `NSPopupMenuWindow` 并非 key 却始终折射，靠的是 `_hasActiveAppearanceIgnoringKeyFocus`；`MenuBarPanel` 同样覆写，主面板在附加操作菜单取得 key 时也不变平。只改外观，不伪造键盘焦点。
+- **玻璃根层也裁圆角。** `NSGlassEffectView.cornerRadius` 与 SwiftUI 的 `clipShape` 不足以约束激活状态下的全部玻璃绘制；玻璃根 `CALayer` 用同一个 `Theme.Radius.panel`、与 SwiftUI 一致的 `.continuous` 曲线，并启用 `masksToBounds`。保留键盘焦点和窗口阴影。
 - **名单背景左右13pt，末行底部保留8pt。** 首末边界跟随面板内轮廓，内部相邻角保持普通行形状；顶栏点击区顶部8pt加上表面余量后，可见留白为13pt。不留操作条或safe-area占位。
 - **菜单操作独立于列表。** 右键或 Control-click 状态项打开原生菜单：Refresh、Settings、分隔线、Quit Herdling。刷新期间禁用 Refresh，并防止重复启动。Settings 的 `⌘,` 和退出的 `⌘Q` 继续通过应用菜单提供。
 

@@ -97,21 +97,7 @@ final class StatusItemController: NSObject {
 
         hostingController.sizingOptions = []
         if #available(macOS 26.0, *) {
-            // NSGlassEffectView with the hosting view as its contentView, which is how AppKit embeds
-            // content in glass. Regular rather than clear: clear takes its tone from the backdrop
-            // while the labels follow the appearance, which pairs dark text with a dark panel.
-            let glass = NSGlassEffectView()
-            glass.style = .regular
-            glass.cornerRadius = Theme.Radius.panel
-            // Key-window glass can draw a rectangular rim outside its rounded surface.
-            // Clip the effect itself, not only the SwiftUI content inside it.
-            glass.wantsLayer = true
-            glass.layer?.cornerRadius = Theme.Radius.panel
-            glass.layer?.cornerCurve = .continuous
-            glass.layer?.masksToBounds = true
-            glass.tintColor = Theme.Colors.glassTint
-            glass.contentView = hostingController.view
-            panel.contentView = glass
+            panel.contentView = panelGlass(wrapping: hostingController.view, cornerRadius: Theme.Radius.panel)
         } else {
             panel.contentViewController = hostingController
         }
@@ -399,4 +385,9 @@ final class MenuBarPanel: NSPanel {
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// Keeps the glass's active refraction while another window holds key focus, as `NSPopupMenuWindow`
+    /// does; without it Liquid Glass turns flat whenever the panel is not key.
+    /// shortcut: private AppKit hook; if a future macOS renames it, the glass only loses refraction when not key.
+    @objc func _hasActiveAppearanceIgnoringKeyFocus() -> Bool { true }
 }

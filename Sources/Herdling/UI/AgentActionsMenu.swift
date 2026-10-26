@@ -98,16 +98,7 @@ final class AgentActionsMenuController {
             }
         ))
         if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView()
-            glass.style = .regular
-            glass.cornerRadius = Theme.Radius.agentActions
-            glass.wantsLayer = true
-            glass.layer?.cornerRadius = Theme.Radius.agentActions
-            glass.layer?.cornerCurve = .continuous
-            glass.layer?.masksToBounds = true
-            glass.tintColor = Theme.Colors.glassTint
-            glass.contentView = hosting
-            panel.contentView = glass
+            panel.contentView = panelGlass(wrapping: hosting, cornerRadius: Theme.Radius.agentActions)
         } else {
             panel.contentView = hosting
         }

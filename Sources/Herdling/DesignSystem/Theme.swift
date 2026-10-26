@@ -177,10 +177,6 @@ enum Theme {
             adaptive(dark: .ink(1, alpha: dark), light: .ink(0, alpha: light))
         }
 
-        /// The ramp's inverse: it darkens the dark surface and lightens the light one.
-        static let panelScrim = adaptive(
-            dark: .ink(0, alpha: 0.40), light: .ink(1, alpha: 0.55))
-
         /// A group header that is open, and a keyboard selection. Beats hover.
         static let selection = ramp(dark: 0.10, light: 0.09)
         /// Mouse hover, always fainter than selection.
@@ -201,8 +197,6 @@ enum Theme {
         static let scrollThumbHover = ramp(dark: 0.42, light: 0.42)
         static let scrollThumbDrag = ramp(dark: 0.50, light: 0.50)
 
-        /// The panel glass's own tint, laid on by AppKit before the scrim.
-        static let glassTint = NSColor(white: 1, alpha: 0.04)
         /// The furthest a row fades at the scroll edge: it never disappears entirely.
         static let fadeFloor: Double = 0.25
 

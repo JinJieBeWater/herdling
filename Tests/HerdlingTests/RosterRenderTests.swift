@@ -31,6 +31,15 @@ struct RosterRenderTests {
                 scheme: scheme,
                 to: "quick-\(name)"
             )
+            let muted = NavigationDestination.agent(sourceID: "local", sessionName: "default", paneID: "w1:genre-unit-validation")
+            store.setObserveOnly(true, for: muted)
+            try render(
+                AgentListView(store: store),
+                size: NSSize(width: Theme.Size.panelWidth, height: 360),
+                scheme: scheme,
+                to: "quick-muted-\(name)"
+            )
+            store.setObserveOnly(false, for: muted)
             let browser = NavigationBrowser(sources: store.sources)
             browser.setMode(.all)
             browser.toggleSource(SourceDescriptor.local.id)

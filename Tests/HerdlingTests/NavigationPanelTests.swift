@@ -470,7 +470,8 @@ struct NavigationPanelTests {
         let previous = NSApplication.shared.appearance
         NSApplication.shared.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
         defer { NSApplication.shared.appearance = previous }
-        let hosted = host(view.environment(\.colorScheme, scheme), height: height, scheme: scheme)
+        // Off-screen renders have no glass behind them; a plain backdrop keeps OCR on the ink.
+        let hosted = host(view.environment(\.colorScheme, scheme).background(scheme == .dark ? Color.black : Color.white), height: height, scheme: scheme)
         defer { hosted.window.close() }
         return try snapshot(hosted.view, name: name)
     }

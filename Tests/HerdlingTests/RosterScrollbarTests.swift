@@ -79,7 +79,7 @@ struct RosterScrollbarTests {
         let scale = CGFloat(image.pixelsWide) / 420
         let points = (Int(382 * scale)..<Int(410 * scale)).flatMap { x in
             (Int(65 * scale)..<Int(75 * scale)).compactMap { y -> CGFloat? in
-                guard let color = image.colorAt(x: x, y: y), color.alphaComponent > 0.55,
+                guard let color = image.colorAt(x: x, y: y), color.alphaComponent > 0.3,
                       min(color.redComponent, color.greenComponent, color.blueComponent) > 0.3 else { return nil }
                 return CGFloat(x) / scale
             }

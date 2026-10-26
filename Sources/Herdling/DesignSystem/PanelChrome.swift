@@ -43,19 +43,34 @@ private struct RosterBoundary: ViewModifier {
     }
 }
 
-/// The panel's surface: a scrim over the window's own glass.
-///
-/// The glass itself belongs to `StatusItemController` (an `NSGlassEffectView` as the window's content
-/// view, which is where the refraction comes from). This only lays the scrim on top of it, in the
-/// order `docs/ui.md` fixes: glass, scrim, content.
+/// Liquid Glass as a panel window's content view: the surface a native `NSMenu` uses from macOS 26.
+/// No scrim or tint goes over it, so the backdrop reads through the way it does in the system menu.
+@available(macOS 26.0, *)
+@MainActor
+func panelGlass(wrapping content: NSView, cornerRadius: CGFloat) -> NSGlassEffectView {
+    let glass = NSGlassEffectView()
+    // Regular rather than clear: clear takes its tone from the backdrop while the labels follow the
+    // appearance, which pairs dark text with a dark panel.
+    glass.style = .regular
+    glass.cornerRadius = cornerRadius
+    // Key-window glass can draw a rectangular rim outside its rounded surface.
+    // Clip the effect itself, not only the SwiftUI content inside it.
+    glass.wantsLayer = true
+    glass.layer?.cornerRadius = cornerRadius
+    glass.layer?.cornerCurve = .continuous
+    glass.layer?.masksToBounds = true
+    glass.contentView = content
+    return glass
+}
+
+/// The panel's surface inside SwiftUI. From macOS 26 the window's `panelGlass` is the whole surface;
+/// earlier systems fall back to the menu material.
 struct PanelSurface: ViewModifier {
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
-            content.background(Theme.Colors.panelScrim)
-        } else {
             content
-                .background(Theme.Colors.panelScrim)
-                .background(PanelMaterialBackdrop())
+        } else {
+            content.background(PanelMaterialBackdrop())
         }
     }
 }
@@ -113,7 +128,7 @@ extension View {
         modifier(RosterBoundary(topInset: topInset ?? Theme.Spacing.panelInset))
     }
 
-    /// The panel's surface recipe, scrim included.
+    /// The panel's surface recipe below the window's glass.
     func panelSurface() -> some View { modifier(PanelSurface()) }
 
     /// Softens the lower edge while more content remains below the viewport.
