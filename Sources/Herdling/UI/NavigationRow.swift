@@ -39,7 +39,7 @@ private struct NavigationRowIdentity: ViewModifier {
         case let .session(sourceID, sessionName):
             identity = "Source \(sourceID), session \(sessionName)"
         }
-        return ["Opens this item in Ghostty", presentation?.title, presentation?.subtitle, identity, reason].compactMap { $0 }.joined(separator: "\n")
+        return ["Opens this item in your selected terminal", presentation?.title, presentation?.subtitle, identity, reason].compactMap { $0 }.joined(separator: "\n")
     }
 }
 

@@ -16,7 +16,7 @@ struct HoverRow<Content: View>: View {
     /// A row that stands for something open, or a keyboard selection. Beats hover.
     var isSelected = false
     let accessibilityText: String
-    var accessibilityHint: String? = "Opens this item in Ghostty"
+    var accessibilityHint: String? = "Opens this item in your selected terminal"
     var action: () -> Void
     @ViewBuilder var content: (Bool) -> Content
 

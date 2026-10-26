@@ -1203,7 +1203,7 @@ struct CoreBehaviorTests {
             client: HerdrClient(executable: executable.path),
             loadBranches: { _, _ in [:] },
             localMonitor: monitor,
-            focusExistingClient: { source, name in
+            focusExistingClient: { source, name, _ in
                 #expect(source == .local)
                 #expect(name == "workspace session")
                 return true
@@ -1388,7 +1388,7 @@ struct CoreBehaviorTests {
                 HerdrClient.LoadedSession(name: "latest", groups: [latest], error: nil),
             ] },
             loadBranches: { _, _ in [:] },
-            focusExistingClient: { _, session in
+            focusExistingClient: { _, session, _ in
                 calls.continuation.yield(session)
                 if session == "first" { await releaseFirst.wait() }
                 if session == "latest" { await releaseLatest.wait() }
@@ -1433,7 +1433,7 @@ struct CoreBehaviorTests {
             client: HerdrClient(executable: nil),
             loadSource: { _ in ["first", "middle", "latest"].map { loadedSession(name: $0, paneID: $0) } },
             loadBranches: { _, _ in [:] },
-            focusExistingClient: { _, session in
+            focusExistingClient: { _, session, _ in
                 calls.continuation.yield(session)
                 if session == "first" { await releaseFirst.wait() }
                 if session == "latest" { await releaseLatest.wait() }
@@ -1485,7 +1485,7 @@ struct CoreBehaviorTests {
             client: HerdrClient(executable: nil),
             loadSource: { _ in [loadedSession(paneID: "pane")] },
             loadBranches: { _, _ in [:] },
-            focusExistingClient: { source, _ in
+            focusExistingClient: { source, _, _ in
                 if source == .local {
                     await started.release()
                     await release.wait()
@@ -1525,7 +1525,7 @@ struct CoreBehaviorTests {
             client: HerdrClient(executable: nil),
             loadSource: { _ in [loadedSession(name: "focus-failure", paneID: "pane")] },
             loadBranches: { _, _ in [:] },
-            focusExistingClient: { _, _ in
+            focusExistingClient: { _, _, _ in
                 await releaseFailure.wait()
                 throw GhosttyController.GhosttyError.automationFailed("-1743")
             },
@@ -1573,7 +1573,7 @@ struct CoreBehaviorTests {
             client: HerdrClient(executable: nil),
             loadSource: { _ in [HerdrClient.LoadedSession(name: "default", groups: [group], error: nil)] },
             loadBranches: { _, _ in [:] },
-            focusExistingClient: { _, name in reuse.continuation.yield(name); return true },
+            focusExistingClient: { _, name, _ in reuse.continuation.yield(name); return true },
             sourceDescriptors: [.local]
         )
         await store.refresh()

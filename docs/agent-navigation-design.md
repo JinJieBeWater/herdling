@@ -109,9 +109,9 @@
 
 - `done` 是 idle lifecycle 与 unseen 的组合。seen 与 lifecycle 是两回事。
 - workspace、tab、pane、agent focus 都可能通过切换 tab 或显式调用将目标 tab 内所有 pane 标为 seen（`seen = true`），同时清掉多个 done 提示。这不代表用户逐条处理过它们。
-- 公共 workspace/tab/pane focus 会向同一 Session 的所有 shell clients 投射工作区和 tab 位置，并非只改变被拉到前台的 Ghostty client。pane 焦点也是 tab 共享状态。
+- 公共 workspace/tab/pane focus 会向同一 Session 的所有 shell clients 投射工作区和 tab 位置，并非只改变被拉到前台的终端 client。pane 焦点也是 tab 共享状态。
 - 当前 Herdling 的 `tab.focus` 加 `agent.focus` 组合在 tab ID 有效时可以完成 tab 投射与共享 pane 定位；不能把整个现有流程判为无效。但没有 tab ID 时只执行 `agent.focus`，没有同等的客户端投射保证。
-- 当前 Herdr focus 与 Ghostty 激活并行执行。若一半失败，另一半可能已经改变焦点或 seen；超时也不证明服务端未执行。
+- 当前 Herdr focus 与终端激活并行执行。若一半失败，另一半可能已经改变焦点或 seen；超时也不证明服务端未执行。
 
 因此，不能承诺“只清目标 agent 的已读”“只影响一个 Herdr client”“失败完全无副作用”。首版遵循 Herdr 的状态与定位语义，不新增本地未读模型来掩盖它们。原型把后端状态回报做成独立事件，用来演示跳转未成功但状态已经变化的情形。
 
@@ -130,7 +130,7 @@
 
 ## 原型检查
 
-入口：[交互原型](prototypes/agent-navigation/index.html)。使用模拟数据，不连接 Herdr、SSH 或真实 Ghostty。
+入口：[交互原型](prototypes/agent-navigation/index.html)。使用模拟数据，不连接 Herdr、SSH 或真实终端。
 
 HTML 是早期设计记录，仍演示成功定位历史；不代表当前四等级名单。All agents 在原型中简化为来源→工作区→agent，用于检验选择与定位的区别；产品仍保留现有 Session / Space / worktree 层级，不以原型替换它们。
 

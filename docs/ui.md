@@ -249,7 +249,7 @@ SF Symbol 的显式字号，也是 token：`leading 14 regular` · `navigation 1
 
 - session header：`sectionHeader`，`textSecondary`；
 - 空间（多分支）：安静 caption + `textSecondary`，预留透明图标槽，文字与同级单 worktree 空间标题对齐；其下 worktree 再缩进一级；
-- 空间（只有主 worktree）：**用普通的 header 行**（`GroupHeaderRow`，`isExpanded: nil`，无 chevron、无 selection 填充）。Herdr 给每个 workspace 一个叫 `Main` 的 worktree，没有分支的空间会得到一排一模一样的 `Main`；那一行没有信息，但**不能只是删掉**——删掉组就没有头了。它与 worktree 行同一档：同样的状态字形、同样 `.body.weight(.medium)`、同样的尾部读数列，**点击行为也同一档**（在 Ghostty 打开这个 workspace），外观与行为都不分叉。
+- 空间（只有主 worktree）：**用普通的 header 行**（`GroupHeaderRow`，`isExpanded: nil`，无 chevron、无 selection 填充）。Herdr 给每个 workspace 一个叫 `Main` 的 worktree，没有分支的空间会得到一排一模一样的 `Main`；那一行没有信息，但**不能只是删掉**——删掉组就没有头了。它与 worktree 行同一档：同样的状态字形、同样 `.body.weight(.medium)`、同样的尾部读数列，**点击行为也同一档**（在所选终端打开这个 workspace），外观与行为都不分叉。
   - 粗体标题的含义是「直接领 agent」；多分支的空间用安静 caption，因为它领的是 worktree 行。
   - 判定问结构（`RosterSpace.isOnlyItsPrimaryWorktree`），不是显示名，所以 herdr 改名叫不出错。
 - worktree：`rowTitle.weight(.medium)`，缩进 `indent`；

@@ -139,7 +139,7 @@ struct SpaceSection: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.rowGap) {
             if let collapsed = collapsesToItsAgents {
                 // The same header row a worktree draws — same mark, same weight, same readout
-                // column, and the same click: open this workspace in Ghostty. A header that looks
+                // column, and the same click: open this workspace in the selected terminal. A header that looks
                 // like the others but does nothing is worse than no header at all.
                 let counts = store.statusCounts(collapsed.group.agents, sourceID: source.id, sessionName: session.name)
                 GroupHeaderRow(
@@ -164,8 +164,8 @@ struct SpaceSection: View {
                     enabled: session.online,
                     accessibilityLabel: space.name
                         + (counts.isEmpty ? "" : ", \(counts.primaryStatusText)")
-                        + (store.isFocusing(collapsed.group, in: session, source: source) ? ", opening in Ghostty" : ""),
-                    accessibilityHint: "Opens this group in Ghostty",
+                        + (store.isFocusing(collapsed.group, in: session, source: source) ? ", opening" : ""),
+                    accessibilityHint: "Opens this group in your selected terminal",
                     action: {
                         store.navigate(to: .workspace(sourceID: source.id, sessionName: session.name, workspaceID: collapsed.group.id))
                     }
@@ -263,8 +263,8 @@ struct WorktreeSection: View {
                 enabled: session.online,
                 accessibilityLabel: name
                     + (counts.isEmpty ? "" : ", \(counts.primaryStatusText)")
-                    + (isFocusPending ? ", opening in Ghostty" : ""),
-                accessibilityHint: "Opens this group in Ghostty",
+                    + (isFocusPending ? ", opening" : ""),
+                accessibilityHint: "Opens this group in your selected terminal",
                 action: { store.navigate(to: destination) }
             ) {
                 GroupActivitySummary(counts: counts)
@@ -337,7 +337,7 @@ struct AgentRow: View {
 
     private var accessibilityText: String {
         let base = "\(agent.title), \(agent.status.rosterLabel)"
-        return base + (observeOnly ? ", muted" : "") + (isFocusPending ? ", opening in Ghostty" : "")
+        return base + (observeOnly ? ", muted" : "") + (isFocusPending ? ", opening" : "")
     }
 
     var body: some View {

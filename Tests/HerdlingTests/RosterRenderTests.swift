@@ -51,12 +51,15 @@ struct RosterRenderTests {
                 scheme: scheme,
                 to: "nested-\(name)"
             )
-            try render(
-                SettingsView(store: store),
-                size: NSSize(width: Theme.Size.settingsWidth, height: Theme.Size.settingsHeight),
-                scheme: scheme,
-                to: "settings-\(name)"
-            )
+            for application in TerminalApplication.allCases {
+                store.setTerminalApplication(application)
+                try render(
+                    SettingsView(store: store),
+                    size: NSSize(width: Theme.Size.settingsWidth, height: Theme.Size.settingsHeight),
+                    scheme: scheme,
+                    to: "settings-\(application.rawValue)-\(name)"
+                )
+            }
         }
     }
 

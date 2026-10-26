@@ -4,6 +4,7 @@ import ServiceManagement
 
 private enum DefaultsKey {
     static let selectedSSHAliases = "selected-ssh-aliases"
+    static let terminalApplication = "terminal-application"
     static let ghosttyOpenBehavior = "ghostty-open-behavior"
     static let expandedSource = "expanded.source"
     static let observedAgents = "observe-only-agents"
@@ -105,6 +106,8 @@ final class LatestRequestRunner<Request> {
 private struct FocusRequest: Sendable {
     let destination: NavigationDestination
     let token: UUID
+    let terminalApplication: TerminalApplication
+    let ghosttyOpenBehavior: GhosttyOpenBehavior
 }
 
 private enum NavigationValidationError: LocalizedError {
@@ -221,13 +224,17 @@ final class SessionStore {
     typealias SourceLoader = @Sendable (SourceDescriptor) async throws -> [HerdrClient.LoadedSession]
     typealias BranchLoader = @Sendable (SourceDescriptor, [String]) async -> [String: String]
     typealias RemoteMonitorFactory = @Sendable (SourceDescriptor) -> any SessionMonitoring
+    typealias ExistingClientFocus = @Sendable (SourceDescriptor, String, TerminalApplication) async throws -> Bool
+    typealias ClientActivation = @Sendable (SourceDescriptor, String, String, TerminalApplication, GhosttyOpenBehavior) async throws -> Void
+    typealias TerminalStatusLoader = @Sendable (TerminalApplication) async -> String
 
     private let client: HerdrClient
     private let loadSource: SourceLoader
     private let loadBranches: BranchLoader
-    private let ghostty: GhosttyController
-    private let focusExistingClient: @Sendable (SourceDescriptor, String) async throws -> Bool
-    private let activateClient: @Sendable (SourceDescriptor, String, String, GhosttyOpenBehavior) async throws -> Void
+    private let focusExistingClient: ExistingClientFocus
+    private let activateClient: ClientActivation
+    private let loadTerminalStatus: TerminalStatusLoader
+    private var terminalStatusRequest: UUID?
     private let defaults: UserDefaults
     private let sleep: @Sendable (Duration) async throws -> Void
     private let localMonitor: (any SessionMonitoring)?
@@ -325,7 +332,8 @@ final class SessionStore {
         )
     }
     private(set) var settingsError: String?
-    private(set) var automationStatus = "Not checked"
+    private(set) var terminalStatus = "Not checked"
+    private(set) var terminalApplication: TerminalApplication
     private(set) var ghosttyOpenBehavior: GhosttyOpenBehavior
     private var isRefreshing = false
     private(set) var panelOpen = false
@@ -352,18 +360,20 @@ final class SessionStore {
     init(
         client: HerdrClient,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        loadTerminalStatus: TerminalStatusLoader? = nil,
         loadSource: SourceLoader? = nil,
         loadBranches: BranchLoader? = nil,
         localMonitor: (any SessionMonitoring)? = nil,
         remoteMonitorFactory: RemoteMonitorFactory? = nil,
-        focusExistingClient: (@Sendable (SourceDescriptor, String) async throws -> Bool)? = nil,
+        focusExistingClient: ExistingClientFocus? = nil,
         sourceDescriptors: [SourceDescriptor]? = nil,
         defaults: UserDefaults = .standard,
-        activateClient: (@Sendable (SourceDescriptor, String, String, GhosttyOpenBehavior) async throws -> Void)? = nil
+        activateClient: ClientActivation? = nil
     ) {
         let persisted = defaults.stringArray(forKey: DefaultsKey.selectedSSHAliases) ?? []
         let aliases = sourceDescriptors?.compactMap(\.sshAlias) ?? SSHConfig.aliases()
         let selected = sourceDescriptors?.compactMap(\.sshAlias) ?? aliases.filter(persisted.contains)
+        let kero = KeroController()
         let ghostty = GhosttyController()
         self.client = client
         self.loadSource = loadSource ?? { try await client.load($0) }
@@ -373,19 +383,31 @@ final class SessionStore {
         self.sleep = sleep
         self.localMonitor = localMonitor
         self.remoteMonitorFactory = remoteMonitorFactory
-        self.ghostty = ghostty
-        self.focusExistingClient = focusExistingClient ?? { source, session in
-            try await ghostty.focusExistingClient(source: source, session: session)
+        self.focusExistingClient = focusExistingClient ?? { source, session, application in
+            switch application {
+            case .ghostty: try await ghostty.focusExistingClient(source: source, session: session)
+            case .kero: try await kero.focusExistingClient(source: source, session: session)
+            }
         }
-        self.activateClient = activateClient ?? { source, session, command, behavior in
-            try await ghostty.activateClient(source: source, session: session, command: command, openBehavior: behavior)
+        self.activateClient = activateClient ?? { source, session, command, application, behavior in
+            switch application {
+            case .ghostty:
+                try await ghostty.activateClient(source: source, session: session, command: command, openBehavior: behavior)
+            case .kero:
+                try await kero.activateClient(source: source, session: session, command: command)
+            }
+        }
+        self.loadTerminalStatus = loadTerminalStatus ?? { application in
+            switch application {
+            case .ghostty: await ghostty.automationPermissionStatus()
+            case .kero: await kero.connectionStatus()
+            }
         }
         self.defaults = defaults
         availableSSHAliases = aliases
         selectedSSHAliases = selected
-        ghosttyOpenBehavior = GhosttyOpenBehavior(
-            rawValue: defaults.string(forKey: DefaultsKey.ghosttyOpenBehavior) ?? ""
-        ) ?? .tab
+        terminalApplication = TerminalApplication(rawValue: defaults.string(forKey: DefaultsKey.terminalApplication) ?? "") ?? .ghostty
+        ghosttyOpenBehavior = GhosttyOpenBehavior(rawValue: defaults.string(forKey: DefaultsKey.ghosttyOpenBehavior) ?? "") ?? .tab
         if sourceDescriptors == nil, selected != persisted {
             defaults.set(selected, forKey: DefaultsKey.selectedSSHAliases)
         }
@@ -739,7 +761,10 @@ final class SessionStore {
             onChange?()
             return
         }
-        focusRunner.submit(FocusRequest(destination: destination, token: navigationToken))
+        focusRunner.submit(FocusRequest(
+            destination: destination, token: navigationToken,
+            terminalApplication: terminalApplication, ghosttyOpenBehavior: ghosttyOpenBehavior
+        ))
         onChange?()
     }
 
@@ -768,9 +793,9 @@ final class SessionStore {
             switch request.destination {
             case .agent, .workspace:
                 // Public focus affects all shell clients and the target tab's seen state, even if
-                // Ghostty activation fails. The request token only gates Herdling's result UI.
+                // Terminal activation fails. The request token only gates Herdling's result UI.
                 async let herdrFocus: Void = performHerdrFocus(request)
-                let focusedExistingClient = try await focusExistingClient(resolved.source, resolved.session.name)
+                let focusedExistingClient = try await focusExistingClient(resolved.source, resolved.session.name, request.terminalApplication)
                 guard request.token == navigationToken else { return }
                 _ = try availableDestination(for: request)
                 try await herdrFocus
@@ -781,13 +806,14 @@ final class SessionStore {
                         latest.source,
                         latest.session.name,
                         try client.attachCommand(source: latest.source, session: latest.session.name),
-                        ghosttyOpenBehavior
+                        request.terminalApplication,
+                        request.ghosttyOpenBehavior
                     )
                     guard request.token == navigationToken else { return }
                     _ = try availableDestination(for: request)
                 }
             case .session:
-                let existing = try await focusExistingClient(resolved.source, resolved.session.name)
+                let existing = try await focusExistingClient(resolved.source, resolved.session.name, request.terminalApplication)
                 guard request.token == navigationToken else { return }
                 let latest = try availableDestination(for: request)
                 if !existing {
@@ -795,7 +821,8 @@ final class SessionStore {
                         latest.source,
                         latest.session.name,
                         try client.attachCommand(source: latest.source, session: latest.session.name),
-                        ghosttyOpenBehavior
+                        request.terminalApplication,
+                        request.ghosttyOpenBehavior
                     )
                     guard request.token == navigationToken else { return }
                     _ = try availableDestination(for: request)
@@ -846,6 +873,9 @@ final class SessionStore {
         if let error = error as? GhosttyController.GhosttyError {
             return error.localizedDescription
         }
+        if let error = error as? KeroController.KeroError {
+            return error.localizedDescription
+        }
         if let error = error as? HerdrClient.ClientError {
             return switch error {
             case .notInstalled:
@@ -864,7 +894,7 @@ final class SessionStore {
                 "Herdr returned an invalid response. Update Herdr, then retry."
             }
         }
-        return "Could not open this item in Ghostty. Try again."
+        return "Could not open this item in the selected terminal. Try again."
     }
 
     func refreshSSHAliases(at url: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/config")) async {
@@ -914,6 +944,14 @@ final class SessionStore {
         }
     }
 
+    func setTerminalApplication(_ application: TerminalApplication) {
+        guard terminalApplication != application else { return }
+        terminalApplication = application
+        defaults.set(application.rawValue, forKey: DefaultsKey.terminalApplication)
+        terminalStatusRequest = nil
+        terminalStatus = "Not checked"
+    }
+
     func setGhosttyOpenBehavior(_ behavior: GhosttyOpenBehavior) {
         ghosttyOpenBehavior = behavior
         defaults.set(behavior.rawValue, forKey: DefaultsKey.ghosttyOpenBehavior)
@@ -936,8 +974,13 @@ final class SessionStore {
         }
     }
 
-    func refreshPermissionStatus() async {
-        automationStatus = await ghostty.automationPermissionStatus()
+    func refreshTerminalStatus() async {
+        let application = terminalApplication
+        let request = UUID()
+        terminalStatusRequest = request
+        let status = await loadTerminalStatus(application)
+        guard terminalStatusRequest == request, terminalApplication == application, !Task.isCancelled else { return }
+        terminalStatus = status
     }
 
     var pollInterval: Duration { .seconds(panelOpen ? 2 : 15) }

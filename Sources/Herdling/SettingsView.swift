@@ -9,9 +9,8 @@ struct SettingsView: View {
     var body: some View {
         Form {
             sshSources
-            ghostty
+            terminal
             general
-            permissions
 
             if let error = store.settingsError {
                 Section {
@@ -24,7 +23,7 @@ struct SettingsView: View {
             minWidth: Theme.Size.settingsWidth,
             minHeight: Theme.Size.settingsMinHeight
         )
-        .task { await store.refreshPermissionStatus() }
+        .task(id: store.terminalApplication) { await store.refreshTerminalStatus() }
         .task { await store.refreshSSHAliases() }
     }
 
@@ -56,23 +55,57 @@ struct SettingsView: View {
         }
     }
 
-    private var ghostty: some View {
-        Section("Ghostty") {
+    private var terminal: some View {
+        Section("Terminal") {
             Picker(selection: Binding(
-                get: { store.ghosttyOpenBehavior },
-                set: { store.setGhosttyOpenBehavior($0) }
+                get: { store.terminalApplication },
+                set: { store.setTerminalApplication($0) }
             )) {
-                Text("Window").tag(GhosttyOpenBehavior.window)
-                Text("Tab").tag(GhosttyOpenBehavior.tab)
+                ForEach(TerminalApplication.allCases, id: \.self) { application in
+                    Text(application.name).tag(application)
+                }
             } label: {
                 SettingsLabel(
-                    title: "Open new clients in",
-                    subtitle: "Where a client opens when no existing one can be reused.",
-                    symbol: "macwindow",
+                    title: "Application",
+                    subtitle: "Open Herdr clients in this terminal.",
+                    symbol: "terminal",
                     tint: Theme.Hue.blue
                 )
             }
             .pickerStyle(.segmented)
+
+            if store.terminalApplication == .ghostty {
+                Picker(selection: Binding(
+                    get: { store.ghosttyOpenBehavior },
+                    set: { store.setGhosttyOpenBehavior($0) }
+                )) {
+                    Text("Window").tag(GhosttyOpenBehavior.window)
+                    Text("Tab").tag(GhosttyOpenBehavior.tab)
+                } label: {
+                    SettingsLabel(
+                        title: "Open new clients in",
+                        subtitle: "Where a client opens when no existing one can be reused.",
+                        symbol: "macwindow",
+                        tint: Theme.Hue.blue
+                    )
+                }
+                .pickerStyle(.segmented)
+            }
+
+            LabeledContent {
+                Text(store.terminalStatus)
+                    .foregroundStyle(Theme.Colors.settingsSecondary)
+                    .lineLimit(1)
+            } label: {
+                SettingsLabel(
+                    title: store.terminalApplication == .ghostty ? "Ghostty Automation" : "Kero CLI",
+                    subtitle: store.terminalApplication == .ghostty
+                        ? "Let Herdling open and focus sessions."
+                        : "Reuse a matching pane, or open a new Kero session.",
+                    symbol: store.terminalApplication == .ghostty ? "lock.shield" : "terminal",
+                    tint: store.terminalApplication == .ghostty ? Theme.Hue.orange : Theme.Hue.blue
+                )
+            }
         }
     }
 
@@ -100,25 +133,6 @@ struct SettingsView: View {
                     tint: Theme.Hue.green
                 )
             }
-        }
-    }
-
-    private var permissions: some View {
-        Section {
-            LabeledContent {
-                Text(store.automationStatus)
-                    .foregroundStyle(Theme.Colors.settingsSecondary)
-                    .lineLimit(1)
-            } label: {
-                SettingsLabel(
-                    title: "Ghostty Automation",
-                    subtitle: "Let Herdling open and focus sessions.",
-                    symbol: "lock.shield",
-                    tint: Theme.Hue.orange
-                )
-            }
-        } header: {
-            Text("Permissions")
         }
     }
 }

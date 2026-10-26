@@ -44,7 +44,7 @@ struct NavigationFocusTests {
         })
         let store = SessionStore(
             client: client, loadSource: { _ in try await snapshots.load() }, loadBranches: { _, _ in [:] },
-            focusExistingClient: { _, _ in true }, sourceDescriptors: [.local, .remote("remote")], defaults: navigationDefaults()
+            focusExistingClient: { _, _, _ in true }, sourceDescriptors: [.local, .remote("remote")], defaults: navigationDefaults()
         )
         defer { release.signal(); started.continuation.finish() }
         await store.refresh()
@@ -68,11 +68,11 @@ struct NavigationFocusTests {
         let creations = NavigationCounter()
         let store = SessionStore(
             client: navigationClient(NavigationWire()), loadSource: { _ in try await snapshots.load() },
-            loadBranches: { _, _ in [:] }, focusExistingClient: { _, _ in
+            loadBranches: { _, _ in [:] }, focusExistingClient: { _, _, _ in
                 if !duringCreation { await started.open(); await release.wait() }
                 return false
             }, sourceDescriptors: [.local], defaults: navigationDefaults(),
-            activateClient: { _, _, _, _ in
+            activateClient: { _, _, _, _, _ in
                 _ = await creations.next()
                 await started.open()
                 await release.wait()
@@ -106,7 +106,7 @@ struct NavigationFocusTests {
         let existingCalls = NavigationCounter()
         let store = SessionStore(
             client: navigationClient(wire), loadSource: { _ in try await snapshots.load() },
-            loadBranches: { _, _ in [:] }, focusExistingClient: { _, _ in
+            loadBranches: { _, _ in [:] }, focusExistingClient: { _, _, _ in
                 _ = await existingCalls.next()
                 await started.open()
                 await release.wait()
@@ -138,7 +138,7 @@ struct NavigationFocusTests {
         let release = NavigationLatch()
         let store = SessionStore(
             client: navigationClient(NavigationWire()), loadSource: { _ in try await snapshots.load() },
-            loadBranches: { _, _ in [:] }, focusExistingClient: { _, _ in
+            loadBranches: { _, _ in [:] }, focusExistingClient: { _, _, _ in
                 if await existingCalls.next() == 1 { throw GhosttyController.GhosttyError.clientCreationFailed }
                 await started.open()
                 await release.wait()
@@ -172,7 +172,7 @@ struct NavigationFocusTests {
         let snapshots = NavigationSnapshots()
         let store = SessionStore(
             client: navigationClient(NavigationWire()), loadSource: { _ in try await snapshots.load() },
-            loadBranches: { _, _ in [:] }, focusExistingClient: { _, _ in true },
+            loadBranches: { _, _ in [:] }, focusExistingClient: { _, _, _ in true },
             sourceDescriptors: [.local], defaults: navigationDefaults()
         )
         await store.refresh()
@@ -199,7 +199,7 @@ struct NavigationFocusTests {
         let snapshots = NavigationSnapshots()
         let store = SessionStore(
             client: navigationClient(NavigationWire()), loadSource: { _ in try await snapshots.load() },
-            loadBranches: { _, _ in [:] }, focusExistingClient: { _, _ in true },
+            loadBranches: { _, _ in [:] }, focusExistingClient: { _, _, _ in true },
             sourceDescriptors: [.local, .remote("remote")], defaults: navigationDefaults()
         )
         await store.refresh()
@@ -222,9 +222,9 @@ struct NavigationFocusTests {
         let store = SessionStore(
             client: navigationClient(wire), loadSource: { _ in try await snapshots.load() },
             loadBranches: { _, _ in [:] },
-            focusExistingClient: { _, _ in await existingCalls.next() > 1 },
+            focusExistingClient: { _, _, _ in await existingCalls.next() > 1 },
             sourceDescriptors: [.local], defaults: navigationDefaults(),
-            activateClient: { _, _, _, _ in
+            activateClient: { _, _, _, _, _ in
                 await started.open()
                 await release.wait()
                 if creationFails { throw GhosttyController.GhosttyError.clientCreationFailed }
@@ -258,7 +258,7 @@ struct NavigationFocusTests {
         let release = NavigationLatch()
         let store = SessionStore(
             client: navigationClient(NavigationWire()), loadSource: { _ in try await snapshots.load() },
-            loadBranches: { _, _ in [:] }, focusExistingClient: { _, _ in
+            loadBranches: { _, _ in [:] }, focusExistingClient: { _, _, _ in
                 await started.open()
                 await release.wait()
                 throw GhosttyController.GhosttyError.clientCreationFailed
@@ -290,7 +290,7 @@ struct NavigationFocusTests {
         let wire = NavigationWire()
         let store = SessionStore(
             client: navigationClient(wire), loadSource: { _ in try await snapshots.load() },
-            loadBranches: { _, _ in [:] }, focusExistingClient: { _, _ in true },
+            loadBranches: { _, _ in [:] }, focusExistingClient: { _, _, _ in true },
             sourceDescriptors: [.local], defaults: navigationDefaults()
         )
         await store.refresh()
@@ -393,7 +393,7 @@ struct NavigationFocusTests {
             client: HerdrClient(executable: nil),
             loadSource: { _ in try await snapshots.load() },
             loadBranches: { _, _ in [:] },
-            focusExistingClient: { _, _ in Issue.record("Invalid target reached Ghostty"); return true },
+            focusExistingClient: { _, _, _ in Issue.record("Invalid target reached Ghostty"); return true },
             sourceDescriptors: [.local],
             defaults: navigationDefaults()
         )

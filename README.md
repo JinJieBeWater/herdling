@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Herdling is a macOS menu bar companion for [Herdr](https://herdr.dev/). It shows local and SSH-hosted Herdr agents, keeps their status current, and opens the selected session in [Ghostty](https://ghostty.org/).
+Herdling is a macOS menu bar companion for [Herdr](https://herdr.dev/). It shows local and SSH-hosted Herdr agents, keeps their status current, and opens the selected session in [Ghostty](https://ghostty.org/) or [Kero](https://kero.sh/).
 
 ## Features
 
@@ -11,7 +11,7 @@ Herdling is a macOS menu bar companion for [Herdr](https://herdr.dev/). It shows
 - Check **Mute** in an agent's secondary actions menu to keep its live status without adding blocked/done to attention counts. Muted rows use lighter title and status ink, without an extra badge; Activity moves them below normal agents immediately. Unmuting restores normal priority. Mouse actions keep the viewport in place; keyboard focus follows the selected target. Running counts, navigation and the Sources hierarchy remain unchanged; the choice is saved locally.
 - Keeps rows in place while browsing, with live status; reopen to rebuild the list. Failed jumps retain their target for retry.
 - Updates local and remote sessions through Herdr's socket event stream, with discovery and CLI fallback where needed.
-- Reuses an existing Ghostty Herdr client when possible. New clients open in a tab by default; Settings can switch this to a window.
+- Choose Ghostty or Kero in Settings; the choice is saved. Reuses a matching Herdr client in that terminal, or creates and verifies a new one. Ghostty keeps its Tab/Window setting; Kero opens new sessions.
 - Reads SSH hosts from `~/.ssh/config`, including `Include` files.
 - Supports Launch at Login, keyboard shortcuts, VoiceOver labels, light/dark appearance, and Reduce Motion.
 
@@ -20,10 +20,10 @@ Herdling is a macOS menu bar companion for [Herdr](https://herdr.dev/). It shows
 - macOS 15 or later
 - Swift 6.2 toolchain
 - [Herdr](https://herdr.dev/) installed locally and on each enabled SSH host
-- [Ghostty](https://ghostty.org/) for opening and focusing sessions
+- [Ghostty](https://ghostty.org/) or [Kero](https://kero.sh/) with its `kero` CLI for opening and focusing sessions
 - Key-based or otherwise non-interactive SSH access for remote hosts
 
-Herdling finds `herdr` through `HERDR_BIN_PATH` or common Homebrew/system paths. Remote commands run through the host's login shell.
+Herdling finds `herdr` through `HERDR_BIN_PATH` or common Homebrew/system paths. It finds `kero` through `KERO_BIN_PATH`, common Homebrew paths, or the Kero app bundle. Remote commands run through the host's login shell.
 
 ## Build and run
 
@@ -51,10 +51,10 @@ open .build/Herdling.app
 2. Open Herdling from the menu bar.
 3. Open **Settings** with `⌘,` or by right-clicking the menu bar item.
 4. Enable required aliases under **SSH Sources**.
-5. Choose whether new Ghostty clients open as tabs or windows.
+5. Under **Terminal → Application**, choose **Ghostty** or **Kero**. The default remains Ghostty; switching only affects subsequent jumps, not existing terminal sessions.
 6. Optionally record a global panel shortcut in Settings. No combination is assigned by default.
 
-The first Ghostty action may trigger a macOS Automation permission prompt. Permission status appears in Settings.
+Ghostty uses AppleScript Automation; allow Herdling to control Ghostty when macOS asks, and choose Tab or Window for new clients. Kero uses its native CLI, with no Automation permission or Tab/Window setting. Settings checks only the selected terminal.
 
 ### Remote hosts
 
@@ -78,7 +78,7 @@ ssh -o BatchMode=yes my-server '$SHELL -lc "herdr session list --json"'
 | Right-click menu bar item | Open Refresh/Settings/Quit menu |
 | Right-click an agent | Select it for inspection and open its fixed-corner actions menu; toggle Mute without navigation or a seen change |
 | Click a machine in Sources | Toggle its directory; expanding one closes the previous source |
-| Click an agent, worktree, Space, or session | Focus it in Ghostty |
+| Click an agent, worktree, Space, or session | Focus it in the selected terminal |
 | Global panel shortcut (when configured) | Toggle panel; select a target without navigating |
 | `↑` / `↓` | Select a row without navigating |
 | `Enter` | Open selected target; source rows only toggle their directory |
@@ -115,12 +115,13 @@ bash scripts/build-app.sh release
 - AppKit owns `NSStatusItem` and a nonactivating `NSPanel`; SwiftUI renders panel content.
 - Local and remote monitors maintain one NDJSON socket stream per Herdr session.
 - Periodic discovery finds added or removed sessions. CLI polling remains a fallback when a stream is unavailable.
-- Ghostty activation uses AppleScript plus terminal/process validation to reuse the correct client and avoid duplicate tabs or windows.
+- Ghostty activation retains AppleScript and terminal/process validation. Kero activation uses `kero ls --json`, pane process ancestry and `kero focus`; new clients use `kero new`. Each backend verifies its own client, without falling back to another terminal.
 
 ## Troubleshooting
 
 - **No local sessions:** confirm `herdr session list --json` works in a new shell. Set `HERDR_BIN_PATH` if Herdr is installed elsewhere.
 - **SSH source stays offline:** run the BatchMode command above. Fix host keys, authentication, remote `PATH`, or missing `nc` before retrying.
+- **Kero does not open or focus:** open Kero and check `kero ls --json`. Set `KERO_BIN_PATH` if Kero is installed elsewhere. If a new client fails to start, check Herdr and SSH before retrying; failed sessions are not automatically deleted.
 - **Ghostty does not open or focus:** check **System Settings → Privacy & Security → Automation** and allow Herdling to control Ghostty.
 - **Launch at Login is unavailable:** run Herdling from `.build/Herdling.app` or another app bundle, not through `swift run`.
 

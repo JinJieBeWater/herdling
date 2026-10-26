@@ -51,6 +51,7 @@ enum PreviewFixtures {
 
         return SessionStore(
             client: HerdrClient(executable: nil),
+            loadTerminalStatus: { $0 == .ghostty ? "Allowed" : "Ready" },
             loadSource: { descriptor in
                 if descriptor.sshAlias != nil {
                     throw HerdrClient.ClientError.failed("ssh: connect to host herdr.sock failed")
