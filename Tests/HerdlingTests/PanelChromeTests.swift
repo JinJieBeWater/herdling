@@ -246,8 +246,8 @@ struct PanelChromeTests {
         #expect(!browser.isAvailable(destination))
         let unavailable = try render(row)
         #expect(try !isAccent(unavailable, x: 210, y: 16), "Disabled rows do not promise interaction with the accent")
-        #expect(alpha(unavailable, x: 210, y: 16) > 0.3, "Keyboard inspection remains visible independently of availability")
-        #expect(browser.selection == .destination(destination), "A source outage does not move the inspected target")
+        #expect(alpha(unavailable, x: 210, y: 16) > 0.3, "Keyboard selection remains visible independently of availability")
+        #expect(browser.selection == .destination(destination), "A source outage does not move the selected target")
     }
 
     @Test(arguments: [ColorScheme.light, .dark])
@@ -275,12 +275,6 @@ struct PanelChromeTests {
         }
         #expect(hasWhiteInk(active, in: CGRect(x: 8, y: 5, width: 22, height: 30)), "Status glyph turns white")
         #expect(hasWhiteInk(active, in: CGRect(x: 36, y: 4, width: 150, height: 18)), "The title turns white too")
-        #expect(browser.selectForInspection(destination))
-        browser.beginInspection()
-        let inspecting = try render(row, scheme: scheme)
-        #expect(try !isAccent(inspecting, x: 210, y: 20, scheme: scheme),
-                "Opening actions hands the accent to the command menu, not its inspected target")
-        browser.endInspection(keyboard: false)
         browser.setMode(.all)
         browser.moveSelection(by: 1)
         let sourceHeader = try render(SourceOutline(store: store, source: source, isExpanded: false, onToggle: {})

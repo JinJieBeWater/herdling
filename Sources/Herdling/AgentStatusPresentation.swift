@@ -30,15 +30,6 @@ extension AgentStatus {
         }
     }
 
-    func badgeTint(observeOnly: Bool) -> Color? {
-        guard observeOnly else { return badgeTint }
-        switch self {
-        case .blocked: return nil
-        case .working: return color.opacity(Theme.Colors.mutedWorkingOpacity)
-        case .done, .idle, .unknown: return badgeTint
-        }
-    }
-
     func menuBarLabel(count: Int) -> String {
         let agent = count == 1 ? "agent" : "agents"
         return switch self {

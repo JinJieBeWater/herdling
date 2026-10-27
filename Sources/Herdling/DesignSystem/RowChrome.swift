@@ -77,20 +77,18 @@ struct HoverRow<Content: View>: View {
     }
 
     private var highlighted: Bool {
-        guard available, navigationBrowser?.inspectionSelection == nil else { return false }
+        guard available else { return false }
         if let navigationBrowser, let navigationRowID {
             return navigationBrowser.highlightedSelection == navigationRowID
         }
         return isHovered && (navigationBrowser?.allowsPointerHighlight ?? true)
     }
 
-    /// Highlight beats inspection. An unavailable keyboard target keeps
+    /// An unavailable keyboard target keeps
     /// a neutral surface: still visible, without the accent that promises it opens.
     private var fill: AnyShapeStyle {
         guard available else { return keyboardSelected ? Theme.Colors.unavailableSelection : Theme.Colors.noFill }
-        if highlighted { return Theme.Colors.highlight }
-        let inspected = navigationRowID != nil && navigationBrowser?.inspectionSelection == navigationRowID
-        return inspected ? Theme.Colors.inspection : Theme.Colors.noFill
+        return highlighted ? Theme.Colors.highlight : Theme.Colors.noFill
     }
 }
 
@@ -140,7 +138,7 @@ private struct OptionalAccessibilityHint: ViewModifier {
 
 /// A bare leading glyph shared by groups, sources, statuses, errors and Settings.
 struct RowSymbol: View {
-    enum Role { case list, navigation, menu }
+    enum Role { case list, navigation }
     let symbol: String
     let tint: AnyShapeStyle
     var slotSize: CGFloat = Theme.Size.rowIcon
@@ -164,7 +162,6 @@ struct RowSymbol: View {
         switch role {
         case .list: Theme.Glyph.leadingSymbol
         case .navigation: Theme.Glyph.navigationSymbol
-        case .menu: Theme.Glyph.menuSymbol
         }
     }
 }

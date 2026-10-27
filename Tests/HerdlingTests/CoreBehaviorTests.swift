@@ -7,56 +7,32 @@ import Testing
 @Suite
 struct CoreBehaviorTests {
     @Test @MainActor
-    func observationSurvivesAnOutageButNotAConfirmedPaneExit() async {
-        let probe = ObservationSourceProbe()
+    func everyAgentContributesToAttentionDespiteObsoleteDisplayPreferences() async throws {
         let defaults = PreviewFixtures.renderDefaults()
-        let store = SessionStore(client: HerdrClient(executable: nil), loadSource: { _ in try await probe.load() },
-                                 loadBranches: { _, _ in [:] }, sourceDescriptors: [.local], defaults: defaults)
-        let target = NavigationDestination.agent(sourceID: "local", sessionName: "default", paneID: "child")
-        await store.refresh()
-        store.setObserveOnly(true, for: target)
-        await store.refresh()
-        #expect(!store.sources[0].online && store.isObserveOnly(target), "An outage is not a pane exit")
-        await store.refresh()
-        #expect(store.sources[0].online && !store.isObserveOnly(target))
-        #expect(!PreviewFixtures.makeStore(defaults: defaults).isObserveOnly(target), "Departed identities do not leak into a later pane")
-    }
-    @Test @MainActor
-    func observeOnlyCountsRunningWithoutPromotingChildAttention() {
-        func agent(_ pane: String, _ status: AgentStatus) -> AgentInfo {
-            AgentInfo(paneID: pane, title: "Same title", status: status, workspace: "repo", cwd: "/repo", updatedAt: .now)
+        defaults.set(try JSONSerialization.data(withJSONObject: [
+            ["sourceID": "local", "sessionName": "default", "paneID": "blocked"],
+            ["sourceID": "local", "sessionName": "default", "paneID": "done"]
+        ]), forKey: "observe-only-agents")
+        let agents = [AgentStatus.blocked, .done, .working].map {
+            AgentInfo(paneID: $0.rawValue, title: $0.rawValue, status: $0,
+                      workspace: "repo", cwd: "/repo", updatedAt: .now)
         }
-        let local = [agent("coordinator", .blocked), agent("child-blocked", .blocked),
-                     agent("child-done", .done), agent("child-working", .working)]
-        let store = PreviewFixtures.makeStore()
-        for pane in ["child-blocked", "child-done", "child-working"] {
-            store.setObserveOnly(true, for: .agent(sourceID: "local", sessionName: "default", paneID: pane))
-        }
-        let sources = [SourceInfo(descriptor: .local, sessions: [SessionInfo(name: "default", agents: local, online: true)], online: true),
-                       SourceInfo(descriptor: .remote("kvm"), sessions: [SessionInfo(name: "default", agents: [agent("child-blocked", .blocked)], online: true)], online: true)]
-        #expect(MenuStatus.summarize(sources, observedAgentIDs: store.observedAgentIDs).counts == [
-            AgentStatusCount(status: .blocked, count: 2), AgentStatusCount(status: .working, count: 1)])
-        #expect(store.statusCounts(local, sourceID: "local", sessionName: "default") == [
-            AgentStatusCount(status: .blocked, count: 1), AgentStatusCount(status: .working, count: 1)])
-        #expect(local.map(\.status) == [.blocked, .blocked, .done, .working], "Display policy never changes Herdr state")
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            loadSource: { _ in [HerdrClient.LoadedSession(name: "default", groups: [
+                AgentGroup(id: "repo", name: "repo", agents: agents)
+            ], error: nil)] },
+            loadBranches: { _, _ in [:] }, sourceDescriptors: [.local], defaults: defaults
+        )
+        await store.refresh()
+        #expect(store.menuStatus.counts == [
+            AgentStatusCount(status: .blocked, count: 1),
+            AgentStatusCount(status: .done, count: 1),
+            AgentStatusCount(status: .working, count: 1)
+        ])
         #expect(store.navigationAttempt == nil)
     }
-    @Test @MainActor
-    func observeOnlyPersistsExactPaneIdentityWithoutNavigationOrTitleMatching() {
-        let defaults = UserDefaults(suiteName: "observe-test-\(UUID().uuidString)")!
-        let target = NavigationDestination.agent(sourceID: "local", sessionName: "default", paneID: "worker")
-        let store = PreviewFixtures.makeStore(defaults: defaults)
-        store.setObserveOnly(true, for: target)
-        #expect(store.isObserveOnly(target))
-        #expect(!store.isObserveOnly(.agent(sourceID: "ssh:kvm", sessionName: "default", paneID: "worker")))
-        #expect(!store.isObserveOnly(.agent(sourceID: "local", sessionName: "another", paneID: "worker")))
-        #expect(!store.isObserveOnly(.workspace(sourceID: "local", sessionName: "default", workspaceID: "worker")))
-        let reopened = PreviewFixtures.makeStore(defaults: defaults)
-        #expect(reopened.isObserveOnly(target), "A restart retains this pane's observation choice")
-        reopened.setObserveOnly(false, for: target)
-        #expect(!PreviewFixtures.makeStore(defaults: defaults).isObserveOnly(target))
-        #expect(store.navigationAttempt == nil && reopened.navigationAttempt == nil)
-    }
+
     @Test
     func localSourceUsesNativeUserDisplayNameWithFallbacks() {
         #expect(SourceDescriptor.localDisplayName(
@@ -2130,16 +2106,6 @@ struct CoreBehaviorTests {
         #expect(SingleInstanceLock.acquire(identifier: "test", directory: directory) == nil)
         first.release()
         #expect(SingleInstanceLock.acquire(identifier: "test", directory: directory) != nil)
-    }
-}
-
-private actor ObservationSourceProbe {
-    private var calls = 0
-    func load() throws -> [HerdrClient.LoadedSession] {
-        calls += 1
-        if calls == 2 { throw HerdrClient.ClientError.failed("Fixture outage") }
-        let agent = AgentInfo(paneID: "child", title: "Worker", status: .working, workspace: "repo", cwd: "/repo", updatedAt: .now)
-        return [HerdrClient.LoadedSession(name: "default", groups: calls == 1 ? [AgentGroup(id: "repo", name: "repo", agents: [agent])] : [], error: nil)]
     }
 }
 

@@ -23,7 +23,7 @@ Herdling 是一个**只展示列表的菜单栏下拉面板**：无边框面板�
 2. **普通墨色用层级样式，高亮文字不牺牲可读性。** 普通文字用 `.primary`／`.secondary`／`.tertiary`，高亮行通过 `backgroundProminence = .increased` 转成白字；次级文字此时使用 `selectedMenuItemTextColor`，不再继续降低透明度。状态字形在普通行保留语义色，在高亮上转白。
 3. **只有一层玻璃。** 面板是 NSGlassEffectView，视图中不叠第二层 `glassEffect`。
 4. **边缘渐隐。** 内容超过窗口时淡出底边；滚到底时恢复实色。
-5. **交互高亮按命令菜单统一。** 名单可用行的悬停、键盘选择、顶栏悬停和行内命令均使用 `selectedContentBackgroundColor` 及白字，不把原始 `accentColor` 直接铺成大色块。当前视图只用文字和图标明暗区分，展开来源只用箭头与展开内容表达，不常驻铺底；右键检查保留短暂中性底色。不可用项不显示强调色。高亮不提交定位。
+5. **交互高亮按命令菜单统一。** 名单可用行的悬停、键盘选择、顶栏悬停和行内命令均使用 `selectedContentBackgroundColor` 及白字，不把原始 `accentColor` 直接铺成大色块。当前视图只用文字和图标明暗区分，展开来源只用箭头与展开内容表达，不常驻铺底。不可用项不显示强调色。高亮不提交定位。
 
 ---
 
@@ -59,7 +59,7 @@ Herdling 是一个**只展示列表的菜单栏下拉面板**：无边框面板�
 
 | token | 用途 |
 | --- | --- |
-| `rowHorizontal 6` | 高亮到行内容的左右内缩，与附加菜单行同一预算 |
+| `rowHorizontal 6` | 高亮到行内容的左右内缩 |
 | `rowVertical 5` | 正文上下内缩，22pt 槽位形成 32pt 行框；空间 caption 也占这一行高 |
 | `sectionHeaderVertical 8` | 来源顶层标题上下内缩，保持 38pt |
 | `rowGap 2` | 同组正文行、树内标题与第一行子项之间；正文中心节奏为 34pt |
@@ -79,24 +79,11 @@ Herdling 是一个**只展示列表的菜单栏下拉面板**：无边框面板�
 
 快速入口的两行身份使用 `quickRowHeight 40`，顶部视图切换使用 `navigationHeaderHeight 38`；不是给全部目录行增加行高。
 
-
-### 静默 agent
-
-Activity和Sources的agent行右键先选中检查目标，再打开同一紧凑命令菜单；不提交定位。只保留`Open`和用勾选表达本机偏好的`Mute`两行，不重复目标标题、不设分隔线或快捷键帽；目标身份保留在窗口的辅助功能标题中。按来源＋Session＋pane保存，不推断父子关系。静默项不增加铃铛、角标、策略文字或操作列，而以更轻的标题与状态色表达。菜单作为独立原生玻璃子面板，固定锚在被右键行的右下侧，右缘对齐该行、间隔4pt；同一行内不同点击位置不改变菜单位置，不再贴主面板底部。下方空间不足时向上展开，并夹在屏幕可见区域内。行移动时重读锚点，行已不可见时收起菜单；不撑大名单。辅助功能的Actions使用同一行锚点。不引入Tinycast的底栏或动作搜索。
-
-菜单内方向键切换动作，Return／Space执行，Escape只收菜单并归还名单焦点。当前动作按原生菜单以强调色底、选中菜单文字色高亮，字形与标题同色。右键检查只在菜单显示期间使用轻底色，关闭后消退。键盘操作显示强调色高亮，仍绑定精确身份。点击菜单外的名单先收菜单，消费这次点击，不穿透定位，并结束鼠标检查强调；点击应用外仍收起整个面板。正常点击、滚动、键盘浏览和原有快捷键不变。
-
-Activity保持同一列表，没有折叠区或新页签。普通项全部在前，静默项全部在后；两组内部按blocked、done、working、idle、unknown及状态时间排列。静默idle不占普通idle最近三项名额。切换静默偏好立即重排当前成员，选择仍绑定原身份；可追加本次已知但尚未进入Activity的静默身份，不招入浏览期间的新到达者。取消静默立即恢复普通优先级；本次成员保留，下次打开恢复普通idle限制。普通状态刷新不挪行。Sources保留原来源、Session及工作区层级与顺序。
-
-静默标题保留正常字号与字重，使用普通标题80%的墨色；working保留蓝色与真实字形，墨色约65%，副标题维持次级色。blocked字形用中性色，不重复强调完成／blocked。不整行加透明度、不改变行高、前导槽或标题锚点，帮助及辅助功能保留`Muted`与真实状态。Opening、Unavailable及定位失败反馈不弱化。鼠标静默后当前视口不追滚到下移目标；键盘操作继续显示精确选择并跟随重排。点击与定位保持原协议；标记动作本身不提交定位，也不修改Herdr的seen。
-
-菜单栏及来源／Session／工作组汇总保留静默项的working等常态数量，排除它们的blocked／done关注数量。来源连接故障照常显示。偏好保存在注入的UserDefaults，沿用原存储键与身份，不重置已有标记；临时掉线保留标记，已确认在线快照中消失的pane或删除的来源移除对应标记。
-
 ### Radius
 
 #### 全UI的角色规则
 
-主面板与附加操作菜单共用12pt外圆角、6pt内容留白和6pt高亮圆角。顶栏、来源与普通行遵循同一套菜单轮廓，不再保留26pt大外框、13pt留白及独立的8／10pt控件标度。32／38／40pt行高与28pt导航表面保留，避免把双行身份或目录内容硬压成普通菜单行。短行内动作和原生系统控件保留各自形状；裸图标没有底板。
+主面板使用12pt外圆角、6pt内容留白和6pt高亮圆角。顶栏、来源与普通行遵循同一套菜单轮廓，不再保留26pt大外框、13pt留白及独立的8／10pt控件标度。32／38／40pt行高与28pt导航表面保留，避免把双行身份或目录内容硬压成普通菜单行。短行内动作和原生系统控件保留各自形状；裸图标没有底板。
 
 本机macOS27的无显示布局探针读到原生`NSMenu`内建`NSGlassEffectView.cornerRadius = 12`，上下padding为5pt。主名单留白取6pt是长列表适配，不声称原生四边均为6pt：它让4pt滚动条、1pt外边距与1pt内容间隙同时成立。产品不依赖测量所用的私有菜单布局接口。
 
@@ -117,7 +104,6 @@ Activity保持同一列表，没有折叠区或新页签。普通项全部在前
 | 顶栏选项 | 28pt视觉表面居于38pt点击区中央；上、左可见留白6pt，四角均6pt，不单独放大Activity左上角 |
 | 前导图标 | 透明槽位，不绘制底板，因此没有图标底板圆角 |
 | 行内操作 | 高20pt，使用同一6pt圆角；用紧凑尺寸而非胶囊区分动作与内容行 |
-| Agent附加操作菜单 | 独立玻璃子面板，208×68pt、12pt连续角；两行各28pt、6pt普通角，13pt Regular字形居于18pt透明槽位，与标题同色；当前动作用强调色高亮，不做大按钮。锚在目标行右下侧、间隔4pt，靠屏幕下缘时翻到行上方；菜单内侧6pt，与主面板共用外框标度 |
 | Settings 分组与系统控件 | 由原生 `Form`、Picker、Toggle 绘制，不覆盖系统圆角 |
 
 列表内容边界使用 `RoundedRectangle(cornerSize: CGSize(width: 6, height: 6), style: .continuous)`；各行自身也画6pt圆角。顶部切换行与名单各自负责左右6pt内缩，不额外内收导航按钮组。38pt点击区顶部留1pt，加上5pt表面余量形成6pt可见留白；底部6pt，完整高度计入1+6pt。验收比较真实底色到外壳的直边和转角距离，不以列对齐或圆角中心相同代替。离线提示与名单尾部内容区共享距右侧12pt的右边界；读数仍保留各自的箭头或chevron槽位。名单滚动视口保持420pt全宽，行背景宽408pt，边界遮罩在右侧边距开放滚动条绘制空间。首末边界跟随真实内容，计入完整测量高度，不沿树逐层传递位置标记。
@@ -154,24 +140,22 @@ SF Symbol 的显式字号，也是 token：`leading 14 regular` · `navigation 1
 
 | token | 样式 | 实测 alpha（暗／亮，离屏） | 用在哪 |
 | --- | --- | --- | --- |
-| `glassTint` | 系统 `windowBackgroundColor` | 0.20 | 主面板与操作菜单的原生玻璃自身；不增加内容层 |
+| `glassTint` | 系统 `windowBackgroundColor` | 0.20 | 主面板的原生玻璃自身；不增加内容层 |
 | `unavailableSelection` | 白色 | 0.10／0.50 | 不可用的键盘目标，保留位置但不承诺可操作 |
-| `inspection` | 白色 | 0.06／0.32 | 附加操作菜单打开期间的目标检查底色 |
 | `textPrimary` | `.primary` | 0.85 | 行标题、正文 |
-| `mutedTitle` | `.primary.opacity(0.8)` | 0.68 | 静默 agent 标题，轻于标题、重于次要字 |
 | `textSecondary` | 普通 `.secondary`，高亮 `selectedMenuItemTextColor` | 普通0.55／0.50，高亮1.0 | 次要标签、状态词、无语义色的状态字形、折叠箭头；高亮仍清楚 |
 | `textTertiary` | `.tertiary` | 0.25 | 占位、不可用文字 |
 | `warning` | 亮色深橙／暗色杏橙 | 不透明语义色 | 面板离线与错误字形；离线文字仍用原生primary，不复用Settings装饰橙 |
-| `highlight` / `highlightInk` | `selectedContentBackgroundColor`／`selectedMenuItemTextColor` | — | 名单悬停与键盘选择、顶栏悬停、行内命令、附加操作菜单 |
+| `highlight` / `highlightInk` | `selectedContentBackgroundColor`／`selectedMenuItemTextColor` | — | 名单悬停与键盘选择、顶栏悬停、行内命令 |
 | `opaqueInk` | ramp 1.0 | 1.0 | 遮罩与菜单栏 template 图像，只看 alpha |
 | `scrollThumb*` | ramp 0.30／0.42／0.50 | — | AppKit 自绘滚动条，不在 SwiftUI vibrancy 内 |
 | `fadeFloor` | — | — | 底部渐隐最深只到 0.25：行留影子，不消失 |
 
-**色相**（`Theme.Hue`）按色相命名而不是按角色：`blue` · `purple` · `orange` · `green`，留给Settings等非玻璃装饰角色。面板警示字形使用独立`Colors.warning`：亮色`#994A00`、暗色`#FFAB4D`；离线小字使用原生`textPrimary`，不以另一种固定橙色替代材质感知墨色。普通／静默／不可用层级保留原生vibrancy，高亮次级文字改用不透明选中文字色。blocked四路不变；working 使用独立四路语义蓝，普通浅色为深蓝、暗色为亮蓝，不再直接复用交互强调色。警示色在白／深灰参照上的对比通过，不等于任意真实玻璃背景都通过；状态同时由文字与字形表达，不叠scrim。来源不再用蓝／紫区分，本机和SSH靠符号、文字及辅助功能表达，均使用`textSecondary`。**本地/SSH的符号判断只在`SourceInfo.rosterSymbol`里写一次**。
+**色相**（`Theme.Hue`）按色相命名而不是按角色：`blue` · `purple` · `orange` · `green`，留给Settings等非玻璃装饰角色。面板警示字形使用独立`Colors.warning`：亮色`#994A00`、暗色`#FFAB4D`；离线小字使用原生`textPrimary`，不以另一种固定橙色替代材质感知墨色。普通／不可用层级保留原生vibrancy，高亮次级文字改用不透明选中文字色。blocked四路不变；working 使用独立四路语义蓝，普通浅色为深蓝、暗色为亮蓝，不再直接复用交互强调色。警示色在白／深灰参照上的对比通过，不等于任意真实玻璃背景都通过；状态同时由文字与字形表达，不叠scrim。来源不再用蓝／紫区分，本机和SSH靠符号、文字及辅助功能表达，均使用`textSecondary`。**本地/SSH的符号判断只在`SourceInfo.rosterSymbol`里写一次**。
 
 `StatusPalette`（`AgentStatusPresentation.swift`）不在 `Theme` 里，它是状态的语义色，自带四路自适应。
 
-**名单只在交互时铺底。** 强调色高亮 → 右键检查 `inspection` → 透明；展开本身不铺底。最后一次真实鼠标移动或键盘操作接管唯一高亮，Enter 对应当前目标；静止指针下的滚动、布局和刷新不抢走键盘选择。高亮和选择都不提交定位。
+**名单只在交互时铺底。** 可用行交互时用强调色高亮，其余透明；展开本身不铺底。最后一次真实鼠标移动或键盘操作接管唯一高亮，Enter 对应当前目标；静止指针下的滚动、布局和刷新不抢走键盘选择。高亮和选择都不提交定位。
 
 ### Duration
 
@@ -187,11 +171,11 @@ SF Symbol 的显式字号，也是 token：`leading 14 regular` · `navigation 1
 
 - **窗口**：无边框 `NSPanel`，`isOpaque = false`、`backgroundColor = .clear`、`.popUpMenu` level、`hasShadow`、`animationBehavior = .none`。位置贴着菜单栏 item 下沿，左右被屏幕可见区域夹住（`StatusItemController.panelOrigin` 已实现，不改）。
 - **表面配方**，顺序固定：
-  1. macOS 26+：`panelGlass(wrapping:cornerRadius:)` 生成 `NSGlassEffectView(style: .regular)`，设置 `Theme.Colors.glassTint`，作为窗口 contentView；tint 通过动态 NSColor 在当前 appearance 下解析系统窗口背景色，再取20% alpha，避免固定首次浅／暗外观；主面板与附加操作菜单共用，各传自己的圆角；
+  1. macOS 26+：`panelGlass(wrapping:cornerRadius:)` 生成 `NSGlassEffectView(style: .regular)`，设置 `Theme.Colors.glassTint`，作为窗口 contentView；tint 通过动态 NSColor 在当前 appearance 下解析系统窗口背景色，再取20% alpha，避免固定首次浅／暗外观；
   2. 内容直接放在玻璃上，不盖 scrim；
   3. 最后 `.clipShape(RoundedRectangle(panel, .continuous))`。
   26 以下回落到 `NSVisualEffectView(material: .menu)`。验收在真实桌面上与原生右键菜单并排比较；VM 或离屏截图只证明透出背景，不证明玻璃质感一致。
-- **玻璃始终保持激活外观。** Liquid Glass 只在激活外观下折射背景，非 key 窗口会变平。原生 `NSPopupMenuWindow` 并非 key 却始终折射，靠的是 `_hasActiveAppearanceIgnoringKeyFocus`；`MenuBarPanel` 同样覆写，主面板在附加操作菜单取得 key 时也不变平。只改外观，不伪造键盘焦点。
+- **玻璃始终保持激活外观。** Liquid Glass 只在激活外观下折射背景，非 key 窗口会变平。原生 `NSPopupMenuWindow` 并非 key 却始终折射，靠的是 `_hasActiveAppearanceIgnoringKeyFocus`；`MenuBarPanel` 同样覆写。只改外观，不伪造键盘焦点。
 - **玻璃根层也裁圆角。** `NSGlassEffectView.cornerRadius` 与 SwiftUI 的 `clipShape` 不足以约束激活状态下的全部玻璃绘制；玻璃根 `CALayer` 用同一个 `Theme.Radius.panel`、与 SwiftUI 一致的 `.continuous` 曲线，并启用 `masksToBounds`。保留键盘焦点和窗口阴影。
 - **名单背景左右6pt，末行底部6pt。** 首末边界跟随面板内轮廓，内部相邻角同为6pt；顶栏点击区顶部1pt加上表面余量后，可见留白为6pt。不留操作条或safe-area占位。
 - **菜单操作独立于列表。** 右键或 Control-click 状态项打开原生菜单：Refresh、Settings、分隔线、Quit Herdling。刷新期间禁用 Refresh，并防止重复启动。Settings 的 `⌘,` 和退出的 `⌘Q` 继续通过应用菜单提供。
@@ -222,7 +206,7 @@ SF Symbol 的显式字号，也是 token：`leading 14 regular` · `navigation 1
 `NavigationBrowser.swift` 管浏览快照和按身份选择，`StatusItemController.swift` 管打开/关闭与键盘事件。`UI/AgentListView.swift` 接入高度动画；`UI/NavigationPanel.swift` 管固定顶栏和滚动列表；`UI/Roster` 保留 Sources 的来源、Session、Space/worktree 层级。
 
 - 行首固定 `rowIcon` 槽位与标题之间用 `rowContentGap`；标题与可选副标、尾部读数槽位之间用 `lg`。正文上下内缩 `rowVertical`，顶层标题用 `sectionHeaderVertical`；左右均为 `rowHorizontal`。
-- 行背景用 `row` 连续圆角，列表整体裁切负责首末边界；可用项的fill优先级 **highlight → inspection → clear**。不可用定位项不显示强调色，也不显示hover操作暗示；Unavailable和原因仍保留。键盘停在不可用项时用中性unavailableSelection底保持可见，冻结访问期间的选择身份不因失效改变，浏览器既有选择策略不变。离线来源标题仍可浏览，不禁用。
+- 行背景用 `row` 连续圆角，列表整体裁切负责首末边界；可用项的fill优先级 **highlight → clear**。不可用定位项不显示强调色，也不显示hover操作暗示；Unavailable和原因仍保留。键盘停在不可用项时用中性unavailableSelection底保持可见，冻结访问期间的选择身份不因失效改变，浏览器既有选择策略不变。离线来源标题仍可浏览，不禁用。
 - current靠文字与图标明暗，来源展开靠箭头；键盘选择与悬停用强调色。不同状态不叠底、不位移。按下反馈与原生键盘focus交给plain Button样式，不额外叠加按下透明度或抢占Tab。
 - 行内悬停反馈留在行里；名单高亮由浏览器按精确身份统一，真实鼠标移动才交接，不用布局触发的进入事件冒充输入。
 - 面板重新打开时清掉遗留的悬停（`panelIsOpen` 环境值，行为保持现状）。
