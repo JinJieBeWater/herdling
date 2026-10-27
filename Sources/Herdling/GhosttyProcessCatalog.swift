@@ -26,14 +26,17 @@ enum GhosttyProcessCatalog {
         return clients(from: String(decoding: data, as: UTF8.self), ghosttyPID: ghosttyPID)
     }
 
-    static func clients(from output: String, ghosttyPID: Int) -> [GhosttyClientProcess] {
+    static func clients(
+        from output: String, ghosttyPID: Int,
+        herdrExecutable: String? = ProcessInfo.processInfo.environment["HERDR_BIN_PATH"]
+    ) -> [GhosttyClientProcess] {
         let processes = output.split(separator: "\n").compactMap(parseProcess)
         let byPID = Dictionary(uniqueKeysWithValues: processes.map { ($0.pid, $0) })
         return processes.compactMap { process in
             guard process.tty != "??",
                   isDescendant(process, of: ghosttyPID, processes: byPID)
             else { return nil }
-            return client(from: process)
+            return client(from: process, herdrExecutable: herdrExecutable)
         }
     }
 
@@ -66,8 +69,8 @@ enum GhosttyProcessCatalog {
         return false
     }
 
-    private static func client(from process: Process) -> GhosttyClientProcess? {
-        let arguments = process.command.split(whereSeparator: \Character.isWhitespace).map(String.init)
+    private static func client(from process: Process, herdrExecutable: String?) -> GhosttyClientProcess? {
+        let arguments = HerdrProcessArguments.split(process.command, executable: herdrExecutable)
         guard let executable = arguments.first,
               URL(fileURLWithPath: executable).lastPathComponent == "herdr"
         else { return nil }

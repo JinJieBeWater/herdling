@@ -27,7 +27,10 @@ enum KeroProcessCatalog {
         let command: String
     }
 
-    static func clients(from output: String, panes: [KeroPane]) -> [KeroClientProcess] {
+    static func clients(
+        from output: String, panes: [KeroPane],
+        herdrExecutable: String? = ProcessInfo.processInfo.environment["HERDR_BIN_PATH"]
+    ) -> [KeroClientProcess] {
         let processes = output.split(separator: "\n").compactMap(parseProcess)
         let byPID = Dictionary(uniqueKeysWithValues: processes.map { ($0.pid, $0) })
         return panes.flatMap { pane -> [KeroClientProcess] in
@@ -37,7 +40,7 @@ enum KeroProcessCatalog {
                 guard process.tty == root.tty,
                       isDescendant(process, of: pid, processes: byPID)
                 else { return nil }
-                return client(from: process, paneID: pane.id)
+                return client(from: process, paneID: pane.id, herdrExecutable: herdrExecutable)
             }
         }
     }
@@ -72,8 +75,8 @@ enum KeroProcessCatalog {
         return false
     }
 
-    private static func client(from process: Process, paneID: String) -> KeroClientProcess? {
-        let arguments = process.command.split(whereSeparator: \Character.isWhitespace).map(String.init)
+    private static func client(from process: Process, paneID: String, herdrExecutable: String?) -> KeroClientProcess? {
+        let arguments = HerdrProcessArguments.split(process.command, executable: herdrExecutable)
         guard let executable = arguments.first,
               URL(fileURLWithPath: executable).lastPathComponent == "herdr"
         else { return nil }

@@ -70,19 +70,31 @@ struct KeroControllerTests {
 
     @Test
     func newClientUsesOneShellArgumentAndFocusesItsVerifiedPane() async throws {
+        let herdr = ProcessInfo.processInfo.environment["HERDR_BIN_PATH"] ?? "/opt/homebrew/bin/herdr"
         let cli = KeroCLIStub(
             sessions: "[]", processes: "",
             createdSessions: #"[{"id":"created-session","panes":[{"id":"created-pane","pid":700}]}]"#,
-            createdProcesses: "700 1 ttys007 /opt/homebrew/bin/herdr --remote kvm --session work"
+            createdProcesses: "700 1 ttys007 \(herdr) --remote kvm --session work"
         )
         let controller = KeroController(executable: "/fake/kero", runCommand: cli.run)
-        let command = "exec '/path with spaces/herdr' --remote 'kvm' --session 'work'"
+        let command = "exec \(HerdrClient.shellQuote(herdr)) --remote 'kvm' --session 'work'"
         try await controller.activateClient(source: .remote("kvm"), session: "work", command: command)
         #expect(cli.newArguments == [[
             "new", "--name", "herdr-kvm-work", "--dir", FileManager.default.homeDirectoryForCurrentUser.path,
             "--", "/bin/zsh", "-lc", command,
         ]])
         #expect(cli.focusedPanes == ["created-pane"])
+    }
+
+    @Test
+    func activationReusesTheConfiguredHerdrPathWithoutCreatingAClient() async throws {
+        let herdr = ProcessInfo.processInfo.environment["HERDR_BIN_PATH"] ?? "/opt/homebrew/bin/herdr"
+        let cli = KeroCLIStub(sessions: matchingRoster,
+                              processes: "300 1 ttys002 \(herdr) --remote kvm --session work")
+        let controller = KeroController(executable: "/fake/kero", runCommand: cli.run)
+        try await controller.activateClient(source: .remote("kvm"), session: "work", command: "must not run")
+        #expect(cli.focusedPanes == ["remote-pane"])
+        #expect(cli.newArguments.isEmpty)
     }
 
     @Test
