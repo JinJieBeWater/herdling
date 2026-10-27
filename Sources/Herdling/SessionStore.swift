@@ -7,7 +7,6 @@ private enum DefaultsKey {
     static let terminalApplication = "terminal-application"
     static let ghosttyOpenBehavior = "ghostty-open-behavior"
     static let expandedSource = "expanded.source"
-    static let observedAgents = "observe-only-agents"
 }
 
 enum AgentStatus: String, Sendable {
@@ -16,10 +15,6 @@ enum AgentStatus: String, Sendable {
     case working
     case idle
     case unknown
-
-    func contributesToSummary(observeOnly: Bool) -> Bool {
-        !observeOnly || (self != .blocked && self != .done)
-    }
 }
 
 struct AgentStatusCount: Equatable, Identifiable {
@@ -27,11 +22,9 @@ struct AgentStatusCount: Equatable, Identifiable {
     let status: AgentStatus
     let count: Int
 
-    static func summarize(_ agents: [AgentInfo], observing: (AgentInfo) -> Bool = { _ in false }) -> [Self] {
+    static func summarize(_ agents: [AgentInfo]) -> [Self] {
         [AgentStatus.blocked, .done, .working, .idle, .unknown].compactMap { status in
-            let count = agents.count {
-                $0.status == status && status.contributesToSummary(observeOnly: observing($0))
-            }
+            let count = agents.count { $0.status == status }
             return count == 0 ? nil : Self(status: status, count: count)
         }
     }
@@ -176,7 +169,7 @@ struct SourceInfo: Identifiable, Sendable {
     var branches: [String: String] = [:]
 }
 
-struct AgentFocusID: Hashable, Codable, Sendable {
+struct AgentFocusID: Hashable, Sendable {
     let sourceID: String
     let sessionName: String
     let paneID: String
@@ -192,7 +185,7 @@ struct MenuStatus: Equatable {
     let counts: [AgentStatusCount]
     let availability: MenuAvailability
 
-    static func summarize(_ sources: [SourceInfo], observedAgentIDs: Set<AgentFocusID> = []) -> Self {
+    static func summarize(_ sources: [SourceInfo]) -> Self {
         let onlineSources = sources.filter(\.online)
         guard !onlineSources.isEmpty else {
             return Self(
@@ -200,14 +193,7 @@ struct MenuStatus: Equatable {
                 availability: sources.contains { $0.error == nil } ? .loading : .offline
             )
         }
-        let agents = onlineSources.flatMap { source in
-            source.sessions.filter(\.online).flatMap { session in
-                session.agents.filter { agent in
-                    let observed = observedAgentIDs.contains(AgentFocusID(sourceID: source.id, sessionName: session.name, paneID: agent.paneID))
-                    return agent.status.contributesToSummary(observeOnly: observed)
-                }
-            }
-        }
+        let agents = onlineSources.flatMap { $0.sessions.filter(\.online).flatMap(\.agents) }
         return Self(counts: AgentStatusCount.summarize(agents), availability: .online)
     }
 }
@@ -256,48 +242,13 @@ final class SessionStore {
     }
 
     private(set) var sources: [SourceInfo] {
-        didSet {
-            pruneSuccessfulJumps()
-            let retained = observedAgentIDs.filter {
-                !hasDeparted(.agent(sourceID: $0.sourceID, sessionName: $0.sessionName, paneID: $0.paneID))
-            }
-            if retained != observedAgentIDs {
-                observedAgentIDs = retained
-                persistObservedAgents()
-            }
-        }
+        didSet { pruneSuccessfulJumps() }
     }
     private(set) var availableSSHAliases: [String]
     private(set) var selectedSSHAliases: [String]
     private(set) var focusError: String?
     private(set) var navigationAttempt: NavigationAttempt?
     private(set) var successfulJumps: [NavigationDestination] = []
-    private(set) var observedAgentIDs: Set<AgentFocusID> = []
-
-    func isObserveOnly(_ destination: NavigationDestination) -> Bool {
-        guard case let .agent(sourceID, sessionName, paneID) = destination else { return false }
-        return observedAgentIDs.contains(AgentFocusID(sourceID: sourceID, sessionName: sessionName, paneID: paneID))
-    }
-
-    func setObserveOnly(_ value: Bool, for destination: NavigationDestination) {
-        guard case let .agent(sourceID, sessionName, paneID) = destination else { return }
-        let id = AgentFocusID(sourceID: sourceID, sessionName: sessionName, paneID: paneID)
-        if value { observedAgentIDs.insert(id) } else { observedAgentIDs.remove(id) }
-        persistObservedAgents()
-        onChange?()
-    }
-
-    private func persistObservedAgents() {
-        if let data = try? JSONEncoder().encode(Array(observedAgentIDs)) {
-            defaults.set(data, forKey: DefaultsKey.observedAgents)
-        }
-    }
-
-    func statusCounts(_ agents: [AgentInfo], sourceID: String, sessionName: String) -> [AgentStatusCount] {
-        AgentStatusCount.summarize(agents) {
-            observedAgentIDs.contains(AgentFocusID(sourceID: sourceID, sessionName: sessionName, paneID: $0.paneID))
-        }
-    }
     @ObservationIgnored private var navigationToken = UUID()
 
     var pendingFocusAgentID: AgentFocusID? {
@@ -346,7 +297,7 @@ final class SessionStore {
         set { defaults.set(newValue, forKey: DefaultsKey.expandedSource) }
     }
 
-    var menuStatus: MenuStatus { MenuStatus.summarize(sources, observedAgentIDs: observedAgentIDs) }
+    var menuStatus: MenuStatus { MenuStatus.summarize(sources) }
     var launchAtLoginEnabled: Bool { SMAppService.mainApp.status == .enabled }
 
     convenience init() {
@@ -413,10 +364,6 @@ final class SessionStore {
         }
         let descriptors = sourceDescriptors ?? ([SourceDescriptor.local] + selected.map(SourceDescriptor.remote))
         sources = descriptors.map { SourceInfo(descriptor: $0, sessions: [], online: false, error: nil) }
-        if let data = defaults.data(forKey: DefaultsKey.observedAgents),
-           let ids = try? JSONDecoder().decode([AgentFocusID].self, from: data) {
-            observedAgentIDs = Set(ids)
-        }
     }
 
     func start() {

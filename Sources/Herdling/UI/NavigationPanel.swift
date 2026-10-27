@@ -229,10 +229,8 @@ struct QuickNavigationRow: View {
 
     private var presentation: NavigationRowPresentation { browser.presentation(for: destination) }
     private var pending: Bool { browser.attempt?.destination == destination && browser.attempt?.phase == .pending }
-    private var observeOnly: Bool { store.isObserveOnly(destination) }
     private var readout: String? {
         if pending || !presentation.available { return statusText }
-        if observeOnly { return nil }
         return presentation.status == .idle || presentation.status == .working ? nil : statusText
     }
     private var statusText: String {
@@ -250,19 +248,19 @@ struct QuickNavigationRow: View {
         HoverRow(
             minHeight: Theme.Size.quickRowHeight, verticalPadding: 0,
             enabled: presentation.available,
-            accessibilityText: "\(presentation.title), \(presentation.subtitle), \(statusText)" + (observeOnly ? ", muted" : ""),
+            accessibilityText: "\(presentation.title), \(presentation.subtitle), \(statusText)",
             action: { store.navigate(to: destination) }
         ) { isHovered in
             HStack(spacing: Theme.Spacing.rowContentGap) {
                 RowSymbol(
                     symbol: presentation.status?.indicatorSymbolName ?? "arrow.up.right",
-                    tint: presentation.status?.badgeTint(observeOnly: observeOnly)
+                    tint: presentation.status?.badgeTint
                 )
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: Theme.Spacing.lg) {
                         Text(presentation.title)
                             .font(Theme.Typography.rowTitle)
-                            .foregroundStyle(observeOnly && presentation.available ? Theme.Colors.mutedTitle : Theme.Colors.textPrimary)
+                            .foregroundStyle(Theme.Colors.textPrimary)
                             .lineLimit(1)
                         Spacer(minLength: Theme.Spacing.xs)
                         if let readout {
@@ -282,8 +280,7 @@ struct QuickNavigationRow: View {
             NavigationRowFeedback(store: store, destination: destination, isHovered: isHovered, showsIdleArrow: false)
         }
         .navigationRow(.destination(destination))
-        .agentActions(destination)
-        .help((observeOnly ? "Muted · " : "") + statusText.capitalized + "\n" + presentation.title + "\n"
+        .help(statusText.capitalized + "\n" + presentation.title + "\n"
               + [destination.sourceID, destination.sessionName, destination.agentFocusID?.paneID].compactMap { $0 }.joined(separator: " / "))
     }
 }

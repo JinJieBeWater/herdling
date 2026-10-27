@@ -3,16 +3,13 @@ import SwiftUI
 
 struct AgentListView: View {
     let store: SessionStore
-    let showAgentActions: (@MainActor (NavigationDestination, AgentActionsAnchor) -> Void)?
     @State private var browser: NavigationBrowser
 
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @State private var panelHeight: CGFloat = 0
 
-    init(store: SessionStore, browser: NavigationBrowser? = nil,
-         showAgentActions: (@MainActor (NavigationDestination, AgentActionsAnchor) -> Void)? = nil) {
+    init(store: SessionStore, browser: NavigationBrowser? = nil) {
         self.store = store
-        self.showAgentActions = showAgentActions
         if let browser {
             _browser = State(initialValue: browser)
         } else {
@@ -33,7 +30,6 @@ struct AgentListView: View {
             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.panel, style: .continuous))
             .environment(\.panelIsOpen, store.panelOpen)
             .environment(\.navigationBrowser, browser)
-            .environment(\.showAgentActions, showAgentActions)
             .modifier(PanelHeightDriver(height: panelHeight))
             .onPreferenceChange(PanelContentHeightKey.self) { height in
                 guard height > 0, abs(height - panelHeight) >= 0.5 else { return }

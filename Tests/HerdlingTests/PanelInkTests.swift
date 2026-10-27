@@ -59,15 +59,13 @@ struct PanelInkTests {
     }
 
     @Test(arguments: [ColorScheme.light, .dark])
-    func ordinaryAndMutedInkKeepTheirHierarchy(scheme: ColorScheme) throws {
+    func ordinaryInkKeepsItsHierarchy(scheme: ColorScheme) throws {
         var alphas: [CGFloat] = []
-        for style in [Theme.Colors.textPrimary, Theme.Colors.mutedTitle,
-                      Theme.Colors.textSecondary, Theme.Colors.textTertiary] {
+        for style in [Theme.Colors.textPrimary, Theme.Colors.textSecondary, Theme.Colors.textTertiary] {
             let image = try render(Rectangle().fill(style), scheme: scheme)
             alphas.append(try #require(image.colorAt(x: 5, y: 5)).alphaComponent)
         }
-        #expect(alphas[0] > alphas[1] && alphas[1] > alphas[2] && alphas[2] > alphas[3],
-                "Normal > muted title > secondary > tertiary; muting must not turn a title into disabled text")
+        #expect(alphas[0] > alphas[1] && alphas[1] > alphas[2], "Primary > secondary > tertiary")
     }
 
     private func linear(_ value: CGFloat) -> CGFloat {

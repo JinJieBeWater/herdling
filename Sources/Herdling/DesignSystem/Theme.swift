@@ -55,8 +55,6 @@ enum Theme {
         static let row: CGFloat = 6
         /// Compact navigation surfaces, independent of their larger click area.
         static let navigationControl = row
-        static let agentActions = panel
-        static let menuRow = row
     }
 
     // MARK: - Size
@@ -75,9 +73,6 @@ enum Theme {
         static let navigationHeaderHeight: CGFloat = 38
         static let navigationControlHeight: CGFloat = 28
         static let navigationIcon: CGFloat = 14
-        static let agentActionsWidth: CGFloat = 208
-        static let menuRowHeight: CGFloat = 28
-        static let menuIcon: CGFloat = 18
         /// A trailing action pill's height.
         static let actionPill: CGFloat = 20
         /// A spinner that stands in for a row's leading glyph.
@@ -131,9 +126,6 @@ enum Theme {
         static var navigationSymbol: NSImage.SymbolConfiguration {
             NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
         }
-        static var menuSymbol: NSImage.SymbolConfiguration {
-            NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
-        }
         /// A disclosure chevron.
         static let chevron = Font.system(size: 10, weight: .semibold)
         /// The glyph inside a trailing action pill.
@@ -167,7 +159,7 @@ enum Theme {
     /// `Color.white.opacity(…)`, or `NSColor.windowBackgroundColor`.
     ///
     /// Hierarchical ink takes the glass's vibrancy. Interaction highlights use the system accent;
-    /// quiet unavailable/inspection surfaces add light instead of dimming the glass.
+    /// quiet unavailable surfaces add light instead of dimming the glass.
     enum Colors {
         /// Resolves against the view's `effectiveAppearance`, so a token repaints on its own.
         static func adaptive(dark: NSColor, light: NSColor) -> Color {
@@ -190,16 +182,11 @@ enum Theme {
         }
         /// A keyboard target that became unavailable keeps a quiet positional cue.
         static let unavailableSelection = AnyShapeStyle(adaptive(dark: .ink(1, alpha: 0.10), light: .ink(1, alpha: 0.50)))
-        /// The inspected target while its action menu is open; not keyboard focus.
-        static let inspection = AnyShapeStyle(adaptive(dark: .ink(1, alpha: 0.06), light: .ink(1, alpha: 0.32)))
         /// Shared by roster hover/keyboard selection, navigation hover and commands.
         static let highlight = AnyShapeStyle(Color(nsColor: .selectedContentBackgroundColor))
         static let highlightInk = AnyShapeStyle(Color(nsColor: .selectedMenuItemTextColor))
 
         static let textPrimary = AnyShapeStyle(.primary)
-        /// Lighter than a title, still heavier than secondary text.
-        static let mutedTitle = AnyShapeStyle(.primary.opacity(0.8))
-        static let mutedWorkingOpacity = 0.65
         static let textSecondary = AnyShapeStyle(PanelSecondaryInk())
         static let textTertiary = AnyShapeStyle(.tertiary)
         /// Panel warning glyphs need stronger light-glass contrast than decorative Settings orange.

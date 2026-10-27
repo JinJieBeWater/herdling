@@ -6,11 +6,11 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct PanelSurfaceTests {
-    @Test(arguments: [Theme.Radius.panel, Theme.Radius.agentActions], [ColorScheme.light, .dark])
-    func panelsKeepAQuietAppearanceAwareGlassTint(cornerRadius: CGFloat, scheme: ColorScheme) throws {
+    @Test(arguments: [ColorScheme.light, .dark])
+    func panelsKeepAQuietAppearanceAwareGlassTint(scheme: ColorScheme) throws {
         guard #available(macOS 26.0, *) else { return }
         let content = NSView()
-        let glass = panelGlass(wrapping: content, cornerRadius: cornerRadius)
+        let glass = panelGlass(wrapping: content, cornerRadius: Theme.Radius.panel)
         #expect(glass.style == .regular)
         let appearance = try #require(NSAppearance(named: scheme == .dark ? .darkAqua : .aqua))
         var resolved: NSColor?
@@ -22,7 +22,7 @@ struct PanelSurfaceTests {
         #expect(scheme == .dark ? tint.redComponent < 0.25 : tint.redComponent > 0.9,
                 "The glass follows the appearance instead of fixing a light or dark surface")
         #expect(glass.contentView === content)
-        #expect(glass.cornerRadius == cornerRadius && glass.layer?.cornerRadius == cornerRadius)
+        #expect(glass.cornerRadius == Theme.Radius.panel && glass.layer?.cornerRadius == Theme.Radius.panel)
         #expect(glass.layer?.cornerCurve == .continuous && glass.layer?.masksToBounds == true)
     }
 
@@ -65,10 +65,10 @@ struct PanelSurfaceTests {
         filter(named: "glassBackground", in: layer)
     }
 
-    @Test(arguments: ["textPrimary", "mutedTitle", "textSecondary", "textTertiary"], [ColorScheme.light, .dark])
+    @Test(arguments: ["textPrimary", "textSecondary", "textTertiary"], [ColorScheme.light, .dark])
     func panelInkTakesTheGlassVibrancy(token: String, scheme: ColorScheme) async throws {
         guard #available(macOS 26.0, *) else { return }
-        let styles = ["textPrimary": Theme.Colors.textPrimary, "mutedTitle": Theme.Colors.mutedTitle,
+        let styles = ["textPrimary": Theme.Colors.textPrimary,
                       "textSecondary": Theme.Colors.textSecondary, "textTertiary": Theme.Colors.textTertiary]
         let style = try #require(styles[token])
         let hosting = NSHostingView(rootView: Rectangle().fill(style).frame(width: 40, height: 10)
@@ -86,7 +86,7 @@ struct PanelSurfaceTests {
     }
 
     @Test(arguments: [ColorScheme.light, .dark])
-    func quietStateFillsLiftTheGlassWithoutUsingTheAccent(scheme: ColorScheme) throws {
+    func unavailableSelectionLiftsTheGlassWithoutUsingTheAccent(scheme: ColorScheme) throws {
         func luminance(_ fill: AnyShapeStyle) throws -> CGFloat {
             let appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
             // A mid-grey stand-in for the glass, so lifting and dimming both show.
@@ -99,10 +99,8 @@ struct PanelSurfaceTests {
             return try #require(bitmap.colorAt(x: 5, y: 5)?.usingColorSpace(.genericGray)).whiteComponent
         }
         let base = try luminance(Theme.Colors.noFill)
-        let inspection = try luminance(Theme.Colors.inspection)
         let unavailable = try luminance(Theme.Colors.unavailableSelection)
-        #expect(inspection > base, "Inspection adds light to the glass instead of greying it")
-        #expect(unavailable > inspection, "An unavailable keyboard target stays distinct from brief inspection")
+        #expect(unavailable > base, "An unavailable keyboard target stays visible without promising it opens")
     }
 
     private func filter(named name: String, in layer: CALayer) -> AnyObject? {

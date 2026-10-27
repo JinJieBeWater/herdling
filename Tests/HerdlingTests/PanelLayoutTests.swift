@@ -12,24 +12,6 @@ import Testing
 @Suite
 @MainActor
 struct PanelLayoutTests {
-    @Test func agentActionMenuFollowsItsRowAndFlipsAtScreenEdges() {
-        let parent = NSRect(x: 100, y: 100, width: 420, height: 300)
-        let screen = NSRect(x: 0, y: 0, width: 1000, height: 1000)
-        let size = NSSize(width: 320, height: 140)
-        let first = NSRect(x: 106, y: 320, width: 408, height: 40)
-        let second = NSRect(x: 106, y: 210, width: 408, height: 32)
-        #expect(AgentActionsMenuController.frame(parent: parent, row: first, contentSize: size, visibleFrame: screen)
-                == NSRect(x: 194, y: 176, width: 320, height: 140))
-        #expect(AgentActionsMenuController.frame(parent: parent, row: second, contentSize: size, visibleFrame: screen)
-                == NSRect(x: 194, y: 66, width: 320, height: 140), "The same panel must not force different rows onto one menu location")
-        let bottom = NSRect(x: 106, y: 10, width: 408, height: 40)
-        #expect(AgentActionsMenuController.frame(parent: parent, row: bottom, contentSize: size, visibleFrame: screen)
-                == NSRect(x: 194, y: 54, width: 320, height: 140), "Insufficient space below flips the menu above the target")
-        let fitted = AgentActionsMenuController.frame(parent: parent, row: first, contentSize: size,
-            visibleFrame: NSRect(x: 0, y: 0, width: 250, height: 100))
-        #expect(fitted == NSRect(x: 6, y: 6, width: 238, height: 88))
-    }
-
     @Test
     func allPanelAllowsItsEmptySessionDirectoryToCollapseAndExpand() {
         let store = PreviewFixtures.makeStore()
