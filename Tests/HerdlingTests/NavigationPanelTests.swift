@@ -9,6 +9,124 @@ import Vision
 struct NavigationPanelTests {
     private let directory = URL(fileURLWithPath: "/tmp/herdling-navigation-render-\(UUID().uuidString)")
 
+    @Test func contextMenuAnchorTracksTheRowInsteadOfTheClickPosition() throws {
+        let targets = (0..<6).map { NavigationDestination.agent(sourceID: "local", sessionName: "default", paneID: "row-\($0)") }
+        var requests: [(NavigationDestination, AgentActionsAnchor)] = []
+        let hosted = host(ScrollView {
+            VStack(spacing: 0) {
+                ForEach(targets.indices, id: \.self) { index in
+                    HoverRow(minHeight: 40, verticalPadding: 0, accessibilityText: "Row \(index)", action: {}) { _ in
+                        Text("Row \(index)")
+                    }.agentActions(targets[index])
+                }
+            }.fixedSize(horizontal: false, vertical: true)
+        }
+            .environment(\.showAgentActions, { requests.append(($0, $1)) }), height: 120)
+        defer { hosted.window.close() }
+        for point in [NSPoint(x: 20, y: 20), NSPoint(x: 380, y: 20), NSPoint(x: 200, y: 60)] {
+            let location = hosted.view.convert(point, to: nil)
+            for type in [NSEvent.EventType.rightMouseDown, .rightMouseUp] {
+                let event = try #require(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: 0,
+                    windowNumber: hosted.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+                var views: [NSView] = [hosted.view]
+                while let view = views.popLast() {
+                    views += view.subviews
+                    guard let target = view as? AgentContextClick.ContextClickView,
+                          target.bounds.contains(target.convert(location, from: nil)) else { continue }
+                    if type == .rightMouseDown { target.rightMouseDown(with: event) }
+                    else { target.rightMouseUp(with: event) }
+                }
+            }
+        }
+        try #require(requests.count == 3)
+        #expect(requests.map(\.0) == [targets[0], targets[0], targets[1]])
+        let first = try #require(requests[0].1.frame)
+        #expect(requests[1].1.frame == first, "Different pointer positions inside one row use one anchor")
+        #expect(requests[2].1.frame == first.offsetBy(dx: 0, dy: -40))
+        hosted.window.setFrameOrigin(hosted.window.frame.origin.applying(CGAffineTransform(translationX: 30, y: 10)))
+        #expect(requests[0].1.frame == first.offsetBy(dx: 30, dy: 10), "Repositioning reads current geometry, not a stale screen rectangle")
+        let scroll = try #require(requests[0].1.view?.enclosingScrollView)
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: 50))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        #expect(requests[0].1.frame == nil, "A scrolled-away item must not retain a floating menu anchor")
+        #expect(requests[2].1.frame?.height == 30, "A partially visible item anchors to its visible portion")
+        hosted.window.orderOut(nil)
+        #expect(requests[0].1.frame == nil)
+    }
+
+    @Test(arguments: [ColorScheme.light, .dark])
+    func groupSummaryProtectsTheTitleAndShowsOnlyTheTwoHighestPriorityStates(scheme: ColorScheme) throws {
+        let counts = [AgentStatus.blocked, .done, .working, .idle, .unknown].map { AgentStatusCount(status: $0, count: 2) }
+        #expect(counts.statusCountsText == "2 needs you, 2 done, 2 working, 2 ready, 2 unknown",
+                "The shared help/accessibility text keeps every count despite visual compaction")
+        for branch in ["main", "feature/assessment-consulting"] {
+            let row = GroupHeaderRow(
+                leading: RowSymbol(symbol: "square.dashed", tint: nil), title: "assessment",
+                subtitle: { GitBranchLabel(summary: .single(branch)) }, isExpanded: nil, indent: 12,
+                accessibilityLabel: "assessment", accessibilityHint: "Opens this group", action: {}
+            ) { GroupActivitySummary(counts: counts) }
+            let image = try render(row.padding(.horizontal, Theme.Spacing.panelInset), height: 32,
+                                   name: "compact-summary-\(scheme)-\(branch == "main" ? "short" : "long")", scheme: scheme)
+            let visible = try text(in: image)
+            #expect(visible.contains("assessment"), "The primary identity must not be squeezed by metadata: \(visible)")
+            #expect(visible.contains("2 blocked") && visible.contains("2 done"), "Keep the most important counts: \(visible)")
+            #expect(!visible.contains("working") && !visible.contains("idle") && !visible.contains("unknown"),
+                    "Lower-priority counts belong in help and accessibility, not across the title")
+            #expect(fittingHeight { row } == 32, "Compaction must not change row geometry")
+        }
+    }
+
+    @Test func realPointerMovementTakesTheKeyboardTargetWithoutNavigating() throws {
+        let store = PreviewFixtures.makeStore()
+        let agents = ["first", "second"].map {
+            AgentInfo(paneID: $0, title: $0, status: .working, workspace: "fixture", cwd: "/fixture", updatedAt: .now)
+        }
+        let source = SourceInfo(descriptor: .local, sessions: [SessionInfo(name: "default", agents: agents, online: true)], online: true)
+        let browser = NavigationBrowser()
+        browser.open(sources: [source], attempt: nil, keyboard: true, expandedSourceID: nil)
+        let second = browser.quickIDs[1]
+        let hosted = host(NavigationList(store: store, browser: browser).environment(\.navigationBrowser, browser), height: 100)
+        defer { hosted.window.close() }
+        try movePointer(in: hosted, to: NSPoint(x: 100, y: 62))
+        #expect(browser.selection == .destination(second))
+        #expect(browser.keyboardSelection == nil)
+        let image = NSBitmapImageRep(cgImage: try snapshot(hosted.view, name: "pointer-handoff"))
+        let scale = CGFloat(image.pixelsWide) / Theme.Size.panelWidth
+        let oldFill = try #require(image.colorAt(x: Int(300 * scale), y: Int(20 * scale)))
+        let newFill = try #require(image.colorAt(x: Int(300 * scale), y: Int(62 * scale)))
+        #expect(oldFill.alphaComponent < 0.01, "The old keyboard target loses its surface")
+        #expect(newFill.alphaComponent > 0.9, "Only the new pointer target has the menu highlight")
+        #expect(store.navigationAttempt == nil, "Hover must not submit a jump or seen")
+        browser.receive(sources: [source], attempt: NavigationAttempt(destination: second, title: "second", subtitle: "fixture",
+            phase: .failed, message: "Fixture failure"))
+        _ = PanelKeyboard.handle(126, browser: browser)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        hosted.view.layoutSubtreeIfNeeded()
+        try movePointer(in: hosted, to: NSPoint(x: 390, y: 62))
+        #expect(browser.selection == .destination(second), "A nested Retry and its row share one exact pointer target")
+        #expect(PanelKeyboard.handle(36, browser: browser) == .navigate(second), "Enter follows the visible pointer target")
+    }
+
+    @Test(arguments: [false, true])
+    func movingIntoPanelCommandsReleasesTheRosterKeyboardTarget(header: Bool) throws {
+        let source = SourceInfo(descriptor: .local, sessions: [SessionInfo(name: "default", agents: [
+            AgentInfo(paneID: "fixture", title: "Fixture", status: .working, workspace: "fixture", cwd: "/fixture", updatedAt: .now)
+        ], online: true)], online: true)
+        let browser = NavigationBrowser()
+        browser.open(sources: [source], attempt: nil, keyboard: true, expandedSourceID: nil)
+        let command = header ? AnyView(NavigationHeader(browser: browser)) : AnyView(RosterActionPill(title: "Retry", action: {}))
+        let hosted = host(command
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .environment(\.navigationBrowser, browser), height: 40)
+        defer { hosted.window.close() }
+        #expect(browser.keyboardSelection != nil)
+        try movePointer(in: hosted, to: NSPoint(x: 20, y: 10))
+        #expect(browser.keyboardSelection == nil)
+        #expect(browser.selection == nil, "A command outside a roster row must not leave Enter on the previous target")
+        #expect(browser.allowsPointerHighlight)
+        #expect(browser.attempt == nil)
+    }
+
     @Test func mouseInspectionEmphasisEndsWithTheMenuWhileKeyboardFocusRemainsDistinct() throws {
         let store = PreviewFixtures.makeStore()
         let agent = AgentInfo(paneID: "inspect", title: "Inspection fixture", status: .working,
@@ -21,10 +139,14 @@ struct NavigationPanelTests {
         let normal = try render(row, height: 40, name: "inspection-base")
         let parent = MenuBarPanel()
         parent.setFrame(NSRect(x: 100, y: 100, width: 420, height: 300), display: false)
+        let anchorView = NSView(frame: NSRect(x: 6, y: 200, width: 408, height: 40))
+        parent.contentView?.addSubview(anchorView)
+        let anchor = AgentActionsAnchor()
+        anchor.view = anchorView
         parent.orderBack(nil)
         let menu = AgentActionsMenuController(parent: parent, store: store, browser: browser)
         defer { menu.dismiss(returnFocus: false); parent.orderOut(nil) }
-        menu.present(for: target)
+        menu.present(for: target, anchor: anchor)
         let inspecting = try render(row, height: 40, name: "inspection-open")
         menu.dismiss()
         let dismissed = try render(row, height: 40, name: "inspection-dismissed")
@@ -154,7 +276,7 @@ struct NavigationPanelTests {
     }
 
     @Test(arguments: [2.0, 36.0])
-    func viewSelectionBelongsOnlyToItsOptionAndDoesNotSubmitNavigation(hitY: CGFloat) async throws {
+    func viewChoicesKeepFullHitAreasWithoutPersistentBackgrounds(hitY: CGFloat) async throws {
         let store = await PreviewFixtures.loadedStore()
         defer { store.stop() }
         let browser = NavigationBrowser(sources: store.sources)
@@ -171,11 +293,8 @@ struct NavigationPanelTests {
             let scale = CGFloat(bitmap.pixelsWide) / Theme.Size.panelWidth
             return try #require(bitmap.colorAt(x: Int(x * scale), y: Int(y * scale))).alphaComponent
         }
-        let wash = try alpha(bitmap, x: Theme.Spacing.navigationVisualInset + 4, y: 19)
-        let firstClearColumn = try #require((5..<200).first { try alpha(bitmap, x: CGFloat($0), y: 19) < 0.01 })
-        let gap = CGFloat(firstClearColumn) + 1
-        #expect(wash > 0.01 && wash < 0.25, "Current view owns one faint selected background")
-        #expect(try alpha(bitmap, x: gap + 6, y: 19) < 0.01, "Inactive option must remain transparent")
+        #expect(try (0..<200).allSatisfy { try alpha(bitmap, x: CGFloat($0), y: 7) < 0.01 },
+                "Both view choices are transparent at rest, including the current one")
         #expect(try alpha(bitmap, x: 250, y: 19) < 0.01, "Header must not have a shared background")
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             let event = try #require(NSEvent.mouseEvent(with: type, location: CGPoint(x: 150, y: hitY), modifierFlags: [],
@@ -188,9 +307,8 @@ struct NavigationPanelTests {
         #expect(store.navigationAttempt == nil)
         let selectedImage = try snapshot(hosted.view, name: "connected-header-selected")
         let selectedBitmap = NSBitmapImageRep(cgImage: selectedImage)
-        #expect(try alpha(selectedBitmap, x: Theme.Spacing.navigationVisualInset + 4, y: 19) < 0.01)
-        #expect(try alpha(selectedBitmap, x: gap, y: 19) < 0.01, "Adjacent option backgrounds need a clear gap")
-        #expect(try alpha(selectedBitmap, x: gap + 6, y: 19) > 0.01)
+        #expect(try (0..<200).allSatisfy { try alpha(selectedBitmap, x: CGFloat($0), y: 7) < 0.01 },
+                "Changing view does not leave a selected plate behind")
         let visible = try text(in: selectedImage)
         #expect(!visible.contains("Update list"))
         #expect(!visible.contains("Quick access"))
@@ -324,8 +442,8 @@ struct NavigationPanelTests {
                     .environment(\.navigationBrowser, browser)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            // Top hit-area inset8 + visual margin5 =13 visible; footer is13.
-            let expected = 38 + 4 + listHeight + 21
+            // Top hit-area inset1 + visual margin5 =6 visible; footer is6.
+            let expected = 38 + 4 + listHeight + 7
             for viewport in [CGFloat(120), 700] {
                 let capture = NavigationMeasuredHeight()
                 let hosted = host(
@@ -439,7 +557,12 @@ struct NavigationPanelTests {
             let browser = NavigationBrowser(sources: store.sources)
             browser.open(sources: store.sources, attempt: nil, keyboard: true, expandedSourceID: SourceDescriptor.local.id)
             let quick = try render(AgentListView(store: store, browser: browser), height: 420, name: "quick-\(name)", scheme: scheme)
-            let quickText = try text(in: quick)
+            // Keep glyphs and trailing readouts out of title recognition, not out of the artifact.
+            let scale = CGFloat(quick.width) / Theme.Size.panelWidth
+            let titles = try #require(quick.cropping(to: CGRect(x: 36 * scale, y: 40 * scale,
+                width: 280 * scale, height: CGFloat(quick.height) - 40 * scale)))
+            let quickText = try text(in: titles)
+            #expect(quickText.contains("fix auth retry loop"), "The highlighted title must stay readable")
             #expect(quickText.contains("Clash Verge TUN"), "Recent idle appears without a prior navigation")
             #expect(quickText.contains("genre-unit-validation"), "Working targets still appear without duplicate state text")
 
@@ -459,9 +582,25 @@ struct NavigationPanelTests {
         print("Navigation render artifacts: \(directory.path)")
     }
 
+    private func movePointer(in hosted: (view: NSHostingView<AnyView>, window: NSWindow), to point: NSPoint) throws {
+        let location = hosted.view.convert(point, to: nil)
+        let event = try #require(NSEvent.mouseEvent(with: .mouseMoved, location: location, modifierFlags: [],
+            timestamp: 0, windowNumber: hosted.window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
+        // Deliver only to this offscreen window's tracking owners, never to the user's desktop.
+        var views: [NSView] = [hosted.view]
+        while let view = views.popLast() {
+            views += view.subviews
+            guard view.visibleRect.contains(view.convert(location, from: nil)) else { continue }
+            for area in view.trackingAreas where area.options.contains(.mouseMoved) {
+                (area.owner as? NSResponder)?.mouseMoved(with: event)
+            }
+        }
+    }
+
     private func text(in image: CGImage) throws -> String {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
         try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
         return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
     }
@@ -499,7 +638,8 @@ struct NavigationPanelTests {
         let hosting = NSHostingView(rootView: AnyView(view))
         hosting.appearance = appearance
         hosting.frame = NSRect(x: 0, y: 0, width: Theme.Size.panelWidth, height: height)
-        let window = NSWindow(contentRect: hosting.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: hosting.frame.offsetBy(dx: -20_000, dy: -20_000),
+                              styleMask: .borderless, backing: .buffered, defer: false)
         window.appearance = appearance
         window.isReleasedWhenClosed = false
         window.contentView = hosting

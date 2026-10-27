@@ -11,40 +11,31 @@ private struct PanelOpenKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    @Entry var rosterContentSize: CGSize = .zero
-
     var panelIsOpen: Bool {
         get { self[PanelOpenKey.self] }
         set { self[PanelOpenKey.self] = newValue }
     }
 }
 
-enum RosterCoordinateSpace: Hashable { case content }
-
 private struct RosterBoundary: ViewModifier {
     let topInset: CGFloat
-    @State private var size = CGSize.zero
 
     func body(content: Content) -> some View {
         content
-            .coordinateSpace(name: RosterCoordinateSpace.content)
-            .environment(\.rosterContentSize, size)
-            .onGeometryChange(for: CGSize.self, of: { $0.size }) { size = $0 }
             .mask {
                 RoundedRectangle(cornerSize: Theme.Radius.panelContent, style: .continuous)
                     .padding(.horizontal, Theme.Spacing.panelInset)
                     .overlay(alignment: .trailing) {
                         Rectangle().frame(width: Theme.Spacing.panelInset)
                     }
-                    .foregroundStyle(Theme.Colors.textPrimary)
+                    .foregroundStyle(Theme.Colors.opaqueInk)
             }
             .padding(.top, topInset)
             .padding(.bottom, Theme.Spacing.panelBottomInset)
     }
 }
 
-/// Liquid Glass as a panel window's content view: the surface a native `NSMenu` uses from macOS 26.
-/// No scrim or tint goes over it, so the backdrop reads through the way it does in the system menu.
+/// A single native glass surface; a quiet neutral tint keeps busy backdrops from dominating the roster.
 @available(macOS 26.0, *)
 @MainActor
 func panelGlass(wrapping content: NSView, cornerRadius: CGFloat) -> NSGlassEffectView {
@@ -52,6 +43,7 @@ func panelGlass(wrapping content: NSView, cornerRadius: CGFloat) -> NSGlassEffec
     // Regular rather than clear: clear takes its tone from the backdrop while the labels follow the
     // appearance, which pairs dark text with a dark panel.
     glass.style = .regular
+    glass.tintColor = Theme.Colors.glassTint
     glass.cornerRadius = cornerRadius
     // Key-window glass can draw a rectangular rim outside its rounded surface.
     // Clip the effect itself, not only the SwiftUI content inside it.

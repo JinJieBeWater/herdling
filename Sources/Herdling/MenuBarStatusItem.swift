@@ -145,7 +145,7 @@ private struct MenuBarSummaryStrip: View {
         }
         // The image is a template, so AppKit recolours it for the menu bar; the ink here only has to
         // be opaque enough for the renderer to keep the glyphs' alpha.
-        .foregroundStyle(Theme.Colors.textPrimary)
+        .foregroundStyle(Theme.Colors.opaqueInk)
         .fixedSize()
     }
 }

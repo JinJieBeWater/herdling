@@ -67,29 +67,28 @@ struct NavigationHeader: View {
             Spacer(minLength: Theme.Spacing.md)
             if !browser.offlineSourceNames.isEmpty {
                 HStack(spacing: Theme.Spacing.xs) {
-                    RowSymbol(symbol: "network.slash", tint: Theme.Hue.orange,
+                    RowSymbol(symbol: "network.slash", tint: Theme.Colors.warning,
                               slotSize: Theme.Size.navigationIcon)
                     Text("\(browser.offlineSourceNames.count) offline")
                         .font(Theme.Typography.rowTrailing)
                 }
-                .foregroundStyle(Theme.Hue.orange)
+                .foregroundStyle(Theme.Colors.textPrimary)
                 .help(browser.offlineSourceNames.joined(separator: ", "))
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(browser.offlineSourceNames.count) sources have unavailable status")
                 .accessibilityHint(browser.offlineSourceNames.joined(separator: ", "))
             }
         }
-        .padding(.trailing, Theme.Spacing.md)
+        .padding(.trailing, Theme.Spacing.rowHorizontal)
         .frame(height: Theme.Size.navigationHeaderHeight)
+        .background { RosterPointerTracking(moved: { browser.selectFromPointer(nil, at: $0) }) }
     }
 
 }
 
-/// One view choice, with a single movable selection background and no shared track.
+/// Current view uses ink, not a persistent surface; the accent is reserved for hover.
 private struct NavigationModeSwitch: View {
     let browser: NavigationBrowser
-    @Namespace private var selection
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: Theme.Spacing.xs) {
@@ -99,47 +98,40 @@ private struct NavigationModeSwitch: View {
         .fixedSize()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Agent view")
-        .animation(AccordionMotion.animation(reduceMotion: reduceMotion), value: browser.mode)
     }
 
     private func option(_ title: String, symbol: String, mode: NavigationBrowser.Mode) -> some View {
-        NavigationModeOption(title: title, symbol: symbol, selected: browser.mode == mode,
-                             meetsShellCorner: mode == .quick,
-                             selection: selection, action: { browser.setMode(mode) })
+        NavigationModeOption(browser: browser, title: title, symbol: symbol, selected: browser.mode == mode,
+                             action: { browser.setMode(mode) })
     }
 }
 
 private struct NavigationModeOption: View {
+    let browser: NavigationBrowser
     let title: String
     let symbol: String
     let selected: Bool
-    let meetsShellCorner: Bool
-    let selection: Namespace.ID
     let action: () -> Void
     @State private var hovered = false
     @Environment(\.panelIsOpen) private var panelIsOpen
+    private var highlighted: Bool { hovered && browser.allowsPointerHighlight }
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: Theme.Spacing.navigationContentGap) {
-                RowSymbol(symbol: symbol, tint: selected || hovered ? Theme.Colors.textPrimary : Theme.Colors.textSecondary,
+                RowSymbol(symbol: symbol, tint: selected || highlighted ? Theme.Colors.textPrimary : Theme.Colors.textSecondary,
                           slotSize: Theme.Size.navigationIcon, role: .navigation)
                 Text(title)
             }
                 .font(Theme.Typography.navigationModeLabel)
-                .foregroundStyle(selected || hovered ? Theme.Colors.textPrimary : Theme.Colors.textSecondary)
+                .foregroundStyle(selected || highlighted ? Theme.Colors.textPrimary : Theme.Colors.textSecondary)
+                .environment(\.backgroundProminence, highlighted ? .increased : .standard)
                 .padding(.horizontal, Theme.Spacing.navigationContentInset)
                 .frame(height: Theme.Size.navigationControlHeight)
                 .background {
-                    if selected {
-                        UnevenRoundedRectangle(
-                            topLeadingRadius: meetsShellCorner ? Theme.Radius.panelContent.width : Theme.Radius.navigationControl,
-                            bottomLeadingRadius: Theme.Radius.navigationControl,
-                            bottomTrailingRadius: Theme.Radius.navigationControl,
-                            topTrailingRadius: Theme.Radius.navigationControl,
-                            style: .continuous)
-                            .fill(Theme.Colors.selection)
-                            .matchedGeometryEffect(id: "active-view", in: selection)
+                    if highlighted {
+                        RoundedRectangle(cornerRadius: Theme.Radius.navigationControl, style: .continuous)
+                            .fill(Theme.Colors.highlight)
                     }
                 }
                 .frame(height: Theme.Size.navigationHeaderHeight)
@@ -151,6 +143,7 @@ private struct NavigationModeOption: View {
         .accessibilityLabel(title)
         .accessibilityValue(selected ? "Selected" : "")
     }
+
 }
 
 struct NavigationList: View {
@@ -193,7 +186,7 @@ struct NavigationList: View {
                 .font(Theme.Typography.groupLabel)
                 .foregroundStyle(Theme.Colors.textSecondary)
                 .lineLimit(1)
-                .padding(.horizontal, Theme.Spacing.md)
+                .padding(.horizontal, Theme.Spacing.rowHorizontal)
                 .frame(maxWidth: .infinity, minHeight: Theme.Size.quickRowHeight)
         }
     }
@@ -222,7 +215,7 @@ struct NavigationList: View {
                 Spacer(minLength: Theme.Spacing.md)
             }
             .foregroundStyle(Theme.Colors.textSecondary)
-            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.horizontal, Theme.Spacing.rowHorizontal)
             .frame(height: Theme.Size.rowMinHeight)
             QuickNavigationRow(store: store, browser: browser, destination: destination)
         }

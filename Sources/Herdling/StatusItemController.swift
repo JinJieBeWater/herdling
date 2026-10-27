@@ -60,7 +60,7 @@ final class StatusItemController: NSObject {
     private var isRefreshing = false
     private lazy var hostingController = NSHostingController(
         rootView: AgentListView(store: store, browser: browser,
-                               showAgentActions: { [weak self] destination in self?.showAgentActions(destination) })
+                               showAgentActions: { [weak self] destination, anchor in self?.showAgentActions(destination, anchor: anchor) })
     )
     private var agentActions: AgentActionsMenuController?
     private lazy var outsideClickMonitor = PanelOutsideClickMonitor(
@@ -161,6 +161,7 @@ final class StatusItemController: NSObject {
         browser.open(sources: store.sources,
                      attempt: store.navigationAttempt, keyboard: keyboard,
                      expandedSourceID: store.expandedSourceID, observedAgentIDs: store.observedAgentIDs)
+        browser.holdPointer(at: NSEvent.mouseLocation)
         PanelHeightBridge.invalidate()
         hostingController.view.layoutSubtreeIfNeeded()
         resizePanel(button: button, window: window, screen: screen)
@@ -294,9 +295,9 @@ final class StatusItemController: NSObject {
         agentActions?.reposition()
     }
 
-    private func showAgentActions(_ destination: NavigationDestination) {
+    private func showAgentActions(_ destination: NavigationDestination, anchor: AgentActionsAnchor) {
         if agentActions == nil { agentActions = AgentActionsMenuController(parent: panel, store: store, browser: browser) }
-        agentActions?.present(for: destination)
+        agentActions?.present(for: destination, anchor: anchor)
     }
 
     static func clampedContentHeight(_ height: CGFloat) -> CGFloat {

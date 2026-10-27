@@ -44,7 +44,7 @@ struct SettingsView: View {
                     SettingsLabel(
                         title: alias,
                         symbol: "network",
-                        tint: isEnabled ? Theme.Hue.purple : Theme.Colors.textTertiary
+                        tint: isEnabled ? Theme.Hue.purple : Theme.Colors.settingsTertiary
                     )
                 }
             }

@@ -1833,9 +1833,14 @@ struct CoreBehaviorTests {
     @MainActor
     func panelVisibilityReschedulesPolling() async {
         let recorder = SleepRecorder()
-        let store = SessionStore(client: HerdrClient(executable: nil)) { duration in
-            try await recorder.sleep(duration)
-        }
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            sleep: { duration in try await recorder.sleep(duration) },
+            loadSource: { _ in [] },
+            loadBranches: { _, _ in [:] },
+            sourceDescriptors: [.local],
+            defaults: PreviewFixtures.renderDefaults()
+        )
 
         store.start()
         await recorder.waitForCount(1)
@@ -1849,7 +1854,8 @@ struct CoreBehaviorTests {
 
         await recorder.releaseFirstSleep()
         for _ in 0..<100 { await Task.yield() }
-        #expect(await recorder.durations.count == 2)
+        let finalDurations = await recorder.durations
+        #expect(finalDurations == [.seconds(15), .seconds(2)])
         store.stop()
     }
 
@@ -1951,18 +1957,6 @@ struct CoreBehaviorTests {
         #expect(statusItem.item.button?.image?.isTemplate == true)
         #expect(MenuBarStatusItem.renderingScale(buttonScale: 1, fallbackScale: 2) == 1)
         #expect(MenuBarStatusItem.renderingScale(buttonScale: nil, fallbackScale: 2) == 2)
-    }
-
-    @Test
-    func rosterWorkingColorUsesSystemAccent() throws {
-        let appearance = try #require(NSAppearance(named: .aqua))
-        var accent: NSColor?
-        var working: NSColor?
-        appearance.performAsCurrentDrawingAppearance {
-            accent = NSColor.controlAccentColor.usingColorSpace(.sRGB)
-            working = StatusPalette.working.usingColorSpace(.sRGB)
-        }
-        #expect(working == accent)
     }
 
     @Test
@@ -2168,7 +2162,10 @@ private actor SleepRecorder {
             while !firstSleepReleased { await Task.yield() }
             return
         }
-        try await Task.sleep(for: .seconds(30))
+        // Only cancellation releases later sleeps; wall time must not advance this fake clock.
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        defer { continuation.finish() }
+        for await _ in stream {}
     }
 
     func releaseFirstSleep() {

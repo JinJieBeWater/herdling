@@ -5,6 +5,73 @@ import Testing
 
 @Suite @MainActor
 struct NavigationBrowserTests {
+    @Test func pointerHandoffIgnoresStationaryLayoutAndKeepsExactIdentityAcrossMuteReordering() {
+        let sources = [source(.local, agents: [agent("same", .blocked, time: 1)]),
+                       source(.remote("kvm"), agents: [agent("same", .working, time: 2)])]
+        let browser = NavigationBrowser()
+        let local = NavigationRowID.destination(target("same"))
+        let remote = NavigationRowID.destination(target("same", source: "ssh:kvm"))
+        browser.open(sources: sources, attempt: nil, keyboard: true, expandedSourceID: nil)
+        let stationary = CGPoint(x: 10, y: 10), moved = CGPoint(x: 11, y: 10)
+        browser.holdPointer(at: stationary)
+        browser.selectFromPointer(remote, at: stationary)
+        #expect(browser.highlightedSelection == local)
+        #expect(!browser.allowsPointerHighlight, "Stationary header and command hover must yield to a keyboard row")
+        browser.selectFromPointer(remote, at: moved)
+        #expect(browser.highlightedSelection == remote)
+        #expect(browser.keyboardSelection == nil)
+        #expect(browser.allowsPointerHighlight)
+        browser.pointerExited(local)
+        #expect(browser.highlightedSelection == remote, "An old row's exit must not clear the new target")
+        browser.holdPointer(at: moved)
+        browser.moveSelection(by: -1)
+        #expect(browser.highlightedSelection == local)
+        browser.receive(sources: sources, attempt: nil, observedAgentIDs: [target("same").agentFocusID!])
+        browser.selectFromPointer(remote, at: moved)
+        #expect(browser.highlightedSelection == local, "Reordering below a stationary pointer cannot steal keyboard ownership")
+        #expect(browser.quickIDs.first == target("same", source: "ssh:kvm"))
+        browser.selectFromPointer(remote, at: CGPoint(x: 12, y: 10))
+        #expect(browser.highlightedSelection == remote)
+        browser.pointerExited(remote)
+        #expect(browser.highlightedSelection == nil)
+        #expect(browser.selection == remote, "Leaving a row keeps its exact identity for subsequent keyboard input")
+        #expect(browser.attempt == nil)
+    }
+
+    @Test func pointerCannotRetargetInspectionOrActivateUnavailableAndClosedRows() {
+        let sources = [source(.local, agents: [agent("a", .blocked, time: 1), agent("b", .working, time: 2)])]
+        let browser = NavigationBrowser()
+        let a = NavigationRowID.destination(target("a")), b = NavigationRowID.destination(target("b"))
+        browser.open(sources: sources, attempt: nil, keyboard: true, expandedSourceID: nil)
+        browser.beginInspection()
+        #expect(!browser.allowsPointerHighlight)
+        browser.selectFromPointer(b, at: CGPoint(x: 1, y: 0))
+        #expect(browser.inspectionSelection == a)
+        #expect(browser.selection == a)
+        #expect(browser.highlightedSelection == nil)
+        browser.holdPointer(at: CGPoint(x: 2, y: 0))
+        browser.endInspection(keyboard: false)
+        browser.selectFromPointer(b, at: CGPoint(x: 2, y: 0))
+        #expect(browser.selection == a, "Dismissing a child under the pointer is not a mouse gesture")
+        browser.selectFromPointer(b, at: CGPoint(x: 3, y: 0))
+        #expect(browser.highlightedSelection == b)
+        browser.receive(sources: [], attempt: nil)
+        browser.selectFromPointer(a, at: CGPoint(x: 4, y: 0))
+        #expect(browser.highlightedSelection == nil)
+        #expect(browser.activateSelection() == nil, "An unavailable row must not activate the previous pointer target")
+        browser.open(sources: sources, attempt: nil, keyboard: false, expandedSourceID: nil)
+        browser.setMode(.all)
+        browser.selectFromPointer(.source("local"), at: CGPoint(x: 5, y: 0))
+        #expect(browser.activateSelection() == nil)
+        #expect(browser.expandedSourceID == "local", "Source hover changes selection, Enter only folds it")
+        browser.selectFromPointer(nil, at: CGPoint(x: 6, y: 0))
+        #expect(browser.selection == nil, "Moving into the header releases the roster target")
+        browser.close()
+        browser.selectFromPointer(a, at: CGPoint(x: 7, y: 0))
+        #expect(browser.highlightedSelection == nil)
+        #expect(browser.selection == nil)
+    }
+
     @Test func agentInspectionSelectsOnlyVisibleExactIdentitiesWithoutNavigation() {
         let sources = [source(.local, agents: [agent("same", .working, time: 1)]),
                        source(.remote("kvm"), agents: [agent("same", .working, time: 2)])]

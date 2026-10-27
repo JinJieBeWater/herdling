@@ -23,6 +23,12 @@ final class NavigationBrowser {
     private(set) var inspectionSelection: NavigationRowID?
     private var keyboardDriven = false
     var keyboardSelection: NavigationRowID? { keyboardDriven && inspectionSelection == nil ? selection : nil }
+    var allowsPointerHighlight: Bool { !keyboardDriven && inspectionSelection == nil }
+    private var pointerSelection: NavigationRowID?
+    @ObservationIgnored private var pointerLocation: CGPoint?
+    var highlightedSelection: NavigationRowID? {
+        inspectionSelection == nil ? (keyboardDriven ? selection : pointerSelection) : nil
+    }
     private(set) var expandedSourceID: String?
     private(set) var quickIDs: [NavigationDestination] = []
     private(set) var attempt: NavigationAttempt?
@@ -96,11 +102,13 @@ final class NavigationBrowser {
         selection = nil
         inspectionSelection = nil
         keyboardDriven = keyboard
+        pointerSelection = nil
+        pointerLocation = nil
         rebuildSnapshot()
         if keyboard { selection = visibleRows.first(where: canSelect) }
     }
 
-    func close() { isOpen = false; inspectionSelection = nil; keyboardDriven = false }
+    func close() { isOpen = false; inspectionSelection = nil; keyboardDriven = false; pointerSelection = nil }
     func receive(sources: [SourceInfo], attempt: NavigationAttempt?, observedAgentIDs: Set<AgentFocusID>? = nil) {
         latestSources = sources
         if let observedAgentIDs, observedAgentIDs != self.observedAgentIDs {
@@ -164,13 +172,29 @@ final class NavigationBrowser {
         }
     }
     func activateSelection() -> NavigationDestination? {
+        keyboardDriven = true
+        pointerSelection = nil
         if case let .source(id) = selection { toggleSource(id); return nil }
         guard case let .destination(destination) = selection, isAvailable(destination) else { return nil }
         return destination
     }
-    func clearSelection() { selection = nil; inspectionSelection = nil; keyboardDriven = false }
+    func clearSelection() { selection = nil; inspectionSelection = nil; keyboardDriven = false; pointerSelection = nil }
 
-    func beginInspection() { inspectionSelection = selection }
+    func holdPointer(at location: CGPoint) { pointerLocation = location }
+
+    func selectFromPointer(_ row: NavigationRowID?, at location: CGPoint) {
+        guard isOpen, inspectionSelection == nil, location != pointerLocation else { return }
+        pointerLocation = location
+        keyboardDriven = false
+        pointerSelection = row.flatMap { visibleRows.contains($0) && canSelect($0) ? $0 : nil }
+        selection = pointerSelection
+    }
+
+    func pointerExited(_ row: NavigationRowID) {
+        if pointerSelection == row { pointerSelection = nil }
+    }
+
+    func beginInspection() { inspectionSelection = selection; pointerSelection = nil }
     func endInspection(keyboard: Bool) { inspectionSelection = nil; keyboardDriven = keyboard }
 
     /// Inspection selects a frozen identity; availability gates navigation, not inspection.
@@ -180,6 +204,7 @@ final class NavigationBrowser {
         guard destination.agentFocusID != nil, visibleRows.contains(row) else { return false }
         selection = row
         keyboardDriven = false
+        pointerSelection = nil
         return true
     }
 
@@ -221,6 +246,7 @@ final class NavigationBrowser {
     }
     private func keepSelection() {
         if let selection, !visibleRows.contains(selection) { self.selection = nil }
+        if let pointerSelection, !visibleRows.contains(pointerSelection) { self.pointerSelection = nil }
     }
 
     private func shape(of sources: [SourceInfo]) -> [SourceShape] {

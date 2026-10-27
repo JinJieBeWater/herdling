@@ -5,16 +5,13 @@ import SwiftUI
 ///
 /// Roster titles at the same visible depth share a column. See `docs/ui.md`.
 
-/// A clickable row with the shared hover fill. Hover state lives here, not in the list, so a mouse
-/// sweep repaints only the rows it enters and leaves.
+/// A clickable row; the browser owns the single highlight, the row owns its local hover affordance.
 struct HoverRow<Content: View>: View {
     var minHeight: CGFloat = Theme.Size.rowMinHeight
     var verticalPadding: CGFloat = Theme.Spacing.rowVertical
     /// Indents content only; the highlight and click target remain full width.
     var indent: CGFloat = 0
     var enabled = true
-    /// A row that stands for something open, or a keyboard selection. Beats hover.
-    var isSelected = false
     let accessibilityText: String
     var accessibilityHint: String? = "Opens this item in your selected terminal"
     var action: () -> Void
@@ -35,7 +32,7 @@ struct HoverRow<Content: View>: View {
     }
 
     private var navigationValue: String {
-        var values = keyboardSelected ? ["Selected"] : []
+        var values = keyboardSelected || highlighted ? ["Selected"] : []
         if !available { values.append("Unavailable") }
         if case let .destination(destination) = navigationRowID,
            let attempt = navigationBrowser?.attempt, attempt.destination == destination {
@@ -51,8 +48,10 @@ struct HoverRow<Content: View>: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: Theme.Spacing.lg) { content(isHovered && available) }
-                .padding(.leading, Theme.Spacing.md + indent)
-                .padding(.trailing, Theme.Spacing.md)
+                // On the accent highlight, hierarchical ink turns white the way a native menu's does.
+                .environment(\.backgroundProminence, highlighted ? .increased : .standard)
+                .padding(.leading, Theme.Spacing.rowHorizontal + indent)
+                .padding(.trailing, Theme.Spacing.rowHorizontal)
                 .padding(.vertical, verticalPadding)
                 .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .leading)
                 .contentShape(Rectangle())
@@ -62,7 +61,14 @@ struct HoverRow<Content: View>: View {
         .accessibilityLabel(accessibilityText)
         .modifier(OptionalAccessibilityHint(hint: accessibilityHint))
         .background {
-            RosterRowSurface(fill: fill, keyboardSelected: keyboardSelected)
+            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous).fill(fill)
+                .allowsHitTesting(false)
+            if let navigationBrowser, let navigationRowID {
+                RosterPointerTracking(
+                    moved: { navigationBrowser.selectFromPointer(navigationRowID, at: $0) },
+                    exited: { navigationBrowser.pointerExited(navigationRowID) }
+                )
+            }
         }
         .accessibilityValue(navigationValue)
         .onHover { isHovered = $0 }
@@ -70,45 +76,53 @@ struct HoverRow<Content: View>: View {
         .onChange(of: panelIsOpen) { _, isOpen in if isOpen { isHovered = false } }
     }
 
-    /// Selection beats hover, the rule every row follows.
-    private var fill: Color {
-        guard available else { return .clear }
-        if isSelected || keyboardSelected { return Theme.Colors.selection }
+    private var highlighted: Bool {
+        guard available, navigationBrowser?.inspectionSelection == nil else { return false }
+        if let navigationBrowser, let navigationRowID {
+            return navigationBrowser.highlightedSelection == navigationRowID
+        }
+        return isHovered && (navigationBrowser?.allowsPointerHighlight ?? true)
+    }
+
+    /// Highlight beats inspection. An unavailable keyboard target keeps
+    /// a neutral surface: still visible, without the accent that promises it opens.
+    private var fill: AnyShapeStyle {
+        guard available else { return keyboardSelected ? Theme.Colors.unavailableSelection : Theme.Colors.noFill }
+        if highlighted { return Theme.Colors.highlight }
         let inspected = navigationRowID != nil && navigationBrowser?.inspectionSelection == navigationRowID
-        return isHovered || inspected ? Theme.Colors.rowHover : .clear
+        return inspected ? Theme.Colors.inspection : Theme.Colors.noFill
     }
 }
 
-/// One visible contour for both ink layers, including rows meeting the container's curved edge.
-private struct RosterRowSurface: View {
-    let fill: Color
-    let keyboardSelected: Bool
-    @Environment(\.rosterContentSize) private var contentSize
+/// Layout and scrolling can synthesize hover entry; only a moved screen position claims selection.
+struct RosterPointerTracking: NSViewRepresentable {
+    let moved: (NSPoint) -> Void
+    var exited: () -> Void = {}
 
-    var body: some View {
-        GeometryReader { geometry in
-            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous).fill(fill)
-                .overlay {
-                    if keyboardSelected {
-                        let contour = contour(in: geometry)
-                        contour.stroke(Theme.Colors.textSecondary, lineWidth: Theme.Size.keyboardSelectionStroke * 2)
-                            .clipShape(contour)
-                    }
-                }
-        }
-        .allowsHitTesting(false)
+    func makeNSView(context: Context) -> TrackingView { TrackingView() }
+    func updateNSView(_ view: TrackingView, context: Context) {
+        view.moved = moved
+        view.exited = exited
     }
 
-    private func contour(in geometry: GeometryProxy) -> Path {
-        let row = RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
-            .path(in: CGRect(origin: .zero, size: geometry.size))
-        guard contentSize.width > 0, contentSize.height > 0 else { return row }
-        let bounds = geometry.frame(in: .named(RosterCoordinateSpace.content))
-        let container = RoundedRectangle(cornerSize: Theme.Radius.panelContent, style: .continuous)
-            .path(in: CGRect(x: Theme.Spacing.panelInset, y: 0,
-                             width: contentSize.width - Theme.Spacing.panelInset * 2, height: contentSize.height))
-            .applying(CGAffineTransform(translationX: -bounds.minX, y: -bounds.minY))
-        return row.intersection(container)
+    final class TrackingView: NSView {
+        var moved: ((NSPoint) -> Void)?
+        var exited: (() -> Void)?
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            for area in trackingAreas { removeTrackingArea(area) }
+            addTrackingArea(NSTrackingArea(rect: .zero,
+                options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil))
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func isAccessibilityElement() -> Bool { false }
+        override func mouseMoved(with event: NSEvent) {
+            guard let window = event.window else { return }
+            moved?(window.convertPoint(toScreen: event.locationInWindow))
+        }
+        override func mouseExited(with event: NSEvent) { exited?() }
     }
 }
 
@@ -128,9 +142,10 @@ private struct OptionalAccessibilityHint: ViewModifier {
 struct RowSymbol: View {
     enum Role { case list, navigation, menu }
     let symbol: String
-    let tint: Color?
+    let tint: AnyShapeStyle
     var slotSize: CGFloat = Theme.Size.rowIcon
     var role: Role = .list
+    @Environment(\.backgroundProminence) private var prominence
 
     var body: some View {
         Group {
@@ -139,7 +154,8 @@ struct RowSymbol: View {
                 Image(nsImage: image).renderingMode(.template)
             }
         }
-        .foregroundStyle(tint ?? Theme.Colors.textTertiary)
+        // Status hues would vanish into the accent highlight; native menus draw icons white there.
+        .foregroundStyle(prominence == .increased ? Theme.Colors.textPrimary : tint)
         .frame(width: slotSize, height: slotSize)
         .accessibilityHidden(true)
     }
@@ -150,6 +166,15 @@ struct RowSymbol: View {
         case .navigation: Theme.Glyph.navigationSymbol
         case .menu: Theme.Glyph.menuSymbol
         }
+    }
+}
+
+extension RowSymbol {
+    /// Status and hue marks arrive as plain colours. Without one, a neutral status still has to read
+    /// as a status, so it takes secondary ink; tertiary on glass is too faint for that.
+    init(symbol: String, tint: Color?, slotSize: CGFloat = Theme.Size.rowIcon, role: Role = .list) {
+        self.init(symbol: symbol, tint: tint.map { AnyShapeStyle($0) } ?? Theme.Colors.textSecondary,
+                  slotSize: slotSize, role: role)
     }
 }
 
@@ -174,14 +199,19 @@ struct RosterEmptyState: View {
     }
 }
 
-/// A small inline action at the trailing edge of a row: bare at rest, a `rowHover` capsule under the
-/// pointer. One implementation for every row's trailing button, so they all speak the same language.
+/// A small inline command: bare at rest, the shared accent highlight under the pointer.
 struct RosterActionPill: View {
     let title: String
     var symbol: String?
     let action: () -> Void
 
     @State private var isHovered = false
+    @Environment(\.backgroundProminence) private var prominence
+    @Environment(\.panelIsOpen) private var panelIsOpen
+    @Environment(\.navigationBrowser) private var navigationBrowser
+    @Environment(\.navigationRowID) private var navigationRowID
+
+    private var highlighted: Bool { isHovered && (navigationBrowser?.allowsPointerHighlight ?? true) }
 
     var body: some View {
         Button(action: action) {
@@ -189,32 +219,40 @@ struct RosterActionPill: View {
                 if let symbol {
                     Image(systemName: symbol)
                         .font(Theme.Glyph.actionSymbol)
-                        .foregroundStyle(Theme.Colors.textSecondary)
                 }
                 Text(title)
                     .font(Theme.Typography.groupLabel.weight(.medium))
-                    .foregroundStyle(Theme.Colors.textSecondary)
             }
+            .foregroundStyle(highlighted ? Theme.Colors.textPrimary : Theme.Colors.textSecondary)
+            .environment(\.backgroundProminence, highlighted ? .increased : prominence)
             .padding(.horizontal, Theme.Spacing.sm)
             .frame(height: Theme.Size.actionPill)
             .background(
-                Capsule().fill(isHovered ? Theme.Colors.rowHover : .clear)
+                RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                    .fill(highlighted && prominence != .increased ? Theme.Colors.highlight : Theme.Colors.noFill)
             )
-            .contentShape(Capsule())
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
         }
         .buttonStyle(.plain)
+        .background {
+            if let navigationBrowser {
+                RosterPointerTracking(moved: { navigationBrowser.selectFromPointer(navigationRowID, at: $0) })
+            }
+        }
         .onHover { isHovered = $0 }
+        .onChange(of: panelIsOpen) { _, isOpen in if isOpen { isHovered = false } }
     }
 }
 
 struct DisclosureChevron: View {
     let isExpanded: Bool
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+    @Environment(\.backgroundProminence) private var prominence
 
     var body: some View {
         Image(systemName: "chevron.right")
             .font(Theme.Glyph.chevron)
-            .foregroundStyle(Theme.Colors.textTertiary)
+            .foregroundStyle(prominence == .increased ? Theme.Colors.textPrimary : Theme.Colors.textSecondary)
             .animation(AccordionMotion.animation(reduceMotion: accessibilityReduceMotion)) { image in
                 image.rotationEffect(.degrees(isExpanded ? 90 : 0))
             }
@@ -231,5 +269,5 @@ struct DisclosureChevron: View {
 /// had already drifted apart.
 extension SourceInfo {
     var rosterSymbol: String { descriptor.sshAlias == nil ? "desktopcomputer" : "network" }
-    var rosterTint: Color { Theme.Colors.textSecondary }
+    var rosterTint: AnyShapeStyle { Theme.Colors.textSecondary }
 }

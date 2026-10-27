@@ -163,7 +163,7 @@ struct SpaceSection: View {
                     indent: indent,
                     enabled: session.online,
                     accessibilityLabel: space.name
-                        + (counts.isEmpty ? "" : ", \(counts.primaryStatusText)")
+                        + (counts.isEmpty ? "" : ", \(counts.statusCountsText)")
                         + (store.isFocusing(collapsed.group, in: session, source: source) ? ", opening" : ""),
                     accessibilityHint: "Opens this group in your selected terminal",
                     action: {
@@ -262,7 +262,7 @@ struct WorktreeSection: View {
                 indent: indent,
                 enabled: session.online,
                 accessibilityLabel: name
-                    + (counts.isEmpty ? "" : ", \(counts.primaryStatusText)")
+                    + (counts.isEmpty ? "" : ", \(counts.statusCountsText)")
                     + (isFocusPending ? ", opening" : ""),
                 accessibilityHint: "Opens this group in your selected terminal",
                 action: { store.navigate(to: destination) }

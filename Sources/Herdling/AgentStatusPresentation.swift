@@ -66,7 +66,12 @@ enum StatusPalette {
         highContrastLight: (0.48, 0.00, 0.16),
         highContrastDark: (1.00, 0.62, 0.72)
     )
-    static let working = NSColor.controlAccentColor
+    static let working = adaptive(
+        light: (0.00, 0.22, 0.50),
+        dark: (0.38, 0.68, 1.00),
+        highContrastLight: (0.00, 0.14, 0.34),
+        highContrastDark: (0.65, 0.84, 1.00)
+    )
 
     /// Custom colours need a variant per appearance including the increased-contrast ones, per the
     /// HIG colour guidance. The flag comes from `NSWorkspace`, not from matching appearance names:

@@ -94,7 +94,7 @@ struct RosterRenderTests {
         // without this the capture draws in aqua whatever the app's appearance says.
         hosting.appearance = appearance
         let window = NSWindow(
-            contentRect: hosting.frame,
+            contentRect: hosting.frame.offsetBy(dx: -20_000, dy: -20_000),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false

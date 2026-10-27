@@ -12,16 +12,22 @@ import Testing
 @Suite
 @MainActor
 struct PanelLayoutTests {
-    @Test func agentActionMenuUsesThePanelCornerAndFitsShortPanelsWithoutResizingThem() {
+    @Test func agentActionMenuFollowsItsRowAndFlipsAtScreenEdges() {
         let parent = NSRect(x: 100, y: 100, width: 420, height: 300)
         let screen = NSRect(x: 0, y: 0, width: 1000, height: 1000)
-        #expect(AgentActionsMenuController.frame(parent: parent, contentSize: NSSize(width: 320, height: 140), visibleFrame: screen)
-                == NSRect(x: 187, y: 113, width: 320, height: 140))
-        let short = NSRect(x: 100, y: 870, width: 420, height: 100)
-        let fitted = AgentActionsMenuController.frame(parent: short, contentSize: NSSize(width: 320, height: 140), visibleFrame: screen)
-        #expect(fitted.maxX == 507)
-        #expect(fitted.maxY <= 987 && fitted.minY >= 13)
-        #expect(fitted.height == 140, "Menu owns its height even when taller than the roster")
+        let size = NSSize(width: 320, height: 140)
+        let first = NSRect(x: 106, y: 320, width: 408, height: 40)
+        let second = NSRect(x: 106, y: 210, width: 408, height: 32)
+        #expect(AgentActionsMenuController.frame(parent: parent, row: first, contentSize: size, visibleFrame: screen)
+                == NSRect(x: 194, y: 176, width: 320, height: 140))
+        #expect(AgentActionsMenuController.frame(parent: parent, row: second, contentSize: size, visibleFrame: screen)
+                == NSRect(x: 194, y: 66, width: 320, height: 140), "The same panel must not force different rows onto one menu location")
+        let bottom = NSRect(x: 106, y: 10, width: 408, height: 40)
+        #expect(AgentActionsMenuController.frame(parent: parent, row: bottom, contentSize: size, visibleFrame: screen)
+                == NSRect(x: 194, y: 54, width: 320, height: 140), "Insufficient space below flips the menu above the target")
+        let fitted = AgentActionsMenuController.frame(parent: parent, row: first, contentSize: size,
+            visibleFrame: NSRect(x: 0, y: 0, width: 250, height: 100))
+        #expect(fitted == NSRect(x: 6, y: 6, width: 238, height: 88))
     }
 
     @Test
@@ -41,9 +47,9 @@ struct PanelLayoutTests {
                         MainActor.assumeIsolated { measurement.height = value }
                     }
             }
-            // 38pt controls + 4pt header/list gap + two 38pt sources + 4pt source gap + 21pt insets,
+            // 38pt controls + 4pt header/list gap + two 38pt sources + 4pt source gap + 7pt insets,
             // plus the expanded directory's 4pt clearance and 32pt default-session Open action.
-            #expect(measurement.height == (expanded ? 179 : 143))
+            #expect(measurement.height == (expanded ? 165 : 129))
         }
     }
 
@@ -62,10 +68,10 @@ struct PanelLayoutTests {
                         MainActor.assumeIsolated { measurement.height = value }
                     }
             }
-            // Fixed controls, 4pt header/list gap, two source headers, 4pt source gap and insets = 143.
+            // Fixed controls, 4pt header/list gap, two source headers, 4pt source gap and insets = 129.
             // Expanded fixture adds 4pt + eleven 32pt rows + eight 2pt row gaps
             // + two 8pt group gaps = 388. No extra padding after the last agent.
-            #expect(measurement.height == (expanded ? 531 : 143))
+            #expect(measurement.height == (expanded ? 517 : 129))
         }
     }
 
@@ -99,7 +105,7 @@ struct PanelLayoutTests {
     private func fittingHeight(@ViewBuilder _ view: () -> some View) -> CGFloat {
         let hosting = NSHostingView(rootView: view())
         hosting.frame = NSRect(x: 0, y: 0, width: Theme.Size.panelWidth, height: 200)
-        let window = NSWindow(contentRect: hosting.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: hosting.frame.offsetBy(dx: -20_000, dy: -20_000), styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = hosting
         window.orderBack(nil)

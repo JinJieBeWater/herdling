@@ -34,7 +34,9 @@ struct GroupHeaderLine<Leading: View, Subtitle: View, Trailing: View>: View {
                     .foregroundStyle(Theme.Colors.textPrimary)
                     .lineLimit(1)
             }
+            .layoutPriority(1)
             subtitle
+                .layoutPriority(-1)
             Spacer(minLength: Theme.Spacing.md)
             trailing
             if reservesChevronSlot {
@@ -85,7 +87,6 @@ struct GroupHeaderRow<Leading: View, Subtitle: View, Trailing: View>: View {
                 ? Theme.Spacing.rowVertical : Theme.Spacing.sectionHeaderVertical,
             indent: indent,
             enabled: enabled,
-            isSelected: isExpanded == true,
             accessibilityText: accessibilityLabel,
             accessibilityHint: accessibilityHint,
             action: action
@@ -172,8 +173,8 @@ struct SpaceLabel<Trailing: View>: View {
             Spacer(minLength: Theme.Spacing.md)
             trailing
         }
-        .padding(.leading, Theme.Spacing.md + indent)
-        .padding(.trailing, Theme.Spacing.md)
+        .padding(.leading, Theme.Spacing.rowHorizontal + indent)
+        .padding(.trailing, Theme.Spacing.rowHorizontal)
         .padding(.vertical, Theme.Spacing.rowVertical)
         .frame(maxWidth: .infinity, minHeight: Theme.Size.rowMinHeight, alignment: .leading)
     }
@@ -212,7 +213,7 @@ struct GroupActivitySummary: View {
 
     var body: some View {
         HStack(spacing: Theme.Spacing.sm) {
-            ForEach(counts) { count in
+            ForEach(counts.prefix(2)) { count in
                 // One colour for the whole readout, digits included. Bright digits next to dim
                 // words read as two different messages; the status hue is already on the row's own
                 // glyph, so nothing is lost by keeping the counts neutral.
@@ -222,6 +223,9 @@ struct GroupActivitySummary: View {
         .font(Theme.Typography.rowTrailing)
         .foregroundStyle(Theme.Colors.textSecondary)
         .fixedSize()
+        .help(counts.statusCountsText)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(counts.statusCountsText)
     }
 }
 
@@ -242,7 +246,7 @@ struct FocusIndicator: View {
         } else {
             Image(systemName: "arrow.up.right")
                 .font(Theme.Glyph.focusArrow)
-                .foregroundStyle(Theme.Colors.textTertiary)
+                .foregroundStyle(Theme.Colors.textPrimary)
                 .opacity(isHovered ? 0.8 : 0)
                 .accessibilityHidden(true)
         }
@@ -295,4 +299,5 @@ struct AccordionBody<Content: View>: View {
 
 extension Collection where Element == AgentStatusCount {
     var primaryStatusText: String { first?.status.rosterLabel ?? "stopped" }
+    var statusCountsText: String { map { "\($0.count) \($0.status.rosterLabel)" }.joined(separator: ", ") }
 }

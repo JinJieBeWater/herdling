@@ -10,6 +10,7 @@ enum PanelKeyAction: Equatable {
 @MainActor
 enum PanelKeyboard {
     static func handle(_ keyCode: UInt16, modifiers: NSEvent.ModifierFlags = [], browser: NavigationBrowser) -> PanelKeyAction {
+        browser.holdPointer(at: NSEvent.mouseLocation)
         if keyCode == 48 { // Tab / Shift-Tab give focus back to native controls.
             browser.clearSelection()
             return .passThrough

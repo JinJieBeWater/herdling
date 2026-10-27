@@ -36,16 +36,20 @@ struct AgentActionsMenuTests {
         let parent = MenuBarPanel()
         let screen = try #require(NSScreen.main).visibleFrame
         parent.setFrame(NSRect(x: screen.midX - 210, y: screen.midY - 150, width: 420, height: 300), display: false)
+        let anchorView = NSView(frame: NSRect(x: 6, y: 200, width: 408, height: 40))
+        parent.contentView?.addSubview(anchorView)
+        let anchor = AgentActionsAnchor()
+        anchor.view = anchorView
         parent.orderFront(nil)
         let before = parent.frame
         let menu = AgentActionsMenuController(parent: parent, store: store, browser: browser)
         defer { menu.dismiss(returnFocus: false); parent.orderOut(nil) }
 
-        menu.present(for: destination)
+        menu.present(for: destination, anchor: anchor)
         let child = try #require(parent.childWindows?.first)
         #expect(child.frame.size == NSSize(width: 208, height: 68), "Two supplementary commands must not occupy a launcher-sized palette")
         #expect(child.isVisible && menu.isPresented)
-        #expect(child.frame.maxX == before.maxX - 13 && child.frame.minY == before.minY + 13)
+        #expect(child.frame.maxX == before.maxX - 6 && child.frame.maxY == before.minY + 196)
         #expect(parent.frame == before)
         #expect(browser.selection == .destination(destination))
         #expect(store.navigationAttempt == nil)

@@ -17,8 +17,8 @@ enum Theme {
         static let lg: CGFloat = 10
         static let xl: CGFloat = 12
 
-        /// Shared horizontal background boundary for navigation and roster.
-        static let panelInset: CGFloat = 13
+        /// Native menu padding plus one point of overlay-scrollbar clearance.
+        static let panelInset: CGFloat = 6
         /// Visible bottom clearance shares the same shell inset as the sides.
         static let panelBottomInset = panelInset
 
@@ -31,9 +31,11 @@ enum Theme {
         /// The compact surface sits inside a taller native click area.
         static let navigationVisualInset = (Size.navigationHeaderHeight - Size.navigationControlHeight) / 2
         static let navigationTopInset = panelInset - navigationVisualInset
+        /// Shared horizontal content padding for roster rows and compact menu commands.
+        static let rowHorizontal = sm
         static let rowContentGap = sm
         /// Account for the narrower navigation slot without changing its glyph treatment.
-        static let navigationContentInset = md + (Size.rowIcon - Size.navigationIcon) / 2
+        static let navigationContentInset = rowHorizontal + (Size.rowIcon - Size.navigationIcon) / 2
         static let navigationContentGap = rowContentGap + (Size.rowIcon - Size.navigationIcon) / 2
         /// Content rows and section headers have separate internal padding, not separate fonts.
         static let rowVertical: CGFloat = 5
@@ -45,16 +47,16 @@ enum Theme {
     // MARK: - Radius
 
     enum Radius {
-        /// Outer surface and the inset content boundary.
-        static let panel: CGFloat = 26
+        /// Native menu shell radius and its inset content boundary.
+        static let panel: CGFloat = 12
         static let panelContent = CGSize(width: panel - Spacing.panelInset,
                                          height: panel - Spacing.panelBottomInset)
         /// Row corners away from the content boundary.
-        static let row: CGFloat = 10
+        static let row: CGFloat = 6
         /// Compact navigation surfaces, independent of their larger click area.
-        static let navigationControl: CGFloat = 8
-        static let agentActions: CGFloat = 12
-        static let menuRow: CGFloat = 6
+        static let navigationControl = row
+        static let agentActions = panel
+        static let menuRow = row
     }
 
     // MARK: - Size
@@ -64,9 +66,8 @@ enum Theme {
         static let panelMinHeight: CGFloat = 100
         /// The fixed leading slot of a row glyph. A smaller glyph centres inside it.
         static let rowIcon: CGFloat = 22
-        /// A disclosure chevron's slot. Every trailing readout reserves it, so summaries, focus
-        /// arrows and chevrons all end on one column.
-        static let chevron: CGFloat = 12
+        /// Transparent trailing slot keeps disclosure ink outside the native overlay hit strip.
+        static let chevron: CGFloat = 20
         /// Content-row floor; multiline errors can grow beyond it.
         static let rowMinHeight: CGFloat = 32
         /// Two-line direct destinations and the fixed navigation control row.
@@ -77,8 +78,6 @@ enum Theme {
         static let agentActionsWidth: CGFloat = 208
         static let menuRowHeight: CGFloat = 28
         static let menuIcon: CGFloat = 18
-        /// Neutral outline distinguishes keyboard selection from an expanded header.
-        static let keyboardSelectionStroke: CGFloat = 1
         /// A trailing action pill's height.
         static let actionPill: CGFloat = 20
         /// A spinner that stands in for a row's leading glyph.
@@ -156,7 +155,7 @@ enum Theme {
     }
 
     enum Scrollbar {
-        static let width: CGFloat = 6
+        static let width: CGFloat = 4
         static let edgeInset: CGFloat = 1
         static let verticalInset: CGFloat = 8
         static let minimumThumb: CGFloat = 28
@@ -164,35 +163,57 @@ enum Theme {
 
     // MARK: - Colours
 
-    /// The alpha ramp. Every ink and fill on the panel is one of these; a view never reaches for
-    /// `.gray`, a bare `Color.white.opacity(…)`, or `NSColor.windowBackgroundColor`.
+    /// Every ink and fill on the panel is one of these; a view never reaches for `.gray`, a bare
+    /// `Color.white.opacity(…)`, or `NSColor.windowBackgroundColor`.
+    ///
+    /// Hierarchical ink takes the glass's vibrancy. Interaction highlights use the system accent;
+    /// quiet unavailable/inspection surfaces add light instead of dimming the glass.
     enum Colors {
         /// Resolves against the view's `effectiveAppearance`, so a token repaints on its own.
         static func adaptive(dark: NSColor, light: NSColor) -> Color {
             Color(nsColor: NSColor(name: nil) { $0.isDark ? dark : light })
         }
 
-        /// The ramp: white ink over the dark surface, black ink over the light one.
+        /// White ink over the dark surface, black ink over the light one, for AppKit drawing.
         static func ramp(dark: Double, light: Double) -> Color {
             adaptive(dark: .ink(1, alpha: dark), light: .ink(0, alpha: light))
         }
 
-        /// A group header that is open, and a keyboard selection. Beats hover.
-        static let selection = ramp(dark: 0.10, light: 0.09)
-        /// Mouse hover, always fainter than selection.
-        static let rowHover = ramp(dark: 0.05, light: 0.045)
-        /// Compact commands use a quieter wash than the roster's selected surfaces.
-        static let menuSelection = ramp(dark: 0.065, light: 0.055)
+        static let noFill = AnyShapeStyle(Color.clear)
+        /// Quiet busy backdrops through the native effect, without a second surface over the roster.
+        static let glassTint = NSColor(name: nil) { appearance in
+            var tint = NSColor.clear
+            appearance.performAsCurrentDrawingAppearance {
+                tint = NSColor.windowBackgroundColor.withAlphaComponent(0.20)
+            }
+            return tint
+        }
+        /// A keyboard target that became unavailable keeps a quiet positional cue.
+        static let unavailableSelection = AnyShapeStyle(adaptive(dark: .ink(1, alpha: 0.10), light: .ink(1, alpha: 0.50)))
+        /// The inspected target while its action menu is open; not keyboard focus.
+        static let inspection = AnyShapeStyle(adaptive(dark: .ink(1, alpha: 0.06), light: .ink(1, alpha: 0.32)))
+        /// Shared by roster hover/keyboard selection, navigation hover and commands.
+        static let highlight = AnyShapeStyle(Color(nsColor: .selectedContentBackgroundColor))
+        static let highlightInk = AnyShapeStyle(Color(nsColor: .selectedMenuItemTextColor))
 
-        /// Alpha 1, so a call site can dim it with `.opacity` and land on the value it replaced.
-        static let textPrimary = ramp(dark: 1.0, light: 1.0)
-        static let mutedTitle = ramp(dark: 0.70, light: 0.70)
+        static let textPrimary = AnyShapeStyle(.primary)
+        /// Lighter than a title, still heavier than secondary text.
+        static let mutedTitle = AnyShapeStyle(.primary.opacity(0.8))
         static let mutedWorkingOpacity = 0.65
-        static let textSecondary = ramp(dark: 0.60, light: 0.60)
-        static let textTertiary = ramp(dark: 0.40, light: 0.42)
-        /// Stock grouped Form text follows native semantic ink, not the glass palette ramp.
+        static let textSecondary = AnyShapeStyle(PanelSecondaryInk())
+        static let textTertiary = AnyShapeStyle(.tertiary)
+        /// Panel warning glyphs need stronger light-glass contrast than decorative Settings orange.
+        static let warning = adaptive(
+            dark: NSColor(srgbRed: 1, green: 0.67, blue: 0.30, alpha: 1),
+            light: NSColor(srgbRed: 0.60, green: 0.29, blue: 0, alpha: 1)
+        )
+        /// Fully opaque ink for masks and template images, where only alpha carries meaning.
+        static let opaqueInk = ramp(dark: 1.0, light: 1.0)
+        /// Stock grouped Form text follows native semantic ink; the Form is not on the panel glass.
         static let settingsSecondary = Color.secondary
+        static let settingsTertiary = Color(nsColor: .tertiaryLabelColor)
 
+        /// AppKit draws the scroller outside SwiftUI's vibrancy, so it keeps fixed-alpha ink.
         static let scrollThumb = ramp(dark: 0.30, light: 0.30)
         static let scrollThumbHover = ramp(dark: 0.42, light: 0.42)
         static let scrollThumbDrag = ramp(dark: 0.50, light: 0.50)
@@ -209,6 +230,13 @@ enum Theme {
         static let purple = Color.purple
         static let orange = Color.orange
         static let green = Color.green
+    }
+}
+
+private struct PanelSecondaryInk: ShapeStyle {
+    func resolve(in environment: EnvironmentValues) -> AnyShapeStyle {
+        environment.backgroundProminence == .increased
+            ? Theme.Colors.highlightInk : AnyShapeStyle(.secondary)
     }
 }
 

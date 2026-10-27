@@ -3,14 +3,14 @@ import SwiftUI
 
 struct AgentListView: View {
     let store: SessionStore
-    let showAgentActions: (@MainActor (NavigationDestination) -> Void)?
+    let showAgentActions: (@MainActor (NavigationDestination, AgentActionsAnchor) -> Void)?
     @State private var browser: NavigationBrowser
 
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @State private var panelHeight: CGFloat = 0
 
     init(store: SessionStore, browser: NavigationBrowser? = nil,
-         showAgentActions: (@MainActor (NavigationDestination) -> Void)? = nil) {
+         showAgentActions: (@MainActor (NavigationDestination, AgentActionsAnchor) -> Void)? = nil) {
         self.store = store
         self.showAgentActions = showAgentActions
         if let browser {

@@ -5,6 +5,25 @@ import Testing
 
 @Suite(.serialized) @MainActor
 struct PanelSymbolTests {
+    @Test(arguments: [ColorScheme.light, .dark])
+    func disclosureRemainsLegibleWithoutASelectedSourcePlate(scheme: ColorScheme) throws {
+        for highlighted in [false, true] {
+            let prominence: BackgroundProminence = highlighted ? .increased : .standard
+            let actual = try render(DisclosureChevron(isExpanded: false)
+                .environment(\.backgroundProminence, prominence), scheme: scheme)
+            let expected = try render(Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(highlighted ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .frame(width: 12).environment(\.backgroundProminence, prominence), scheme: scheme)
+            let difference = (0..<actual.pixelsWide).reduce(CGFloat.zero) { total, x in
+                total + (0..<actual.pixelsHigh).reduce(CGFloat.zero) {
+                    $0 + abs((actual.colorAt(x: x, y: $1)?.alphaComponent ?? 0) - (expected.colorAt(x: x, y: $1)?.alphaComponent ?? 0))
+                }
+            }
+            #expect(difference < 1, "Disclosure uses secondary ink at rest, white primary ink on the menu highlight")
+        }
+    }
+
     @Test
     func listSymbolsMatchTheLightReferenceWithoutChangingTheirSlot() throws {
         for name in ["desktopcomputer", "network", "circle", "xmark.circle.fill", "gearshape"] {
@@ -49,19 +68,22 @@ struct PanelSymbolTests {
         let expected = try render(Image(nsImage: configured).renderingMode(.template)
             .foregroundStyle(.black).frame(width: 14, height: 14))
         let actual = try render(NavigationHeader(browser: NavigationBrowser()), width: 420)
-        func ink(_ image: NSBitmapImageRep, width: CGFloat, rect: CGRect, background: CGFloat = 0) -> Int {
+        func ink(_ image: NSBitmapImageRep, width: CGFloat, rect: CGRect, full: CGFloat = 1) -> Int {
             let scale = CGFloat(image.pixelsWide) / width
             return (Int(rect.minX * scale)..<Int(rect.maxX * scale)).reduce(0) { count, x in
                 count + (Int(rect.minY * scale)..<Int(rect.maxY * scale)).filter {
-                    ((image.colorAt(x: x, y: $0)?.alphaComponent ?? 0) - background) / (1 - background) > 0.5
+                    (image.colorAt(x: x, y: $0)?.alphaComponent ?? 0) / full > 0.5
                 }.count
             }
         }
-        // De-composite the selection wash; otherwise its alpha turns faint edge pixels into ink.
+        // Measure against the glyph's own ink rather than opaque black.
         let scale = CGFloat(actual.pixelsWide) / 420
         let inset = Theme.Spacing.navigationVisualInset
-        let background = try #require(actual.colorAt(x: Int((inset + 3) * scale), y: Int(22 * scale))).alphaComponent
-        let a = ink(actual, width: 420, rect: CGRect(x: inset + 5, y: 7, width: 20, height: 30), background: background)
+        let glyph = CGRect(x: inset + 5, y: 7, width: 20, height: 30)
+        let full = (Int(glyph.minX * scale)..<Int(glyph.maxX * scale)).flatMap { x in
+            (Int(glyph.minY * scale)..<Int(glyph.maxY * scale)).map { actual.colorAt(x: x, y: $0)?.alphaComponent ?? 0 }
+        }.max() ?? 1
+        let a = ink(actual, width: 420, rect: glyph, full: full)
         let b = ink(expected, width: 44, rect: CGRect(x: 0, y: 0, width: 44, height: 44))
         #expect(b > 30)
         #expect(abs(a - b) <= 3, "Navigation controls use Medium rather than list Regular: \(a) vs \(b) ink pixels")
@@ -82,14 +104,15 @@ struct PanelSymbolTests {
         #expect(difference < 1, "Only the explicit status symbol may choose its filled variant")
     }
 
-    private func render(_ view: some View, width: CGFloat = 44) throws -> NSBitmapImageRep {
+    private func render(_ view: some View, width: CGFloat = 44, scheme: ColorScheme = .light) throws -> NSBitmapImageRep {
         let app = NSApplication.shared
         let previous = app.appearance
-        app.appearance = NSAppearance(named: .aqua)
+        app.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
         defer { app.appearance = previous }
-        let hosting = NSHostingView(rootView: view.frame(width: width, height: 44).environment(\.colorScheme, .light))
+        let hosting = NSHostingView(rootView: view.frame(width: width, height: 44).environment(\.colorScheme, scheme))
         hosting.frame = NSRect(x: 0, y: 0, width: width, height: 44)
-        let window = NSWindow(contentRect: hosting.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: hosting.frame.offsetBy(dx: -20_000, dy: -20_000),
+                              styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.isOpaque = false
         window.backgroundColor = .clear

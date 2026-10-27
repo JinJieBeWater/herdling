@@ -12,7 +12,7 @@ struct ErrorRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: Theme.Spacing.lg) {
             HStack(spacing: Theme.Spacing.rowContentGap) {
-                RowSymbol(symbol: "exclamationmark.triangle.fill", tint: Theme.Hue.orange)
+                RowSymbol(symbol: "exclamationmark.triangle.fill", tint: Theme.Colors.warning)
                 Text(message)
                     .font(Theme.Typography.rowTrailing)
                     .foregroundStyle(Theme.Colors.textPrimary)
@@ -31,8 +31,8 @@ struct ErrorRow: View {
                     .accessibilityLabel("Dismiss error")
             }
         }
-        .padding(.leading, Theme.Spacing.md + indent)
-        .padding(.trailing, Theme.Spacing.md)
+        .padding(.leading, Theme.Spacing.rowHorizontal + indent)
+        .padding(.trailing, Theme.Spacing.rowHorizontal)
         .padding(.vertical, Theme.Spacing.rowVertical)
         .frame(maxWidth: .infinity, minHeight: Theme.Size.rowMinHeight, alignment: .leading)
     }

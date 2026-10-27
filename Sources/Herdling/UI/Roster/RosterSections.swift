@@ -26,7 +26,7 @@ struct SourceOutline: View {
     }
 
     private var accessibilitySummary: String {
-        let counts = counts.map { "\($0.count) \($0.status.rosterLabel)" }.joined(separator: ", ")
+        let counts = counts.statusCountsText
         guard !source.online else { return counts }
         return [summaryText, counts].filter { !$0.isEmpty }.joined(separator: ", ")
     }
@@ -93,7 +93,7 @@ struct SourceOutline: View {
                                 .font(Theme.Typography.rowTrailing)
                                 .foregroundStyle(Theme.Colors.textSecondary)
                         }
-                        .padding(.horizontal, Theme.Spacing.md)
+                        .padding(.horizontal, Theme.Spacing.rowHorizontal)
                         .padding(.vertical, Theme.Spacing.rowVertical)
                     } else if source.sessions.isEmpty {
                         RosterEmptyState(

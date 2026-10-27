@@ -15,10 +15,10 @@ struct RosterScrollbarTests {
         #expect(scroll.scrollerStyle == .overlay)
         #expect(scroller.scrollerStyle == .overlay, "Replacement must opt into native overlay fading too")
         #expect(scroll.hasVerticalScroller, "Overflowing content needs a managed native overlay")
-        #expect(scroll.contentView.bounds.width == 420, "Viewport spans the panel; rows keep their own symmetric 13pt inset")
+        #expect(scroll.contentView.bounds.width == 420, "Viewport spans the panel; rows keep their own symmetric 6pt inset")
         #expect(scroll.documentView!.bounds.height > scroll.contentView.bounds.height)
         let knob = scroller.rect(for: .knob)
-        #expect(knob.width == 6, "Scrolling thumb must use Tinycast's 6pt surface, not the native broad knob")
+        #expect(knob.width == 4, "The compact menu gutter fits a 4pt thumb without narrowing the roster")
         #expect(knob.height >= 28)
         #expect(hosted.store.navigationAttempt == nil)
     }
@@ -35,8 +35,8 @@ struct RosterScrollbarTests {
         let knob = scroller.rect(for: .knob)
         let column = scroller.convert(knob, to: scroll)
         #expect(knob.width <= 10)
-        // Trailing glyph ink ends about 15pt inside a roster row; keep the rail outside it.
-        #expect(column.minX >= scroll.bounds.maxX - 13)
+        // The 6pt gutter holds a 4pt thumb plus one point on either side.
+        #expect(column.minX >= scroll.bounds.maxX - 5)
         let maxAlpha = try paintedAlpha(scroller)
         #expect(maxAlpha > 0.1 && maxAlpha <= 0.43,
                 "Hovered thumb uses the quiet 0.42 ink, not an opaque white native capsule")
@@ -78,8 +78,8 @@ struct RosterScrollbarTests {
         hosted.view.cacheDisplay(in: hosted.view.bounds, to: image)
         let scale = CGFloat(image.pixelsWide) / 420
         let points = (Int(382 * scale)..<Int(410 * scale)).flatMap { x in
-            (Int(65 * scale)..<Int(75 * scale)).compactMap { y -> CGFloat? in
-                guard let color = image.colorAt(x: x, y: y), color.alphaComponent > 0.3,
+            (Int(57 * scale)..<Int(67 * scale)).compactMap { y -> CGFloat? in
+                guard let color = image.colorAt(x: x, y: y), color.alphaComponent > 0.1,
                       min(color.redComponent, color.greenComponent, color.blueComponent) > 0.3 else { return nil }
                 return CGFloat(x) / scale
             }
@@ -89,7 +89,7 @@ struct RosterScrollbarTests {
     }
 
     @Test
-    func fullWidthSourceSurfaceAndKeyboardOutlineStayBesideFixedWidthThumb() throws {
+    func keyboardHighlightStaysFullWidthBesideTheThumbWithoutAPersistentSourceSurface() throws {
         let previous = NSApplication.shared.appearance
         NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
         defer { NSApplication.shared.appearance = previous }
@@ -104,29 +104,28 @@ struct RosterScrollbarTests {
         }
         func alpha(_ image: NSBitmapImageRep, _ x: CGFloat) -> CGFloat {
             let scale = CGFloat(image.pixelsWide) / 420
-            return image.colorAt(x: Int(x * scale), y: Int(69 * scale))!.alphaComponent
+            return image.colorAt(x: Int(x * scale), y: Int(62 * scale))!.alphaComponent
         }
         let ordinary = try snapshot()
-        #expect(alpha(ordinary, 406) > alpha(ordinary, 417) + 0.03,
-                "Ordinary source highlight must keep the full right edge, not a permanent empty lane")
-        #expect(abs(alpha(ordinary, 14) - alpha(ordinary, 406)) < 0.01,
-                "Source surface must keep symmetric 13pt content boundaries")
+        #expect(alpha(ordinary, 7) < 0.01 && alpha(ordinary, 413) < 0.01,
+                "An expanded source has no persistent surface on either edge")
         let normal = scroller.convert(scroller.rect(for: .knob), to: hosted.view)
-        #expect(normal.width == 6)
-        #expect(normal.minX >= 413 && normal.maxX <= 419,
+        #expect(normal.width == 4)
+        #expect(normal.minX >= 415 && normal.maxX <= 419,
                 "Painted thumb belongs outside the row, in the existing right margin")
         try hover(scroller, window: hosted.window)
         let hovered = scroller.convert(scroller.rect(for: .knob), to: hosted.view)
         #expect(hovered.minX == normal.minX && hovered.width == normal.width,
                 "Hover must change ink, not expand toward the source rounded edge")
-        #expect(abs(alpha(try snapshot(), 406) - alpha(ordinary, 406)) < 0.01)
+        #expect(abs(alpha(try snapshot(), 413) - alpha(ordinary, 413)) < 0.01)
         hosted.browser.moveSelection(by: 1)
         settle(hosted.view)
         #expect(hosted.browser.selection == .source("local"))
         let keyboard = try snapshot()
-        #expect(alpha(keyboard, 406) > alpha(ordinary, 406), "Keyboard outline must reach the same full row edge")
+        #expect(alpha(keyboard, 413) > alpha(ordinary, 413), "Keyboard highlight must reach the full row edge")
+        #expect(abs(alpha(keyboard, 7) - alpha(keyboard, 413)) < 0.01, "Keyboard highlight stays symmetric")
         #expect(abs(alpha(keyboard, hovered.midX) - alpha(ordinary, 417)) < 0.01,
-                "Under the thumb, only the panel scrim may remain—not source wash or keyboard outline")
+                "The keyboard highlight must not extend under the thumb")
         #expect(hosted.store.navigationAttempt == nil)
     }
 
@@ -241,6 +240,7 @@ struct RosterScrollbarTests {
         if mode == .all { browser.toggleSource("local") }
         let view = NSHostingView(rootView: AnyView(AgentListView(store: store, browser: browser).environment(\.colorScheme, .dark)))
         view.frame = NSRect(x: 0, y: 0, width: 420, height: 240)
+        // Native wheel forwarding needs a screen-backed window; never activate or raise it.
         let window = NSWindow(contentRect: view.frame, styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = view
