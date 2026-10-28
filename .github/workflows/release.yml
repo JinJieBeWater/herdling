@@ -40,6 +40,8 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Test app packaging failure handling
+        run: bash scripts/test-build-app.sh
       - name: Test without GPU rendering
         # Hosted VMs lack the GPU and Retina display used by the native rendering tests.
         run: |
