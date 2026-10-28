@@ -11,8 +11,9 @@ if [[ "${DEVELOPER_DIR:-$(xcode-select -p)}" == *CommandLineTools* ]]; then
   exit 1
 fi
 
-swift build --build-system xcode -c "$configuration" >&2
-bin_dir="$(swift build --build-system xcode -c "$configuration" --show-bin-path)"
+architecture="$(uname -m)"
+swift build --build-system xcode --arch "$architecture" -c "$configuration" >&2
+bin_dir="$(swift build --build-system xcode --arch "$architecture" -c "$configuration" --show-bin-path)"
 app="$root/.build/Herdling.app"
 shortcut_resources="$bin_dir/KeyboardShortcuts_KeyboardShortcuts.bundle"
 
