@@ -5,16 +5,14 @@ configuration="${1:-debug}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
-# Command Line Tools ship no SwiftUIMacros plugin, so SDK 27+ cannot compile SwiftUI.
-# Falling back to the newest 26.x SDK keeps CLT-only builds working; selecting Xcode lifts this.
-if [[ "$(xcode-select -p)" == *CommandLineTools* ]]; then
-  clt_sdk="$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX26*.sdk 2>/dev/null | tail -1)"
-  [[ -n "$clt_sdk" ]] && export SDKROOT="$clt_sdk"
+# shortcut: Swift 6.2 needs Xcode's app resource layout; use swiftbuild when CI moves to Swift 6.4.
+if [[ "${DEVELOPER_DIR:-$(xcode-select -p)}" == *CommandLineTools* ]]; then
+  printf 'Building the app requires Xcode; select it with xcode-select or DEVELOPER_DIR.\n' >&2
+  exit 1
 fi
 
-# Swift Build's resource accessors search Contents/Resources instead of the build machine's path.
-swift build --build-system swiftbuild -c "$configuration" >&2
-bin_dir="$(swift build --build-system swiftbuild -c "$configuration" --show-bin-path)"
+swift build --build-system xcode -c "$configuration" >&2
+bin_dir="$(swift build --build-system xcode -c "$configuration" --show-bin-path)"
 app="$root/.build/Herdling.app"
 shortcut_resources="$bin_dir/KeyboardShortcuts_KeyboardShortcuts.bundle"
 

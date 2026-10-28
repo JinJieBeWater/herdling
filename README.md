@@ -17,7 +17,7 @@ Herdling is a macOS menu bar companion for [Herdr](https://herdr.dev/). It shows
 ## Requirements
 
 - macOS 15 or later
-- Swift 6.2 toolchain (only when building from source)
+- Xcode 26.2 or later with Swift 6.2 or later (only when building from source; Command Line Tools alone are not sufficient)
 - [Herdr](https://herdr.dev/) installed locally and on each enabled SSH host
 - [Ghostty](https://ghostty.org/) or [Kero](https://kero.sh/) with its `kero` CLI for opening and focusing sessions
 - Key-based or otherwise non-interactive SSH access for remote hosts

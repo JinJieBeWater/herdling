@@ -17,7 +17,7 @@ Herdling 是 [Herdr](https://herdr.dev/) 的 macOS 菜单栏配套工具。它�
 ## 环境要求
 
 - macOS 15 或更高版本
-- Swift 6.2 工具链（仅从源码构建时需要）
+- Xcode 26.2 或更高版本，包含 Swift 6.2 或更新工具链（仅从源码构建时需要；只有 Command Line Tools 不够）
 - 本机和每台启用的 SSH 主机都已安装 [Herdr](https://herdr.dev/)
 - 已安装 [Ghostty](https://ghostty.org/)，或 [Kero](https://kero.sh/) 及其 `kero` CLI，用于打开和聚焦 Session
 - 远程主机支持密钥认证或其他非交互式 SSH 登录方式
