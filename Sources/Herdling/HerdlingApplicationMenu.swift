@@ -41,6 +41,12 @@ enum HerdlingApplicationMenu {
 
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
+
+        let fileItem = NSMenuItem()
+        let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(NSMenuItem(title: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+        fileItem.submenu = fileMenu
+        mainMenu.addItem(fileItem)
         return mainMenu
     }
 }

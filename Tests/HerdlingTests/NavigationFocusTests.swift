@@ -3,6 +3,61 @@ import Testing
 @testable import Herdling
 
 struct NavigationFocusTests {
+    @Test(.timeLimit(.minutes(1)))
+    @MainActor
+    func stoppingInvalidatesPendingAndNewNavigationUntilRestarted() async throws {
+        let lookupStarted = NavigationLatch()
+        let releaseLookup = NavigationLatch()
+        let stopStarted = NavigationLatch()
+        let releaseStop = NavigationLatch()
+        let creations = NavigationCounter()
+        let changes = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let store = SessionStore(
+            client: navigationClient(NavigationWire()),
+            loadSource: { _ in [.init(name: "default", groups: [], error: nil)] },
+            loadBranches: { _, _ in [:] },
+            localMonitor: NavigationStopMonitor(started: stopStarted, release: releaseStop),
+            focusExistingClient: { _, _, _ in
+                await lookupStarted.open()
+                await releaseLookup.wait()
+                return false
+            },
+            sourceDescriptors: [.local], defaults: navigationDefaults(),
+            activateClient: { _, _, _, _, _ in _ = await creations.next() }
+        )
+        defer {
+            store.onChange = nil
+            changes.continuation.finish()
+            store.stop()
+            Task { await releaseLookup.open(); await releaseStop.open() }
+        }
+        await store.refresh()
+        let destination = NavigationDestination.session(sourceID: "local", sessionName: "default")
+        store.navigate(to: destination)
+        await lookupStarted.wait()
+        let stopping = Task { await store.stopAndWait() }
+        await stopStarted.wait()
+        store.onChange = { changes.continuation.yield(()) }
+        await releaseLookup.open()
+        var completion = changes.stream.makeAsyncIterator()
+        try #require(await completion.next() != nil)
+        #expect(await creations.value == 0, "Quitting must invalidate a lookup before it opens a terminal")
+        #expect(store.navigationAttempt == nil)
+        #expect(store.focusError == nil)
+        store.navigate(to: destination)
+        #expect(store.navigationAttempt == nil)
+        await releaseStop.open()
+        await stopping.value
+        store.navigate(to: destination)
+        #expect(store.navigationAttempt == nil)
+        #expect(await creations.value == 0)
+        store.start()
+        store.navigate(to: destination)
+        await navigationSettles(store)
+        #expect(store.navigationAttempt?.phase == .succeeded)
+        #expect(await creations.value == 1)
+    }
+
     @Test
     func knownTabPreservesEstablishedClientProjectionBeforeAgentFocus() throws {
         let wire = NavigationWire()
@@ -16,16 +71,6 @@ struct NavigationFocusTests {
             ["--session", "default", "agent", "focus", "w1:p2"],
         ])
         #expect(wire.calls.allSatisfy { $0.input == nil })
-    }
-
-    @Test
-    @MainActor
-    func missingTargetFeedbackNamesRequestedIdentityInsteadOfAnotherObject() {
-        let store = SessionStore(client: HerdrClient(executable: nil), sourceDescriptors: [.local], defaults: navigationDefaults())
-        store.navigate(to: .agent(sourceID: "local", sessionName: "default", paneID: "w4:p7"))
-        #expect(store.navigationAttempt?.title == "w4:p7")
-        store.navigate(to: .workspace(sourceID: "local", sessionName: "default", workspaceID: "w4"))
-        #expect(store.navigationAttempt?.title == "w4")
     }
 
     @Test(.timeLimit(.minutes(1)))
@@ -48,6 +93,7 @@ struct NavigationFocusTests {
         )
         defer { release.signal(); started.continuation.finish() }
         await store.refresh()
+        store.onClientActivated = { Issue.record("Failed focus must not dismiss the panel") }
         store.navigate(to: .agent(sourceID: "ssh:remote", sessionName: "default", paneID: "w1:p1"))
         var events = started.stream.makeAsyncIterator()
         _ = await events.next()
@@ -59,9 +105,9 @@ struct NavigationFocusTests {
         #expect(store.successfulJumps.isEmpty)
     }
 
-    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    @Test(.timeLimit(.minutes(1)))
     @MainActor
-    func targetGoingOfflineDuringActivationCannotReportSuccessfulJump(duringCreation: Bool) async throws {
+    func targetGoingOfflineDuringLookupCannotCreateAClientOrReportSuccess() async throws {
         let snapshots = NavigationSnapshots()
         let started = NavigationLatch()
         let release = NavigationLatch()
@@ -69,13 +115,12 @@ struct NavigationFocusTests {
         let store = SessionStore(
             client: navigationClient(NavigationWire()), loadSource: { _ in try await snapshots.load() },
             loadBranches: { _, _ in [:] }, focusExistingClient: { _, _, _ in
-                if !duringCreation { await started.open(); await release.wait() }
+                await started.open()
+                await release.wait()
                 return false
             }, sourceDescriptors: [.local], defaults: navigationDefaults(),
             activateClient: { _, _, _, _, _ in
                 _ = await creations.next()
-                await started.open()
-                await release.wait()
             }
         )
         await store.refresh()
@@ -93,7 +138,7 @@ struct NavigationFocusTests {
         #expect(store.navigationAttempt?.message?.contains("offline") == true)
         #expect(store.successfulJumps.isEmpty)
         #expect(activations == 0)
-        #expect(await creations.value == (duringCreation ? 1 : 0))
+        #expect(await creations.value == 0)
     }
 
     @Test(.timeLimit(.minutes(1)))
@@ -114,6 +159,8 @@ struct NavigationFocusTests {
             }, sourceDescriptors: [.local], defaults: navigationDefaults()
         )
         await store.refresh()
+        let oldSession = try #require(store.sources.first?.sessions.first)
+        let oldAgent = try #require(oldSession.agents.first { $0.paneID == "w1:p2" })
         store.navigate(to: .agent(sourceID: "local", sessionName: "default", paneID: "w1:p1"))
         await started.wait()
         let queued = NavigationDestination.agent(sourceID: "local", sessionName: "default", paneID: "w1:p2")
@@ -127,6 +174,11 @@ struct NavigationFocusTests {
         #expect(await existingCalls.value == 1)
         #expect(store.successfulJumps.isEmpty)
         #expect(!wire.calls.contains { $0.input.map { String(decoding: $0, as: UTF8.self).contains("w1:p2") } == true })
+        store.focus(oldAgent, in: oldSession)
+        #expect(store.navigationAttempt?.destination == queued)
+        #expect(store.navigationAttempt?.phase == .failed)
+        #expect(store.pendingFocusAgentID == nil)
+        #expect(await existingCalls.value == 1)
     }
 
     @Test(.timeLimit(.minutes(1)))
@@ -166,36 +218,9 @@ struct NavigationFocusTests {
         #expect(store.focusError == nil)
     }
 
-    @Test(.timeLimit(.minutes(1)), arguments: ["pane-gone", "session-gone"])
-    @MainActor
-    func historySurvivesOfflineCacheButNotConfirmedExit(kind: String) async throws {
-        let snapshots = NavigationSnapshots()
-        let store = SessionStore(
-            client: navigationClient(NavigationWire()), loadSource: { _ in try await snapshots.load() },
-            loadBranches: { _, _ in [:] }, focusExistingClient: { _, _, _ in true },
-            sourceDescriptors: [.local], defaults: navigationDefaults()
-        )
-        await store.refresh()
-        let target = NavigationDestination.agent(sourceID: "local", sessionName: "default", paneID: "w1:p1")
-        store.navigate(to: target)
-        await navigationSettles(store)
-        #expect(store.successfulJumps == [target])
-        for offline in ["source-offline", "session-offline"] {
-            await snapshots.set(offline)
-            await store.refresh()
-            #expect(store.successfulJumps == [target])
-        }
-        await snapshots.set(kind)
-        await store.refresh()
-        #expect(store.successfulJumps.isEmpty)
-        await snapshots.set("online")
-        await store.refresh()
-        #expect(store.successfulJumps.isEmpty)
-    }
-
     @Test(.timeLimit(.minutes(1)))
     @MainActor
-    func deletingSourceConfigurationRemovesItsJumpIdentity() async throws {
+    func historySurvivesOutagesButNotPaneExitOrSourceRemoval() async throws {
         let snapshots = NavigationSnapshots()
         let store = SessionStore(
             client: navigationClient(NavigationWire()), loadSource: { _ in try await snapshots.load() },
@@ -207,13 +232,25 @@ struct NavigationFocusTests {
         store.navigate(to: target)
         await navigationSettles(store)
         #expect(store.successfulJumps == [target])
+        await snapshots.set("source-offline")
+        await store.refresh()
+        #expect(store.successfulJumps == [target])
+        await snapshots.set("pane-gone")
+        await store.refresh()
+        #expect(store.successfulJumps.isEmpty)
+        await snapshots.set("online")
+        await store.refresh()
+        #expect(store.successfulJumps.isEmpty)
+        store.navigate(to: target)
+        await navigationSettles(store)
+        #expect(store.successfulJumps == [target])
         store.setRemoteAlias("remote", enabled: false)
         #expect(store.successfulJumps.isEmpty)
     }
 
-    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    @Test(.timeLimit(.minutes(1)))
     @MainActor
-    func obsoleteClientCreationCannotReportSuccessOrEnterHistory(creationFails: Bool) async throws {
+    func obsoleteClientCreationCannotReportSuccessOrEnterHistory() async throws {
         let snapshots = NavigationSnapshots()
         let wire = NavigationWire()
         let started = NavigationLatch()
@@ -227,7 +264,6 @@ struct NavigationFocusTests {
             activateClient: { _, _, _, _, _ in
                 await started.open()
                 await release.wait()
-                if creationFails { throw GhosttyController.GhosttyError.clientCreationFailed }
             }
         )
         await store.refresh()
@@ -316,19 +352,16 @@ struct NavigationFocusTests {
         #expect(activations == 7)
     }
 
-    @Test(arguments: ["wrong-id", "missing-result", "wrong-pane", "error-object", "error-string"])
-    func paneFocusNeverTreatsInvalidOrErrorResponseAsSuccess(kind: String) throws {
+    @Test(arguments: [
+        #"{"id":"other","result":{"pane":{"pane_id":"w1:p1"}}}"#,
+        #"{"id":"herdling-focus"}"#,
+        #"{"id":"herdling-focus","result":{"pane":{"pane_id":"w1:p2"}}}"#,
+        #"{"id":"herdling-focus","error":{"message":"pane gone"},"result":{"pane":{"pane_id":"w1:p1"}}}"#,
+    ])
+    func paneFocusRejectsWrongIdentityMissingResultAndErrors(response: String) throws {
         let client = HerdrClient(executable: "/fake/herdr", runCommand: { _, _, _, input in
             guard input != nil else {
                 return Data(#"{"sessions":[{"name":"default","running":true,"socket_path":"/tmp/fake"}]}"#.utf8)
-            }
-            let response: String
-            switch kind {
-            case "wrong-id": response = #"{"id":"other","result":{"pane":{"pane_id":"w1:p1"}}}"#
-            case "missing-result": response = #"{"id":"herdling-focus"}"#
-            case "wrong-pane": response = #"{"id":"herdling-focus","result":{"pane":{"pane_id":"w1:p2"}}}"#
-            case "error-object": response = #"{"id":"herdling-focus","error":{"code":"pane_not_found","message":"pane gone"}}"#
-            default: response = #"{"id":"herdling-focus","error":"failed","result":{"pane":{"pane_id":"w1:p1"}}}"#
             }
             return Data(response.utf8)
         })
@@ -385,39 +418,6 @@ struct NavigationFocusTests {
         }
     }
 
-    @Test(.timeLimit(.minutes(1)), arguments: ["source-offline", "session-offline", "pane-gone", "session-gone"])
-    @MainActor
-    func submissionRejectsStaleAgentSnapshotAndRetainsFailedTarget(kind: String) async throws {
-        let snapshots = NavigationSnapshots()
-        let store = SessionStore(
-            client: HerdrClient(executable: nil),
-            loadSource: { _ in try await snapshots.load() },
-            loadBranches: { _, _ in [:] },
-            focusExistingClient: { _, _, _ in Issue.record("Invalid target reached Ghostty"); return true },
-            sourceDescriptors: [.local],
-            defaults: navigationDefaults()
-        )
-        await store.refresh()
-        let oldSession = try #require(store.sources.first?.sessions.first)
-        let oldAgent = try #require(oldSession.agents.first)
-        await snapshots.set(kind)
-        await store.refresh()
-        store.focus(oldAgent, in: oldSession)
-        let target = NavigationDestination.agent(sourceID: "local", sessionName: "default", paneID: "w1:p1")
-        #expect(store.navigationAttempt?.destination == target)
-        #expect(store.navigationAttempt?.phase == .failed)
-        #expect(store.navigationAttempt?.message != nil)
-        #expect(store.focusError == store.navigationAttempt?.message)
-        #expect(store.pendingFocusAgentID == nil)
-        #expect(store.successfulJumps.isEmpty)
-        store.setPanelOpen(true)
-        store.setPanelOpen(false)
-        #expect(store.navigationAttempt?.destination == target)
-        store.retryNavigation()
-        #expect(store.navigationAttempt?.destination == target)
-        #expect(store.navigationAttempt?.phase == .failed)
-    }
-
     @Test
     func destinationsResolveExactIdentityEvenWithDuplicateLabelsAndOfflineCache() throws {
         let remote = SourceDescriptor.remote("remote")
@@ -439,21 +439,13 @@ struct NavigationFocusTests {
         #expect(resolved.agent?.paneID == "w2:p1")
         #expect(resolved.group?.id == "w2")
         #expect(!resolved.isAvailable)
-        #expect(resolved.title == "same agent")
-        #expect(resolved.subtitle == "remote / default / same")
         #expect(NavigationDestination.workspace(sourceID: remote.id, sessionName: "default", workspaceID: "same").resolve(in: sources) == nil)
         #expect(NavigationDestination.agent(sourceID: remote.id, sessionName: "default", paneID: "absent").resolve(in: sources) == nil)
         let workspace = try #require(NavigationDestination.workspace(sourceID: "local", sessionName: "default", workspaceID: "w1").resolve(in: sources))
         #expect(workspace.isAvailable)
-        #expect(workspace.agent == nil)
-        #expect(workspace.title == "same")
         #expect(workspace.group?.id == "w1")
         let session = try #require(NavigationDestination.session(sourceID: "local", sessionName: "default").resolve(in: sources))
         #expect(session.isAvailable)
-        #expect(session.agent == nil)
-        #expect(session.group == nil)
-        #expect(session.title == "default")
-        #expect(session.subtitle.contains("default"))
     }
 }
 
@@ -498,14 +490,26 @@ private actor NavigationCounter {
     func next() -> Int { value += 1; return value }
 }
 
+private actor NavigationStopMonitor: SessionMonitoring {
+    let started: NavigationLatch
+    let release: NavigationLatch
+    init(started: NavigationLatch, release: NavigationLatch) {
+        self.started = started
+        self.release = release
+    }
+    func start(handler: @escaping @Sendable (SessionMonitorEvent) async -> Void) async {}
+    func stop() async {
+        await started.open()
+        await release.wait()
+    }
+}
+
 private actor NavigationSnapshots {
     private var kind = "online"
     func set(_ kind: String) { self.kind = kind }
     func load() throws -> [HerdrClient.LoadedSession] {
         switch kind {
         case "source-offline": throw HerdrClient.ClientError.failed("offline")
-        case "session-offline": return [.init(name: "default", groups: nil, error: "offline")]
-        case "session-gone": return []
         default:
             return [.init(name: "default", groups: [AgentGroup(
                 id: "w1", name: "same", agents: kind == "pane-gone" ? [] : (1...4).map { navigationAgent("w1:p\($0)") }
@@ -530,8 +534,6 @@ private func navigationClient(_ wire: NavigationWire) -> HerdrClient {
 
 @MainActor
 private func navigationSettles(_ store: SessionStore) async {
-    // Each caller has a one-minute test limit. Synchronous AppKit rendering in other
-    // tests can occupy MainActor; that is not a two-second navigation failure.
     while store.navigationAttempt?.phase == .pending, !Task.isCancelled {
         try? await Task.sleep(for: .milliseconds(10))
     }

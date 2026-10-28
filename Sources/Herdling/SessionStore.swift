@@ -250,6 +250,7 @@ final class SessionStore {
     private(set) var navigationAttempt: NavigationAttempt?
     private(set) var successfulJumps: [NavigationDestination] = []
     @ObservationIgnored private var navigationToken = UUID()
+    @ObservationIgnored private var acceptsNavigation = true
 
     var pendingFocusAgentID: AgentFocusID? {
         guard navigationAttempt?.phase == .pending,
@@ -368,6 +369,7 @@ final class SessionStore {
 
     func start() {
         guard !pollingStarted else { return }
+        acceptsNavigation = true
         pollingStarted = true
         if let localMonitor {
             let generation = UUID()
@@ -395,6 +397,10 @@ final class SessionStore {
         remotes: [any SessionMonitoring],
         starts: [Task<Void, Never>]
     ) {
+        acceptsNavigation = false
+        navigationToken = UUID()
+        navigationAttempt = nil
+        focusError = nil
         pollingStarted = false
         refreshRequested = false
         pollGeneration += 1
@@ -685,6 +691,7 @@ final class SessionStore {
     }
 
     func navigate(to destination: NavigationDestination) {
+        guard acceptsNavigation else { return }
         let resolved = destination.resolve(in: sources)
         if resolved?.isAvailable == true, navigationAttempt?.phase == .pending,
            navigationAttempt?.destination == destination { return }

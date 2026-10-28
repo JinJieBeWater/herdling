@@ -7,7 +7,7 @@ import SwiftUI
 /// a pane does in System Settings — and a lifecycle of its own: closing it never touches the panel.
 @MainActor
 final class SettingsWindowController: NSWindowController {
-    init(store: SessionStore) {
+    init(store: SessionStore, frameAutosaveName: NSWindow.FrameAutosaveName = "Settings Window") {
         let window = NSWindow(
             contentRect: NSRect(
                 x: 0,
@@ -26,11 +26,18 @@ final class SettingsWindowController: NSWindowController {
         // Stock Settings is dragged by its titlebar, never by its content.
         window.isMovableByWindowBackground = false
         window.isReleasedWhenClosed = false
-        window.contentViewController = NSHostingController(rootView: SettingsView(store: store))
+        let hostingController = NSHostingController(rootView: SettingsView(store: store))
+        // Settle content-driven sizing before restoring geometry; later hosting constraints would move it.
+        hostingController.sizingOptions = []
+        window.contentViewController = hostingController
+        let contentSize = hostingController.sizeThatFits(in: NSSize(width: Theme.Size.settingsWidth, height: 0))
+        window.setContentSize(contentSize)
+        window.minSize = window.frame.size
 
         super.init(window: window)
 
-        if !window.setFrameAutosaveName("Settings Window") {
+        window.setFrameAutosaveName(frameAutosaveName)
+        if !window.setFrameUsingName(frameAutosaveName) {
             window.center()
         }
     }
