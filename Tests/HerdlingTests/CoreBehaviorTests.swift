@@ -1096,7 +1096,7 @@ struct CoreBehaviorTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        _ = try CommandRunner.run("/usr/bin/git", ["-C", directory.path, "init", "-b", "main"], timeout: 3)
+        _ = try CommandRunner.run("/usr/bin/git", ["-C", directory.path, "init", "-b", "main"], timeout: 10)
         let resolver = GitBranchResolver(cacheDuration: 0)
         let monitor = ManualSessionMonitor()
         let store = SessionStore(
@@ -1118,7 +1118,7 @@ struct CoreBehaviorTests {
         while store.sources[0].branches[directory.path] != "main" { try #require(await iterator.next() != nil) }
         store.setPanelOpen(true)
         store.setPanelOpen(false)
-        _ = try CommandRunner.run("/usr/bin/git", ["-C", directory.path, "switch", "--orphan", "feature"], timeout: 3)
+        _ = try CommandRunner.run("/usr/bin/git", ["-C", directory.path, "switch", "--orphan", "feature"], timeout: 10)
         store.setPanelOpen(true)
         while store.sources[0].branches[directory.path] != "feature" { try #require(await iterator.next() != nil) }
         #expect(store.sources[0].branches == [directory.path: "feature"])

@@ -12,8 +12,9 @@ if [[ "$(xcode-select -p)" == *CommandLineTools* ]]; then
   [[ -n "$clt_sdk" ]] && export SDKROOT="$clt_sdk"
 fi
 
-swift build -c "$configuration" >&2
-bin_dir="$(swift build -c "$configuration" --show-bin-path)"
+# Swift Build's resource accessors search Contents/Resources instead of the build machine's path.
+swift build --build-system swiftbuild -c "$configuration" >&2
+bin_dir="$(swift build --build-system swiftbuild -c "$configuration" --show-bin-path)"
 app="$root/.build/Herdling.app"
 shortcut_resources="$bin_dir/KeyboardShortcuts_KeyboardShortcuts.bundle"
 
