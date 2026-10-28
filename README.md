@@ -17,7 +17,7 @@ Herdling is a macOS menu bar companion for [Herdr](https://herdr.dev/). It shows
 ## Requirements
 
 - macOS 15 or later
-- Swift 6.2 toolchain
+- Swift 6.2 toolchain (only when building from source)
 - [Herdr](https://herdr.dev/) installed locally and on each enabled SSH host
 - [Ghostty](https://ghostty.org/) or [Kero](https://kero.sh/) with its `kero` CLI for opening and focusing sessions
 - Key-based or otherwise non-interactive SSH access for remote hosts
@@ -26,7 +26,11 @@ Herdling finds `herdr` through `HERDR_BIN_PATH` or common Homebrew/system paths.
 
 ## Build and run
 
-There are no signed or notarized binary releases yet. Build the app from source:
+Check [Releases](https://github.com/JinJieBeWater/herdling/releases) for binary builds: choose `arm64` for Apple Silicon or `x86_64` for Intel. Extract `Herdling.app` and move it to `/Applications`. Each ZIP has a `.sha256` file; verify it with `shasum -a 256 -c <filename>.zip.sha256` from the download directory.
+
+These builds use ad-hoc signing, without an Apple Developer ID certificate or notarization. macOS may block the first launch. After attempting to open the app, use **System Settings → Privacy & Security → Open Anyway** only if you trust the download. Do not disable Gatekeeper system-wide.
+
+To build from source:
 
 ```bash
 git clone https://github.com/JinJieBeWater/herdling.git
@@ -107,6 +111,19 @@ Build release app:
 ```bash
 bash scripts/build-app.sh release
 ```
+
+### Releases
+
+`.github/workflows/release.yml` tests, builds and verifies app packaging for Apple Silicon and Intel on pushes to `main`, pull requests to `main`, and manual runs. These runs upload ZIPs and SHA-256 files as Actions artifacts without publishing a release. Xcode 26.2 is selected explicitly for Swift 6.2 and the macOS 26 APIs.
+
+To publish, set `CFBundleShortVersionString` in `Resources/Info.plist` to the release version and increment `CFBundleVersion` for subsequent releases. Commit and push the changes, including the workflow, then tag that commit:
+
+```bash
+git tag -a v0.1.0 -m 'Herdling 0.1.0'
+git push origin v0.1.0
+```
+
+Use `v<CFBundleShortVersionString>` for the tag; a mismatch fails the build. After both architectures pass, the workflow creates a GitHub Release with both ZIPs, checksums and generated release notes. It only needs the automatic `GITHUB_TOKEN`; no Apple certificates or repository secrets are required. Do not create the Release manually first or move an existing release tag; use a new version for corrections.
 
 ### Architecture
 

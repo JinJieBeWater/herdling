@@ -17,7 +17,7 @@ Herdling 是 [Herdr](https://herdr.dev/) 的 macOS 菜单栏配套工具。它�
 ## 环境要求
 
 - macOS 15 或更高版本
-- Swift 6.2 工具链
+- Swift 6.2 工具链（仅从源码构建时需要）
 - 本机和每台启用的 SSH 主机都已安装 [Herdr](https://herdr.dev/)
 - 已安装 [Ghostty](https://ghostty.org/)，或 [Kero](https://kero.sh/) 及其 `kero` CLI，用于打开和聚焦 Session
 - 远程主机支持密钥认证或其他非交互式 SSH 登录方式
@@ -26,7 +26,11 @@ Herdling 通过 `HERDR_BIN_PATH` 或常见 Homebrew/系统路径查找 `herdr`�
 
 ## 构建与运行
 
-项目暂未提供经过签名和公证的二进制发行版。请从源码构建：
+在 [Releases](https://github.com/JinJieBeWater/herdling/releases) 查看二进制发行版：Apple Silicon 选择 `arm64`，Intel 选择 `x86_64`。解压后将 `Herdling.app` 移动到 `/Applications`。每个 ZIP 都有对应的 `.sha256` 文件，在下载目录执行 `shasum -a 256 -c <文件名>.zip.sha256` 即可校验。
+
+发行版使用 ad-hoc 签名，没有 Apple Developer ID 证书，也未公证。macOS 可能拦截首次启动。尝试打开后，仅在信任下载来源时，前往 **系统设置 → 隐私与安全性 → 仍要打开** 放行。不要全局关闭 Gatekeeper。
+
+从源码构建：
 
 ```bash
 git clone https://github.com/JinJieBeWater/herdling.git
@@ -107,6 +111,19 @@ swift test -Xswiftc -warnings-as-errors
 ```bash
 bash scripts/build-app.sh release
 ```
+
+### 发版
+
+`.github/workflows/release.yml` 在推送 `main`、向 `main` 提交 PR 或手动运行时，分别为 Apple Silicon 和 Intel 测试、构建并验证应用资源打包。这些运行只上传 ZIP 和 SHA-256 文件到 Actions artifacts，不发布 Release。工作流显式选择 Xcode 26.2，以使用 Swift 6.2 和 macOS 26 API。
+
+发布时，先将 `Resources/Info.plist` 的 `CFBundleShortVersionString` 设为发行版本，后续版本同时递增 `CFBundleVersion`。提交并推送改动（包括工作流），再给该提交打 Tag：
+
+```bash
+git tag -a v0.1.0 -m 'Herdling 0.1.0'
+git push origin v0.1.0
+```
+
+Tag 必须为 `v<CFBundleShortVersionString>`，不匹配会构建失败。两种架构都验证通过后，工作流自动创建 GitHub Release，附带两份 ZIP、校验文件和自动生成的发行说明。仅使用自动提供的 `GITHUB_TOKEN`，无需 Apple 证书或仓库 secrets。不要提前手动创建 Release，也不要移动已发布的 Tag；修正发行版时使用新版本号。
 
 ### 架构
 
