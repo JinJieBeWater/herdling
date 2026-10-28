@@ -339,6 +339,12 @@ struct AgentRow: View {
         return base + (isFocusPending ? ", opening" : "")
     }
 
+    private var helpText: String {
+        let status = isFocusPending ? "Opening" : enabled ? agent.status.rosterLabel.capitalized : "Unavailable"
+        let location = destination.map { [$0.sourceID, $0.sessionName, agent.paneID].joined(separator: " / ") } ?? agent.paneID
+        return "\(status)\n\(agent.title)\n\(location)"
+    }
+
     var body: some View {
         HoverRow(
             minHeight: Theme.Size.rowMinHeight,
@@ -365,7 +371,6 @@ struct AgentRow: View {
             // on one column instead of the arrow hanging 12pt further out.
             Color.clear.frame(width: Theme.Size.chevron)
         }
-        .help((isFocusPending ? "Opening" : enabled ? agent.status.rosterLabel.capitalized : "Unavailable")
-              + "\n" + agent.title + "\n" + (destination.map { [$0.sourceID, $0.sessionName, agent.paneID].joined(separator: " / ") } ?? agent.paneID))
+        .help(helpText)
     }
 }
