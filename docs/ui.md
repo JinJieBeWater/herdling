@@ -309,10 +309,8 @@ Settings 是**自己的 `NSWindow`**，不是面板里的一个子页面。
 ## 给改 UI 的 agent
 
 - **从渲染截图下手，不猜数值。** 改完在浅色桌面壁纸上截图：透明与圆角裁切的 bug 只在亮壁纸上现形。
-- **间距和位置要有断言，不能靠眼睛。** `swift test --filter RosterRenderTests` 会用真实 AppKit 布局把面板、层级、Settings 渲染成 PNG，输出到每次新建的 `/tmp/herdling-render-<UUID>`，日志给出路径；不覆盖旧证据。`PanelLayoutTests` 验证完整面板高度、行高与展开留白，`PanelChromeTests` 验证文字列和轮廓；渲染窗口放在屏幕外，避免真实指针触发悬停。截图看感觉，断言看回归。
-  - 离屏渲染要用 `NSHostingView` + `NSWindow`，**不要用 `ImageRenderer`**：它不跑 `onPreferenceChange`，所有测量出来的高度都是 0，手风琴会渲染成空的。
+- **视觉改动按需验收。** 在隔离桌面检查完整面板、滚动和浅/深色状态；自动化测试只保留交互和状态回归，不固定像素、字体栅格或文案。
 - **不要加没被要求的行为。** 重做外观就是重做外观。
 - **新取值进 `Theme`**，视图里不留 magic number。
 - **共享语法保持共享。** 行内缩、fill 优先级与分组 header 样式只写一份，分叉是 bug 不是特性。
-- **字面量会被测试拦住。** `DesignTokenTests` 扫 `Sources/Herdling`：颜色、字号、内边距、frame、opacity、动画时长里任何裸字面量都算失败，只有 `Theme.swift`（token 本身）和 `HerdrBrand.swift`（512pt 品牌图标， artwork 不是界面）豁免。新值先进 `Theme` 再用。
 - **用真实工具链构建验证。** 编不过 Swift 6 严格模式的设计改动不算做完。

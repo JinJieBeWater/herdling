@@ -42,11 +42,8 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Test app packaging failure handling
         run: bash scripts/test-build-app.sh
-      - name: Test without GPU rendering
-        # Hosted VMs lack the GPU and Retina display used by the native rendering tests.
-        run: |
-          swift test --no-parallel \
-            --skip 'NavigationPanelTests|Panel(Chrome|Ink|Layout|Surface|Symbol)Tests|Roster(Render|Scrollbar)Tests|CoreBehaviorTests/statusItemOwnsNativeLayoutAndAccessibility'
+      - name: Test
+        run: swift test --no-parallel
       - name: Build app
         run: bash scripts/build-app.sh release
       - name: Verify packaging

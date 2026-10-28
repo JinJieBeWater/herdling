@@ -19,7 +19,7 @@ Herdling 是 [Herdr](https://herdr.dev/) 的 macOS 菜单栏配套工具。它�
 - macOS 15 或更高版本
 - Xcode 26.2 或更高版本，包含 Swift 6.2 或更新工具链（仅从源码构建时需要；只有 Command Line Tools 不够）
 - 本机和每台启用的 SSH 主机都已安装 [Herdr](https://herdr.dev/)
-- 已安装 [Ghostty](https://ghostty.org/)，或 [Kero](https://kero.sh/) 及其 `kero` CLI，用于打开和聚焦 Session
+- 已安装 [Ghostty](https://ghostty.org/) 1.4.0 或更高版本，或 [Kero](https://kero.sh/) 及其 `kero` CLI，用于打开和聚焦 Session
 - 远程主机支持密钥认证或其他非交互式 SSH 登录方式
 
 Herdling 通过 `HERDR_BIN_PATH` 或常见 Homebrew/系统路径查找 `herdr`，通过 `KERO_BIN_PATH`、常见 Homebrew 路径或 Kero app bundle 查找 `kero`。远程命令通过目标主机的 login shell 执行。
@@ -57,7 +57,7 @@ open .build/Herdling.app
 5. 在 **Terminal → Application** 中选择 **Ghostty** 或 **Kero**。默认仍为 Ghostty；切换只影响后续定位，不改变已有终端 Session。
 6. 可在 Settings 录制全局呼出快捷键，默认不设置组合。
 
-Ghostty 使用 AppleScript 自动化，首次操作时按 macOS 提示授权；新 client 可选择 Tab 或 Window。Kero 使用原生 CLI，不需要自动化权限或 Tab/Window 设置。设置只检查所选终端。
+Ghostty 使用 AppleScript 自动化，首次操作时按 macOS 提示授权，并保持 `macos-applescript` 启用（默认值）；新 client 可选择 Tab 或 Window。Kero 使用原生 CLI，不需要自动化权限或 Tab/Window 设置。设置只检查所选终端。
 
 ### 远程主机
 
@@ -87,6 +87,7 @@ ssh -o BatchMode=yes my-server '$SHELL -lc "herdr session list --json"'
 | Sources 中的 `←` / `→` | 返回父层，或收起 / 展开来源 |
 | `Tab` / `Shift-Tab` | 在原生控件间移动焦点 |
 | `⌘,` | 打开 Settings |
+| Settings 中的 `⌘W` | 关闭 Settings 窗口 |
 | 面板内按 `Esc` | 关闭面板 |
 | `⌘Q` | 退出 Herdling |
 
@@ -97,13 +98,8 @@ Herdr 定位可能将目标 tab 的所有 pane 标为 seen，并影响同一 Ses
 运行测试：
 
 ```bash
-swift test
-```
-
-将 warning 视为 error：
-
-```bash
-swift test -Xswiftc -warnings-as-errors
+bash scripts/test-build-app.sh
+swift test --no-parallel
 ```
 
 构建 release 应用：
@@ -116,7 +112,7 @@ bash scripts/build-app.sh release
 
 `.github/workflows/release.yml` 在推送 `main`、向 `main` 提交 PR 或手动运行时，分别为 Apple Silicon 和 Intel 测试、构建并验证应用资源打包。这些运行只上传 ZIP 和 SHA-256 文件到 Actions artifacts，不发布 Release。工作流显式选择 Xcode 26.2，以使用 Swift 6.2 和 macOS 26 API。
 
-CI 不运行原生渲染测试套件和状态栏渲染测试：托管虚拟机缺少可靠的 Metal GPU，也没有这些测试假定的 Retina 屏幕。发版前请在带 Retina 屏幕的 Mac 上运行完整的 `swift test --no-parallel`。CI 通过不代表原生 UI 外观或真实终端定位已验收。
+CI 运行全部自动化测试，覆盖导航、会话状态、进程/Socket 失败与取消、偏好保存和打包，不再运行像素或 OCR 检查。视觉改动和真实终端定位需人工验收；GUI 自动化应使用隔离桌面。
 
 发布时，先将 `Resources/Info.plist` 的 `CFBundleShortVersionString` 设为发行版本，后续版本同时递增 `CFBundleVersion`。提交并推送改动（包括工作流），再给该提交打 Tag：
 
@@ -132,7 +128,7 @@ Tag 必须为 `v<CFBundleShortVersionString>`，不匹配会构建失败。两�
 - AppKit 管理 `NSStatusItem` 和非激活式 `NSPanel`；SwiftUI 渲染面板内容。
 - 本机与远程 monitor 为每个 Herdr Session 维护一条 NDJSON Socket 流。
 - 定期发现新增或删除的 Session；事件流不可用时保留 CLI polling fallback。
-- Ghostty 保留 AppleScript 与 terminal/process 验证。Kero 通过 `kero ls --json`、pane 进程关系和 `kero focus` 定位，新建时使用 `kero new`。两者只复用并验证各自的 client，不会回退到另一终端。
+- Ghostty 将原生 AppleScript `tty` 与 Herdr client 进程精确匹配，再聚焦稳定 terminal ID；不再修改终端标题或保存终端映射。Kero 通过 `kero ls --json`、pane 进程关系和 `kero focus` 定位，新建时使用 `kero new`。两者只复用并验证各自的 client，不会回退到另一终端。
 
 ## 排障
 

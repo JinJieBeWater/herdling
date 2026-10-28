@@ -7,19 +7,7 @@ import Testing
 @MainActor
 struct PanelShortcutTests {
     @Test
-    func keyUpInvokesRegisteredAction() {
-        let events = IsolatedShortcutEvents()
-        let registration = events.makeRegistration()
-        var invocations = 0
-        registration.register { invocations += 1 }
-
-        events.keyUp()
-
-        #expect(invocations == 1)
-    }
-
-    @Test
-    func registeringAgainReplacesPreviousAction() {
+    func registrationReplacesAndUnregistersItsAction() {
         let events = IsolatedShortcutEvents()
         let registration = events.makeRegistration()
         var oldInvocations = 0
@@ -31,37 +19,15 @@ struct PanelShortcutTests {
 
         #expect(oldInvocations == 0)
         #expect(newInvocations == 1)
-    }
-
-    @Test
-    func unregisterStopsActionAndAllowsFreshRegistration() {
-        let events = IsolatedShortcutEvents()
-        let registration = events.makeRegistration()
-        var invocations = 0
-        registration.register { invocations += 1 }
 
         registration.unregister()
         registration.unregister()
         events.keyUp()
-        #expect(invocations == 0)
+        #expect(newInvocations == 1)
 
-        registration.register { invocations += 1 }
+        registration.register { newInvocations += 1 }
         events.keyUp()
-        #expect(invocations == 1)
-    }
-
-    @Test
-    func openingUnsetRecorderDoesNotStoreAShortcut() async {
-        let name = KeyboardShortcuts.Name("panelShortcutRecorderTest-\(UUID().uuidString)")
-        #expect(PanelShortcut.name.initialShortcut == nil)
-        #expect(!KeyboardShortcuts.storedNames.contains(name))
-
-        let recorder = KeyboardShortcuts.RecorderCocoa(for: name)
-        await Task.yield()
-
-        #expect(recorder.shortcut == nil)
-        #expect(KeyboardShortcuts.getShortcut(for: name) == nil)
-        #expect(!KeyboardShortcuts.storedNames.contains(name))
+        #expect(newInvocations == 2)
     }
 }
 

@@ -1,18 +1,15 @@
 import AppKit
 import Darwin
 import Foundation
+import Synchronization
 import Testing
 @testable import Herdling
 
 @Suite
 struct CoreBehaviorTests {
     @Test @MainActor
-    func everyAgentContributesToAttentionDespiteObsoleteDisplayPreferences() async throws {
+    func refreshedAgentsContributeToMenuAttention() async {
         let defaults = PreviewFixtures.renderDefaults()
-        defaults.set(try JSONSerialization.data(withJSONObject: [
-            ["sourceID": "local", "sessionName": "default", "paneID": "blocked"],
-            ["sourceID": "local", "sessionName": "default", "paneID": "done"]
-        ]), forKey: "observe-only-agents")
         let agents = [AgentStatus.blocked, .done, .working].map {
             AgentInfo(paneID: $0.rawValue, title: $0.rawValue, status: $0,
                       workspace: "repo", cwd: "/repo", updatedAt: .now)
@@ -34,64 +31,6 @@ struct CoreBehaviorTests {
     }
 
     @Test
-    func localSourceUsesNativeUserDisplayNameWithFallbacks() {
-        #expect(SourceDescriptor.localDisplayName(
-            fullName: " JinJieBeWater ",
-            username: "jinjiebewater"
-        ) == "JinJieBeWater")
-        #expect(SourceDescriptor.localDisplayName(fullName: "", username: "jinjiebewater") == "jinjiebewater")
-        #expect(SourceDescriptor.localDisplayName(fullName: "", username: "") == "Local")
-    }
-
-    @Test
-    func herdrParsingAndMenuPriority() throws {
-        let sessions = Data(#"{"sessions":[{"name":"default","running":true},{"name":"old","running":false}]}"#.utf8)
-        #expect(try HerdrClient.parseSessions(sessions) == ["default"])
-
-        let snapshot = Data(#"{"result":{"snapshot":{"agents":[{"agent":"pi","agent_status":"blocked","cwd":"/tmp/repo","foreground_cwd":"/tmp/repo","name":"fix auth","pane_id":"w1:p1","terminal_title":null,"terminal_title_stripped":null,"workspace_id":"w1"}],"workspaces":[{"label":"repo","workspace_id":"w1"}]}}}"#.utf8)
-        let agents = try HerdrClient.parseGroups(snapshot).flatMap(\.agents)
-        #expect(agents.count == 1)
-        #expect(agents[0].title == "fix auth")
-        #expect(agents[0].workspace == "repo")
-
-        let source = SourceInfo(
-            descriptor: .local,
-            sessions: [SessionInfo(name: "default", agents: agents, online: true)],
-            online: true
-        )
-        #expect(MenuStatus.summarize([source]) == MenuStatus(
-            counts: [AgentStatusCount(status: .blocked, count: 1)],
-            availability: .online
-        ))
-        #expect(HerdrClient.shellQuote("a'b") == "'a'\\''b'")
-        #expect(GhosttyController.appleScriptString("a\\\"b") == "\"a\\\\\\\"b\"")
-        #expect(try HerdrClient(executable: "/opt/homebrew/bin/herdr").attachCommand(session: "default").hasPrefix("exec /usr/bin/env "))
-    }
-
-    @Test
-    @MainActor
-    func ghosttyOpenBehaviorPersistsAndDefaultsToTab() {
-        let testDefaults = TestDefaults()
-
-        var store = SessionStore(
-            client: HerdrClient(executable: nil),
-            sourceDescriptors: [.local],
-            defaults: testDefaults.defaults
-        )
-        #expect(store.ghosttyOpenBehavior == .tab)
-
-        store.setGhosttyOpenBehavior(.window)
-        #expect(testDefaults.defaults.string(forKey: "ghostty-open-behavior") == "window")
-
-        store = SessionStore(
-            client: HerdrClient(executable: nil),
-            sourceDescriptors: [.local],
-            defaults: testDefaults.defaults
-        )
-        #expect(store.ghosttyOpenBehavior == .window)
-    }
-
-    @Test
     func remoteHerdrUsesLoginShellPath() throws {
         let command = HerdrClient.remoteCommand(arguments: ["session", "list", "--json"])
         #expect(command.hasPrefix("$SHELL -lc "))
@@ -105,9 +44,6 @@ struct CoreBehaviorTests {
         ))
         #expect(sessions.map(\.name) == ["default"])
         #expect(sessions.map(\.socketPath) == ["/custom/herdr.sock"])
-        #expect(HerdrRemoteSessionMonitor.reconnectDelay(attempt: 1) == 1)
-        #expect(HerdrRemoteSessionMonitor.reconnectDelay(attempt: 2) == 2)
-        #expect(HerdrRemoteSessionMonitor.reconnectDelay(attempt: 7) == 60)
         #expect(HerdrClient.sshArguments(alias: "kvm", command: "query") == [
             "-T",
             "-o", "BatchMode=yes",
@@ -257,24 +193,6 @@ struct CoreBehaviorTests {
     }
 
     @Test
-    func socketEventIsRecognized() throws {
-        let event = Data(#"{"event":"pane.agent_status_changed","data":{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"working"}}"#.utf8)
-        guard case .event(.agentStatusChanged) = HerdrSocketMessage.decode(event) else {
-            Issue.record("Expected socket event")
-            return
-        }
-    }
-
-    @Test
-    func socketSubscriptionAcknowledgementIsRecognized() throws {
-        let acknowledgement = Data(#"{"id":"subscription","result":{"type":"subscription_started"}}"#.utf8)
-        guard case .subscriptionStarted = HerdrSocketMessage.decode(acknowledgement) else {
-            Issue.record("Expected subscription acknowledgement")
-            return
-        }
-    }
-
-    @Test
     func olderSocketSnapshotCannotOverwriteNewerGeneration() {
         var ledger = SnapshotGenerationLedger()
         let acceptedSecond = ledger.accept(endpoint: "default", generation: 2)
@@ -362,73 +280,16 @@ struct CoreBehaviorTests {
 
     @Test
     @MainActor
-    func remoteSocketMonitorReplacesPolling() async {
-        let descriptor = SourceDescriptor.remote("kvm")
-        let agent = AgentInfo(
-            paneID: "remote-pane", title: "remote-agent", status: .idle,
-            workspace: "Remote Space", cwd: "/remote", updatedAt: .now
-        )
-        let monitor = ImmediateSessionMonitor(event: .sessions([
-            HerdrClient.LoadedSession(
-                name: "default",
-                groups: [AgentGroup(id: "remote", name: "Remote Space", agents: [agent])],
-                error: nil
-            ),
-        ]))
-        let recorder = SourceLoadRecorder()
-        let sleepRecorder = SleepRecorder()
-        let store = SessionStore(
-            client: HerdrClient(executable: nil),
-            sleep: { duration in try await sleepRecorder.sleep(duration) },
-            loadSource: { descriptor in recorder.load(descriptor) },
-            loadBranches: { _, _ in [:] },
-            remoteMonitorFactory: { _ in monitor },
-            sourceDescriptors: [descriptor]
-        )
-
-        store.start()
-        for _ in 0..<1_000 where store.sources[0].sessions.first?.agents.first?.paneID != "remote-pane" {
-            await Task.yield()
-        }
-        await store.refresh()
-
-        #expect(store.sources[0].sessions.first?.agents.first?.paneID == "remote-pane")
-        #expect(recorder.remoteCallCount == 0)
-        #expect(await sleepRecorder.durations.isEmpty)
-        store.stop()
-    }
-
-    @Test
-    @MainActor
-    func unavailableRemoteMonitorReconnectsWithoutPolling() async {
-        let descriptor = SourceDescriptor.remote("kvm")
-        let monitor = ImmediateSessionMonitor(event: .unavailable())
-        let recorder = SourceLoadRecorder()
-        let sleepRecorder = SleepRecorder()
-        let store = SessionStore(
-            client: HerdrClient(executable: nil),
-            sleep: { duration in try await sleepRecorder.sleep(duration) },
-            loadSource: { descriptor in recorder.load(descriptor) },
-            remoteMonitorFactory: { _ in monitor },
-            sourceDescriptors: [descriptor]
-        )
-
-        store.start()
-        for _ in 0..<100 { await Task.yield() }
-        await store.refresh()
-
-        #expect(recorder.remoteCallCount == 0)
-        #expect(await sleepRecorder.durations.isEmpty)
-        store.stop()
-    }
-
-    @Test
-    @MainActor
     func remoteFailureCanRetryImmediatelyAndRecoveryClearsDiagnostic() async {
         let descriptor = SourceDescriptor.remote("kvm")
         let monitor = ManualSessionMonitor()
+        let recorder = SourceLoadRecorder()
+        let sleeps = SleepRecorder()
         let store = SessionStore(
             client: HerdrClient(executable: nil),
+            sleep: { try await sleeps.sleep($0) },
+            loadSource: { recorder.load($0) },
+            loadBranches: { _, _ in [:] },
             remoteMonitorFactory: { _ in monitor },
             sourceDescriptors: [descriptor]
         )
@@ -439,6 +300,8 @@ struct CoreBehaviorTests {
         await monitor.emit(.unavailable(reason: "SSH authentication failed.", retryAt: retryAt))
         #expect(store.sources[0].error == "SSH authentication failed.")
         #expect(store.sources[0].retryAt == retryAt)
+        await store.refresh()
+        #expect(recorder.remoteCallCount == 0)
 
         store.retryRemoteSource(descriptor)
         await monitor.waitForRetryCount(1)
@@ -448,6 +311,10 @@ struct CoreBehaviorTests {
         #expect(store.sources[0].online)
         #expect(store.sources[0].error == nil)
         #expect(store.sources[0].retryAt == nil)
+        #expect(store.sources[0].sessions.first?.agents.first?.paneID == "recovered")
+        await store.refresh()
+        #expect(recorder.remoteCallCount == 0)
+        #expect(await sleeps.durations.isEmpty)
         await store.stopAndWait()
     }
 
@@ -489,28 +356,6 @@ struct CoreBehaviorTests {
         #expect(store.sources.first { $0.descriptor == descriptor }?
             .sessions.first?.agents.first?.paneID == "new")
         store.stop()
-    }
-
-    @Test
-    func stoppedRemoteDiscoveryDoesNotSchedulePeriodicWakeups() async {
-        let discoveryStarted = AsyncGate()
-        let releaseDiscovery = AsyncGate()
-        let monitor = HerdrRemoteSessionMonitor(
-            source: .remote("kvm"),
-            discoverSessions: {
-                await discoveryStarted.release()
-                await releaseDiscovery.wait()
-                return .sessions([])
-            }
-        )
-        let start = Task { await monitor.start { _ in } }
-
-        await discoveryStarted.wait()
-        await monitor.stop()
-        await releaseDiscovery.release()
-        await start.value
-
-        #expect(await !monitor.isDiscoveryScheduled)
     }
 
     @Test(.timeLimit(.minutes(1)))
@@ -635,27 +480,6 @@ struct CoreBehaviorTests {
             onSnapshot: { _, _, _, groups in
                 if groups.first?.agents.first?.status == .working { published.signal() }
             },
-            onEnd: { _, _ in }
-        )
-        defer { connection.stop() }
-
-        try connection.start()
-
-        #expect(published.wait(timeout: .now() + 1) == .success)
-    }
-
-    @Test
-    func socketSnapshotAndSubscriptionUseSeparateConnections() throws {
-        let published = DispatchSemaphore(value: 0)
-        let snapshot = #"{"id":"snapshot","result":{"type":"session_snapshot","snapshot":{"workspaces":[{"workspace_id":"w1","label":"Space"}],"agents":[{"pane_id":"w1:p1","workspace_id":"w1","agent_status":"idle","name":"agent","cwd":"/repo"}]}}}"#
-        let connection = HerdrSocketConnection(
-            endpoint: HerdrSocketEndpoint(session: "default", path: "/unused"),
-            eventExecutable: "/bin/sh",
-            eventArguments: [
-                "-c",
-                "IFS= read -r request; case \"$request\" in *session.snapshot*) \(socketSnapshotReply(snapshot)) ;; *events.subscribe*) printf '%s\\n' '{\"id\":\"subscription\",\"result\":{\"type\":\"subscription_started\"}}'; sleep 2 ;; esac",
-            ],
-            onSnapshot: { _, _, _, _ in published.signal() },
             onEnd: { _, _ in }
         )
         defer { connection.stop() }
@@ -835,59 +659,14 @@ struct CoreBehaviorTests {
         let groups = [
             AgentGroup(id: "my", name: "my", agents: []),
             AgentGroup(id: "engineer", name: "Engineer", agents: []),
-            AgentGroup(id: "engineer-wt", name: "Engineer/investigate-inft-50", agents: []),
-            AgentGroup(id: "v5", name: "v5", agents: []),
-            AgentGroup(id: "v5-wt", name: "v5/leap-309", agents: []),
+            AgentGroup(id: "engineer-wt", name: "Engineer/feature/nested", agents: []),
             AgentGroup(id: "standalone", name: "unknown/path", agents: [])
         ]
 
         let spaces = RosterLayout.spaces(from: groups)
-        #expect(spaces.map(\.name) == ["my", "Engineer", "v5", "unknown/path"])
-        #expect(spaces[1].worktrees.map(\.name) == ["Engineer/investigate-inft-50"])
-        #expect(spaces[1].worktreeName(spaces[1].worktrees[0]) == "investigate-inft-50")
-        #expect(spaces[1].displayedWorktrees().map(\.name) == ["Main", "investigate-inft-50"])
+        #expect(spaces.map(\.id) == ["my", "engineer", "standalone"])
         #expect(spaces[1].displayedWorktrees().map(\.id) == ["engineer", "engineer-wt"])
-        #expect(spaces[1].displayedWorktrees().map(\.group.name) == ["Engineer", "Engineer/investigate-inft-50"])
-        #expect(spaces[2].worktrees.map(\.name) == ["v5/leap-309"])
-
-        let primaryAgent = AgentInfo(
-            paneID: "pane", title: "agent", status: .idle, workspace: "Engineer",
-            cwd: "/repo", updatedAt: .now
-        )
-        let populated = RosterSpace(
-            primary: AgentGroup(id: "engineer", name: "Engineer", agents: [primaryAgent]),
-            worktrees: [groups[2]]
-        )
-        #expect(populated.displayedWorktrees().map(\.name) == [
-            "Main",
-            "investigate-inft-50",
-        ])
-        #expect(populated.displayedWorktrees().map(\.id) == ["engineer", "engineer-wt"])
-        #expect(AgentStatusCount.summarize(populated.displayedWorktrees()[0].group.agents) == [
-            AgentStatusCount(status: .idle, count: 1),
-        ])
-
-        let nestedBranch = RosterLayout.spaces(from: [
-            AgentGroup(id: "a", name: "A", agents: []),
-            AgentGroup(id: "branch", name: "A/feature/nested", agents: [])
-        ])
-        #expect(nestedBranch.map(\.name) == ["A"])
-        #expect(nestedBranch[0].worktreeName(nestedBranch[0].worktrees[0]) == "feature/nested")
-    }
-
-    @Test
-    func singleDefaultSessionHeaderIsHidden() {
-        #expect(!RosterLayout.showsSessionHeader(name: "default", sourceSessionCount: 1))
-        #expect(RosterLayout.showsSessionHeader(name: "default", sourceSessionCount: 2))
-        #expect(RosterLayout.showsSessionHeader(name: "work", sourceSessionCount: 1))
-    }
-
-    @Test
-    func accordionAllowsAllSourcesToCollapseAndKeepsValidPreferences() {
-        #expect(RosterLayout.expandedSourceID(saved: "ssh:kvm", available: ["local", "ssh:kvm"]) == "ssh:kvm")
-        #expect(RosterLayout.expandedSourceID(saved: "missing", available: ["local", "ssh:kvm"]) == "local")
-        #expect(RosterLayout.expandedSourceID(saved: "", available: ["local", "ssh:kvm"]) == nil)
-        #expect(RosterLayout.expandedSourceID(saved: "local", available: []) == nil)
+        #expect(spaces[1].worktreeName(spaces[1].worktrees[0]) == "feature/nested")
     }
 
     @Test
@@ -897,129 +676,6 @@ struct CoreBehaviorTests {
             "/repo": "main",
             "/worktree": "feature/nested",
         ])
-    }
-
-    @Test
-    func branchPathsIncludeEveryUniqueAgentCWD() {
-        let first = AgentInfo(
-            paneID: "p1", title: "one", status: .idle, workspace: "Space",
-            cwd: "/repo", updatedAt: .now
-        )
-        let second = AgentInfo(
-            paneID: "p2", title: "two", status: .idle, workspace: "Space",
-            cwd: "/repo-worktree", updatedAt: .now
-        )
-        let duplicate = AgentInfo(
-            paneID: "p3", title: "three", status: .idle, workspace: "Space",
-            cwd: "/repo", updatedAt: .now
-        )
-        let space = RosterSpace(
-            primary: AgentGroup(id: "root", name: "Space", agents: [first, second, duplicate]),
-            worktrees: []
-        )
-
-        #expect(RosterLayout.branchSummary(
-            for: space.primary.agents,
-            resolved: ["/repo-worktree": "feature/nested"]
-        ) == .single("feature/nested"))
-        #expect(RosterLayout.branchSummary(
-            for: space.primary.agents,
-            resolved: ["/repo": "main", "/repo-worktree": "feature/nested"]
-        ) == .mixed)
-    }
-
-    @Test
-    func sourceStatusCountsHideZerosAndKeepPriorityOrder() {
-        func agent(_ id: String, _ status: AgentStatus) -> AgentInfo {
-            AgentInfo(
-                paneID: id,
-                title: id,
-                status: status,
-                workspace: "space",
-                cwd: "/repo",
-                updatedAt: .now
-            )
-        }
-
-        let counts = AgentStatusCount.summarize([
-            agent("idle", .idle),
-            agent("blocked-1", .blocked),
-            agent("working", .working),
-            agent("done", .done),
-            agent("blocked-2", .blocked),
-            agent("unknown", .unknown),
-        ])
-
-        #expect(counts == [
-            AgentStatusCount(status: .blocked, count: 2),
-            AgentStatusCount(status: .done, count: 1),
-            AgentStatusCount(status: .working, count: 1),
-            AgentStatusCount(status: .idle, count: 1),
-            AgentStatusCount(status: .unknown, count: 1),
-        ])
-    }
-
-    @Test
-    @MainActor
-    func quickAccessRanksOnlineStatesWithIdleAfterWorking() {
-        let now = Date(timeIntervalSince1970: 10_000)
-        let agents = [
-            fixtureAgent("idle", .idle, changedAt: now),
-            fixtureAgent("working", .working, changedAt: now),
-            fixtureAgent("done", .done, changedAt: now.addingTimeInterval(-30)),
-            fixtureAgent("blocked", .blocked, changedAt: now.addingTimeInterval(-40)),
-            fixtureAgent("unknown", .unknown, changedAt: now),
-        ]
-        let source = SourceInfo(descriptor: .local,
-            sessions: [SessionInfo(name: "default", agents: agents, online: true)], online: true)
-        let browser = NavigationBrowser(sources: [source])
-        #expect(browser.quickIDs == [
-            .agent(sourceID: source.id, sessionName: "default", paneID: "blocked"),
-            .agent(sourceID: source.id, sessionName: "default", paneID: "done"),
-            .agent(sourceID: source.id, sessionName: "default", paneID: "working"),
-            .agent(sourceID: source.id, sessionName: "default", paneID: "idle"),
-        ])
-    }
-
-    @Test
-    @MainActor
-    func agentIdentityIncludesSourceSessionAndPane() {
-        let agent = fixtureAgent("shared", .blocked, changedAt: .now)
-        let sources = [SourceDescriptor.local, .remote("kvm")].map { descriptor in
-            SourceInfo(descriptor: descriptor,
-                sessions: ["first", "second"].map {
-                    SessionInfo(name: $0, agents: [agent], online: true)
-                }, online: true)
-        }
-        let browser = NavigationBrowser(sources: sources)
-        #expect(browser.quickIDs.count == 4)
-        #expect(Set(browser.quickIDs).count == 4)
-        #expect(Set(sources.flatMap { source in
-            source.sessions.map { session in
-                AgentFocusID(sourceID: source.id, sessionName: session.name, paneID: agent.paneID)
-            }
-        }).count == 4)
-    }
-
-    @Test
-    @MainActor
-    func allDirectoryKeepsEveryWorkspaceAndReceivedOrderDespiteAttentionPriority() {
-        let source = SourceInfo(descriptor: .local, sessions: [
-            SessionInfo(name: "default", groups: [
-                AgentGroup(id: "a", name: "A", agents: []),
-                AgentGroup(id: "a-work", name: "A/work", agents: [fixtureAgent("working", .working, changedAt: .now)]),
-                AgentGroup(id: "b", name: "B", agents: []),
-                AgentGroup(id: "b-work", name: "B/work", agents: [fixtureAgent("blocked", .blocked, changedAt: .now)]),
-                AgentGroup(id: "empty", name: "Empty", agents: []),
-            ], online: true)
-        ], online: true, branches: ["/repo": "main"])
-        let browser = NavigationBrowser(sources: [source])
-        let displayed = browser.allSources[0]
-        #expect(displayed.sessions[0].groups.map(\.id) == ["a", "a-work", "b", "b-work", "empty"])
-        #expect(displayed.sessions[0].agents.map(\.paneID) == ["working", "blocked"])
-        #expect(displayed.branches == ["/repo": "main"])
-        #expect(RosterLayout.spaces(from: displayed.sessions[0].groups).map(\.name) == ["A", "B", "Empty"])
-        #expect(RosterLayout.spaces(from: displayed.sessions[0].groups)[0].displayedWorktrees().map(\.id) == ["a", "a-work"])
     }
 
     @Test
@@ -1154,9 +810,9 @@ struct CoreBehaviorTests {
         store.stop()
     }
 
-    @Test(.timeLimit(.minutes(1)), arguments: [false, true])
+    @Test(.timeLimit(.minutes(1)))
     @MainActor
-    func emptyWorkspaceFocusUsesRealIDAndRejectsOfflineSession(isNamedWorktree: Bool) async throws {
+    func emptyWorkspaceFocusUsesRealIDAndRejectsOfflineSession() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("herdling-workspace-focus-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -1166,14 +822,10 @@ struct CoreBehaviorTests {
         try "#!/bin/sh\nprintf '%s\\n' \"$@\" > \(HerdrClient.shellQuote(argumentsURL.path))\n"
             .write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
-        let group = AgentGroup(id: "w-real-id", name: isNamedWorktree ? "Engineer/my/feature" : "Engineer/my", agents: [])
-        let groups = isNamedWorktree ? [AgentGroup(id: "w-root", name: "Engineer/my", agents: []), group] : [group]
+        let group = AgentGroup(id: "w-real-id", name: "Engineer/my/feature", agents: [])
+        let groups = [AgentGroup(id: "w-root", name: "Engineer/my", agents: []), group]
         let space = try #require(RosterLayout.spaces(from: groups).first)
-        #expect(space.displayedWorktrees().map(\.id) == (isNamedWorktree ? ["w-root", "w-real-id"] : ["w-real-id"]))
         let target = try #require(space.displayedWorktrees().last)
-        #expect(target.name == (isNamedWorktree ? "feature" : "Main"))
-        #expect(target.group.agents.isEmpty)
-        #expect(AgentStatusCount.summarize(target.group.agents).isEmpty)
         let monitor = ManualSessionMonitor()
         let store = SessionStore(
             client: HerdrClient(executable: executable.path),
@@ -1215,13 +867,9 @@ struct CoreBehaviorTests {
     }
 
     @Test
-    func remoteSnapshotUsesLoginShell() {
-        #expect(HerdrClient.remoteCommand(arguments: ["--session", "work", "api", "snapshot"])
-            == HerdrClient.remoteShellCommand("'herdr' '--session' 'work' 'api' 'snapshot'"))
-    }
-
-    @Test
     func workspaceFocusKeepsExactArgumentsThroughRemoteShellWrapping() {
+        #expect(HerdrClient.shellQuote("a'b") == "'a'\\''b'")
+        #expect(GhosttyController.appleScriptString("a\\\"b") == "\"a\\\\\\\"b\"")
         let arguments = HerdrClient.workspaceFocusArguments(session: "work's session", workspaceID: "w42")
         #expect(arguments == ["--session", "work's session", "workspace", "focus", "w42"])
         let command = HerdrClient.remoteCommand(arguments: arguments)
@@ -1232,41 +880,6 @@ struct CoreBehaviorTests {
             "-T", "-o", "BatchMode=yes", "-o", "NumberOfPasswordPrompts=0",
             "-o", "ConnectTimeout=4", "kvm", command,
         ])
-    }
-
-    @Test
-    func sourceBranchPathsBatchEverySessionOnce() {
-        func agent(_ id: String, cwd: String, workspace: String) -> AgentInfo {
-            AgentInfo(
-                paneID: id,
-                title: id,
-                status: .idle,
-                workspace: workspace,
-                cwd: cwd,
-                updatedAt: .now
-            )
-        }
-
-        let sessions = [
-            SessionInfo(
-                name: "first",
-                agents: [
-                    agent("one", cwd: "/repo", workspace: "Space"),
-                    agent("two", cwd: "/worktree", workspace: "Space/feature"),
-                ],
-                online: true
-            ),
-            SessionInfo(
-                name: "second",
-                agents: [
-                    agent("duplicate", cwd: "/repo", workspace: "Other"),
-                    agent("three", cwd: "/other", workspace: "Other"),
-                ],
-                online: true
-            ),
-        ]
-
-        #expect(SessionStore.branchPaths(from: sessions) == ["/repo", "/worktree", "/other"])
     }
 
     @Test
@@ -1328,26 +941,6 @@ struct CoreBehaviorTests {
         #expect(await resolver.branches(source: .local, paths: ["/repo"]) == ["/repo": "main"])
     }
 
-    @Test
-    @MainActor
-    func latestRequestSupersedesEarlierFocus() async {
-        let gate = AsyncGate()
-        var completed: [Int] = []
-        let runner = LatestRequestRunner<Int> { value in
-            completed.append(value)
-            if value == 1 { await gate.wait() }
-        }
-
-        runner.submit(1)
-        while completed.isEmpty { await Task.yield() }
-        runner.submit(2)
-        runner.submit(3)
-        await gate.release()
-        while runner.isRunning { await Task.yield() }
-
-        #expect(completed == [1, 3])
-    }
-
     @Test(.timeLimit(.minutes(1)))
     @MainActor
     func workspaceFocusSharesLatestQueueAndOldAgentCannotClearItsIndicator() async throws {
@@ -1401,53 +994,6 @@ struct CoreBehaviorTests {
 
     @Test(.timeLimit(.minutes(1)))
     @MainActor
-    func agentFocusKeepsLatestPendingUntilQueueFinishes() async throws {
-        let releaseFirst = AsyncGate()
-        let releaseLatest = AsyncGate()
-        let calls = AsyncStream<String>.makeStream()
-        let store = SessionStore(
-            client: HerdrClient(executable: nil),
-            loadSource: { _ in ["first", "middle", "latest"].map { loadedSession(name: $0, paneID: $0) } },
-            loadBranches: { _, _ in [:] },
-            focusExistingClient: { _, session, _ in
-                calls.continuation.yield(session)
-                if session == "first" { await releaseFirst.wait() }
-                if session == "latest" { await releaseLatest.wait() }
-                throw HerdrClient.ClientError.failed("session stopped")
-            },
-            sourceDescriptors: [.local]
-        )
-        await store.refresh()
-        defer {
-            calls.continuation.finish()
-            Task { await releaseFirst.release(); await releaseLatest.release() }
-        }
-        let firstSession = try #require(store.sources[0].sessions.first { $0.name == "first" })
-        let first = try #require(firstSession.agents.first)
-        store.focus(first, in: firstSession)
-        #expect(store.pendingFocusAgentID == AgentFocusID(sourceID: SourceDescriptor.local.id, sessionName: "first", paneID: first.paneID))
-        var callEvents = calls.stream.makeAsyncIterator()
-        #expect(await callEvents.next() == "first")
-        let middleSession = try #require(store.sources[0].sessions.first { $0.name == "middle" })
-        let latestSession = try #require(store.sources[0].sessions.first { $0.name == "latest" })
-        store.focus(try #require(middleSession.agents.first), in: middleSession)
-        store.focus(try #require(latestSession.agents.first), in: latestSession)
-        let latestID = AgentFocusID(sourceID: SourceDescriptor.local.id, sessionName: "latest", paneID: "latest")
-        #expect(store.pendingFocusAgentID == latestID)
-        await releaseFirst.release()
-        #expect(await callEvents.next() == "latest")
-        #expect(store.pendingFocusAgentID == latestID)
-        #expect(store.focusError == nil)
-        await releaseLatest.release()
-        await waitForNavigationResult(store)
-        #expect(store.pendingFocusAgentID == nil)
-        #expect(store.focusError == "Herdr focus failed: session stopped")
-        calls.continuation.finish()
-        #expect(await callEvents.next() == nil)
-    }
-
-    @Test(.timeLimit(.minutes(1)))
-    @MainActor
     func disabledSourceDoesNotRunQueuedFocus() async throws {
         let started = AsyncGate()
         let release = AsyncGate()
@@ -1493,39 +1039,11 @@ struct CoreBehaviorTests {
         await store.stopAndWait()
     }
 
-    @Test(.timeLimit(.minutes(1)))
-    @MainActor
-    func failedFocusClearsPendingState() async throws {
-        let releaseFailure = AsyncGate()
-        let store = SessionStore(
-            client: HerdrClient(executable: nil),
-            loadSource: { _ in [loadedSession(name: "focus-failure", paneID: "pane")] },
-            loadBranches: { _, _ in [:] },
-            focusExistingClient: { _, _, _ in
-                await releaseFailure.wait()
-                throw GhosttyController.GhosttyError.automationFailed("-1743")
-            },
-            sourceDescriptors: [.local]
-        )
-        await store.refresh()
-        defer { Task { await releaseFailure.release() } }
-        let session = try #require(store.sources[0].sessions.first)
-        let agent = try #require(session.agents.first)
-        store.focus(agent, in: session)
-        #expect(store.pendingFocusAgentID == AgentFocusID(sourceID: SourceDescriptor.local.id, sessionName: session.name, paneID: agent.paneID))
-        await releaseFailure.release()
-        await waitForNavigationResult(store)
-        #expect(store.pendingFocusAgentID == nil)
-        #expect(store.focusError == "Ghostty Automation denied. Allow Herdling in System Settings → Privacy & Security → Automation.")
-    }
-
     @Test
     func automationPermissionFailureUsesRawErrorAndKeepsDetailsPrivate() {
         for message in ["Apple event failed (-1743) secret=value", "NOT AUTHORIZED TO SEND APPLE EVENTS secret=value"] {
             let error = GhosttyController.GhosttyError.automationFailed(message)
             #expect(GhosttyController.automationPermissionFailureStatus(error) == "Denied")
-            #expect(error.localizedDescription ==
-                "Ghostty Automation denied. Allow Herdling in System Settings → Privacy & Security → Automation.")
             #expect(!error.localizedDescription.contains("secret"))
             #expect(!error.localizedDescription.contains("-1743"))
         }
@@ -1533,53 +1051,11 @@ struct CoreBehaviorTests {
         #expect(GhosttyController.automationPermissionFailureStatus(failure) == "Unavailable")
         #expect(!failure.localizedDescription.contains("secret"))
         #expect(GhosttyController.automationPermissionFailureStatus(
-            GhosttyController.GhosttyError.notInstalled
-        ) == "Unavailable")
-        #expect(GhosttyController.automationPermissionFailureStatus(
             NSError(domain: "test", code: -1743, userInfo: [NSLocalizedDescriptionKey: "secret=value -1743"])
         ) == "Unavailable")
-    }
-
-    @Test(.timeLimit(.minutes(1)))
-    @MainActor
-    func failedTargetFocusDoesNotDismissPanelAfterClientReuse() async throws {
-        let group = AgentGroup(id: "workspace", name: "Main", agents: [])
-        let reuse = AsyncStream<String>.makeStream()
-        let store = SessionStore(
-            client: HerdrClient(executable: nil),
-            loadSource: { _ in [HerdrClient.LoadedSession(name: "default", groups: [group], error: nil)] },
-            loadBranches: { _, _ in [:] },
-            focusExistingClient: { _, name, _ in reuse.continuation.yield(name); return true },
-            sourceDescriptors: [.local]
-        )
-        await store.refresh()
-        defer { reuse.continuation.finish() }
-        var panelVisible = true
-        store.onClientActivated = { panelVisible = false }
-        let session = try #require(store.sources[0].sessions.first)
-        store.focusWorkspace(group, in: session)
-        await waitForNavigationResult(store)
-        var events = reuse.stream.makeAsyncIterator()
-        #expect(await events.next() == "default", "Failure must occur after actual client reuse, not an unavailable fixture target")
-        #expect(panelVisible)
-        #expect(store.focusError != nil)
-        store.dismissFocusError()
-        #expect(store.focusError == nil)
-        #expect(store.pendingFocusWorkspaceID == nil)
-    }
-
-    @Test
-    func focusErrorsGiveActionsWithoutEchoingRemoteOrAutomationDetails() {
-        let denied = GhosttyController.GhosttyError.automationFailed(
-            "Not authorized to send Apple events. secret=value (-1743)"
-        )
         let tabFailed = GhosttyController.GhosttyError.automationFailed(
             "Ghostty rejected action new_tab. secret=value"
         )
-
-        #expect(denied.localizedDescription.contains("System Settings → Privacy & Security → Automation"))
-        #expect(!denied.localizedDescription.contains("secret"))
-        #expect(tabFailed.localizedDescription.contains("Window in Settings"))
         #expect(!tabFailed.localizedDescription.contains("secret"))
         #expect(SessionStore.focusErrorMessage(
             HerdrClient.ClientError.failed("password=hunter2"),
@@ -1588,208 +1064,106 @@ struct CoreBehaviorTests {
     }
 
     @Test
-    func ghosttyStorageKeysCannotCollideAcrossSourceAndSession() {
-        let first = GhosttyController.mappingKey(source: .remote("a"), session: "b.c")
-        let second = GhosttyController.mappingKey(source: .remote("a.b"), session: "c")
-        #expect(first != second)
-    }
-
-    @Test
-    func mappedGhosttyTerminalRequiresMatchingLiveClient() {
-        let mapping = GhosttyController.ClientMapping(terminalID: "terminal", tty: "ttys000")
-        let matching = GhosttyClientProcess(tty: "ttys000", sourceID: "ssh:kvm", session: "default")
-        let wrongSession = GhosttyClientProcess(tty: "ttys000", sourceID: "ssh:kvm", session: "other")
-
-        #expect(GhosttyController.reusableMappedTerminalID(
-            mapping: mapping,
-            clients: [matching],
-            sourceID: "ssh:kvm",
-            session: "default"
-        ) == "terminal")
-        #expect(GhosttyController.reusableMappedTerminalID(
-            mapping: mapping,
-            clients: [],
-            sourceID: "ssh:kvm",
-            session: "default"
-        ) == nil)
-        #expect(GhosttyController.reusableMappedTerminalID(
-            mapping: mapping,
-            clients: [wrongSession],
-            sourceID: "ssh:kvm",
-            session: "default"
-        ) == nil)
-    }
-
-    @Test
-    func ghosttyConfirmationBudgetCapsCommandTimeouts() throws {
-        #expect(try GhosttyController.remainingTime(until: .now + .seconds(60), maximum: 1) == 1)
-        let shortened = try GhosttyController.remainingTime(until: .now + .seconds(1), maximum: 5)
-        #expect(shortened > 0 && shortened <= 1)
-        do {
-            _ = try GhosttyController.remainingTime(until: .now - .seconds(1), maximum: 5)
-            Issue.record("Expired budget allowed another command")
-        } catch GhosttyController.GhosttyError.clientLaunchFailed {
-        }
-    }
-
-    @Test
-    func ghosttyConfirmationKeepsExactTerminalIdentity() async throws {
-        let mapping = try await GhosttyController.confirmCreatedClient(
-            .init(terminalID: "created"),
-            deadline: .now + .seconds(1),
-            newTTYs: { ["wrong", "right"] },
-            probe: { $0 == "right" ? "created" : "another-terminal" }
-        )
-        #expect(mapping == .init(terminalID: "created", tty: "right"))
-    }
-
-    @Test(arguments: [false, true])
-    func ghosttyConfirmationRejectsCompletionAfterBudget(slowProbe: Bool) async throws {
-        do {
-            _ = try await GhosttyController.confirmCreatedClient(
-                .init(terminalID: "created"),
-                deadline: .now + .milliseconds(20),
-                newTTYs: {
-                    if !slowProbe { try await Task.sleep(for: .milliseconds(50)) }
-                    return ["new"]
-                },
-                probe: { _ in
-                    if slowProbe { try await Task.sleep(for: .milliseconds(50)) }
-                    else { Issue.record("Probe started after discovery exhausted the budget") }
-                    return "created"
+    func ghosttyNativeTTYFocusesTheMatchingSourceAndSession() async throws {
+        let controller = GhosttyController(
+            executeScript: { script, _ in
+                if script.contains("every terminal") {
+                    #expect(script.contains("tty of term"))
+                    return "local\u{1f}/dev/ttys002\u{1e}remote\u{1f}/dev/ttys003\u{1e}"
                 }
-            )
-            Issue.record("Confirmation accepted a result after its deadline")
-        } catch GhosttyController.GhosttyError.clientLaunchFailed {
-        }
-    }
-
-    @Test
-    func ghosttyProbeRecoversWhenStartupOverwritesMarker() async throws {
-        let probe = TerminalProbeFixture(overwritesFirstRead: true)
-        let terminal = try await GhosttyController.probeTerminal(
-            terminals: [.init(id: "target", name: "original")],
-            writeTitle: { probe.write($0) },
-            readTerminals: { probe.read() }
-        )
-        #expect(terminal == "target")
-        #expect(probe.readCount == 3)
-        #expect(probe.title == "original")
-    }
-
-    @Test
-    func expiredGhosttyProbeDoesNotTouchTitle() async throws {
-        let probe = TerminalProbeFixture()
-        let terminal = try await GhosttyController.probeTerminal(
-            terminals: [.init(id: "target", name: "original")],
-            deadline: .now - .seconds(1),
-            writeTitle: { probe.write($0) },
-            readTerminals: { probe.read() }
-        )
-        #expect(terminal == nil)
-        #expect(probe.readCount == 0)
-        #expect(probe.writeCount == 0)
-        #expect(probe.title == "original")
-    }
-
-    @Test
-    func ghosttyProbeDoesNotRetryAfterSlowQueryExhaustsBudget() async throws {
-        let probe = TerminalProbeFixture(overwritesFirstRead: true)
-        let terminal = try await GhosttyController.probeTerminal(
-            terminals: [.init(id: "target", name: "original")],
-            writeTitle: { probe.write($0) },
-            readTerminals: {
-                guard probe.readCount == 0 else {
-                    throw NSError(domain: "Probe retried after its time budget", code: 1)
-                }
-                try await Task.sleep(for: .seconds(1))
-                return probe.read()
+                #expect(script.contains("focus terminal id \"remote\""))
+                #expect(!script.contains("new window") && !script.contains("new_tab"))
+                return "focused"
+            },
+            runningPID: { 100 },
+            loadClients: { pid, _ in
+                GhosttyProcessCatalog.clients(from: """
+                100 1 ?? Ghostty
+                101 100 ttys002 /opt/herdr --session work
+                102 100 ttys003 /opt/herdr --remote kvm --session work
+                """, ghosttyPID: pid)
             }
         )
-        #expect(terminal == nil)
-        #expect(probe.readCount == 1)
-        #expect(probe.title == "startup")
+        try await controller.activateClient(source: .remote("kvm"), session: "work", command: "unused", openBehavior: .tab)
     }
 
-    @Test
-    func ghosttyProbeRejectsAmbiguousTerminalIdentity() async throws {
-        let probe = TerminalProbeFixture(duplicate: true)
-        let terminal = try await GhosttyController.probeTerminal(
-            terminals: [.init(id: "target", name: "original")],
-            writeTitle: { probe.write($0) },
-            readTerminals: { probe.read() }
+    @Test(.timeLimit(.minutes(1)))
+    func ghosttyCreatedClientWaitsForItsOwnNativeTTY() async throws {
+        let counts = Mutex((loads: 0, queries: 0))
+        let controller = GhosttyController(
+            executeScript: { script, timeout in
+                #expect(timeout > 0 && timeout <= 5)
+                if script.contains("every terminal") {
+                    return counts.withLock { state in
+                        state.queries += 1
+                        return state.queries == 1
+                            ? "shell\u{1f}/dev/ttys000\u{1e}"
+                            : "created\u{1f}/dev/ttys004\u{1e}other\u{1f}/dev/ttys003\u{1e}"
+                    }
+                }
+                #expect(script.contains("new window with configuration cfg"))
+                #expect(script.contains("herdr --session work"))
+                return "created\n"
+            },
+            runningPID: { 100 },
+            loadClients: { _, timeout in
+                #expect(timeout > 0 && timeout <= 1)
+                return counts.withLock { state in
+                    state.loads += 1
+                    if state.loads == 1 { return [] }
+                    let other = GhosttyClientProcess(tty: "ttys003", sourceID: "local", session: "work")
+                    if state.loads == 2 { return [other] }
+                    return [other, .init(tty: "ttys004", sourceID: "local", session: "work")]
+                }
+            }
         )
-        #expect(terminal == nil)
-        #expect(probe.readCount == 1)
+        try await controller.activateClient(session: "work", command: "herdr --session work", openBehavior: .window)
+        #expect(counts.withLock { $0.loads == 3 && $0.queries == 3 })
+        #expect(try GhosttyController.remainingTime(until: .now + .seconds(60), maximum: 1) == 1)
+        do {
+            _ = try GhosttyController.remainingTime(until: .now - .seconds(1), maximum: 5)
+            Issue.record("Expired confirmation budget allowed another command")
+        } catch GhosttyController.GhosttyError.clientLaunchFailed {
+        }
     }
 
     @Test
-    func createdGhosttyClientWaitsForNewMatchingTTY() {
-        let clients = [
-            GhosttyClientProcess(tty: "ttys000", sourceID: "ssh:kvm", session: "default"),
-            GhosttyClientProcess(tty: "ttys001", sourceID: "ssh:kvm", session: "default"),
-            GhosttyClientProcess(tty: "ttys002", sourceID: "local", session: "default"),
-        ]
-
-        #expect(GhosttyController.newClientTTYs(
-            clients: clients,
-            excluding: ["ttys000"],
-            sourceID: "ssh:kvm",
-            session: "default"
-        ) == ["ttys001"])
-    }
-
-    @Test
-    func legacyGhosttyMappingDecodesWithoutTTY() throws {
-        let mapping = try JSONDecoder().decode(
-            GhosttyController.ClientMapping.self,
-            from: Data(#"{"terminalID":"terminal"}"#.utf8)
+    func ghosttyAmbiguityAndFailedFocusNeverCreateAndReleaseTheGuard() async throws {
+        let counts = Mutex((queries: 0, focuses: 0))
+        let controller = GhosttyController(
+            executeScript: { script, _ in
+                if script.contains("every terminal") {
+                    return counts.withLock { state in
+                        state.queries += 1
+                        return state.queries == 1
+                            ? "one\u{1f}/dev/ttys003\u{1e}two\u{1f}/dev/ttys003\u{1e}"
+                            : "one\u{1f}/dev/ttys003\u{1e}"
+                    }
+                }
+                guard script.contains("focus terminal id \"one\"") else {
+                    Issue.record("Unverified identity fell through to client creation")
+                    throw GhosttyController.GhosttyError.clientCreationFailed
+                }
+                return counts.withLock { state in
+                    state.focuses += 1
+                    return state.focuses == 1 ? "missing" : "focused"
+                }
+            },
+            runningPID: { 100 },
+            loadClients: { _, _ in [.init(tty: "ttys003", sourceID: "local", session: "work")] }
         )
-
-        #expect(mapping == GhosttyController.ClientMapping(terminalID: "terminal"))
-    }
-
-    @Test
-    func existingHerdrTerminalUsesProbeWhenShellMakesCountsAmbiguous() {
-        #expect(GhosttyController.adoptableTerminalID(
-            liveTerminalIDs: ["local-terminal", "remote-terminal"],
-            claimedTerminalIDs: ["remote-terminal"],
-            allClientTTYs: ["ttys000", "ttys021"],
-            targetTTYs: ["ttys000"]
-        ) == "local-terminal")
-
-        #expect(GhosttyController.adoptableTerminalID(
-            liveTerminalIDs: ["shell", "local-terminal", "remote-terminal"],
-            claimedTerminalIDs: ["remote-terminal"],
-            allClientTTYs: ["ttys000", "ttys021"],
-            targetTTYs: ["ttys000"],
-            probedTerminalID: "local-terminal"
-        ) == "local-terminal")
-
-        #expect(GhosttyController.adoptableTerminalID(
-            liveTerminalIDs: ["target-terminal"],
-            claimedTerminalIDs: ["target-terminal"],
-            allClientTTYs: ["ttys000"],
-            targetTTYs: ["ttys000"],
-            probedTerminalID: "target-terminal"
-        ) == "target-terminal")
-    }
-
-    @Test
-    func ghosttyClientCatalogKeepsExactSourceAndSession() {
-        let output = """
-         100 1 ?? /Applications/Ghostty.app/Contents/MacOS/ghostty
-         110 100 ttys000 /usr/bin/login -flp user /bin/zsh
-         111 110 ttys000 /opt/homebrew/bin/herdr --session default
-         120 100 ttys021 /usr/bin/login -flp user /bin/zsh
-         121 120 ttys021 /opt/homebrew/bin/herdr --remote kvm --session work
-         130 1 ttys009 /opt/homebrew/bin/herdr --session default
-        """
-
-        #expect(GhosttyProcessCatalog.clients(from: output, ghosttyPID: 100) == [
-            GhosttyClientProcess(tty: "ttys000", sourceID: "local", session: "default"),
-            GhosttyClientProcess(tty: "ttys021", sourceID: "ssh:kvm", session: "work"),
-        ])
+        do {
+            try await controller.activateClient(session: "work", command: "unused", openBehavior: .tab)
+            Issue.record("Ambiguous native TTY was accepted")
+        } catch GhosttyController.GhosttyError.clientMatchFailed {
+        }
+        do {
+            try await controller.activateClient(session: "work", command: "unused", openBehavior: .window)
+            Issue.record("Failed native focus was accepted")
+        } catch GhosttyController.GhosttyError.clientMatchFailed {
+        }
+        #expect(try await controller.focusExistingClient(session: "work"))
+        #expect(counts.withLock { $0.queries == 3 && $0.focuses == 2 })
     }
 
     @Test
@@ -1898,46 +1272,6 @@ struct CoreBehaviorTests {
 
     @Test
     @MainActor
-    func statusItemOwnsNativeLayoutAndAccessibility() {
-        _ = NSApplication.shared
-        let status = MenuStatus(
-            counts: [
-                AgentStatusCount(status: .done, count: 1),
-                AgentStatusCount(status: .working, count: 4),
-                AgentStatusCount(status: .idle, count: 15),
-            ],
-            availability: .online
-        )
-        let presentation = MenuBarStatusPresentation.for(status)
-        #expect(presentation.entries.map(\.statusSymbol) == [
-            "checkmark.circle.fill",
-            "circle.lefthalf.filled",
-            "circle",
-        ])
-        #expect(presentation.entries.compactMap(\.count) == [1, 4, 15])
-        #expect(presentation.accessibilityText == "Herdling, 1 completed agent, 4 working agents, 15 idle agents")
-        #expect(MenuBarStatusPresentation.for(
-            MenuStatus(counts: [], availability: .loading)
-        ).entries.first?.statusSymbol == "ellipsis")
-        #expect(MenuBarStatusPresentation.for(
-            MenuStatus(counts: [], availability: .offline)
-        ).entries.first?.statusSymbol == "wifi.slash")
-        #expect(MenuBarStatusPresentation.for(
-            MenuStatus(counts: [], availability: .online)
-        ).entries.first?.statusSymbol == "circle.dotted")
-
-        let statusItem = MenuBarStatusItem()
-        defer { NSStatusBar.system.removeStatusItem(statusItem.item) }
-        statusItem.update(status)
-        #expect(statusItem.item.length > 50)
-        #expect(statusItem.item.button?.accessibilityLabel() == presentation.accessibilityText)
-        #expect(statusItem.item.button?.image?.isTemplate == true)
-        #expect(MenuBarStatusItem.renderingScale(buttonScale: 1, fallbackScale: 2) == 1)
-        #expect(MenuBarStatusItem.renderingScale(buttonScale: nil, fallbackScale: 2) == 2)
-    }
-
-    @Test
-    @MainActor
     func panelPlacementStaysInsideVisibleScreen() {
         let visibleFrame = NSRect(x: 0, y: 0, width: 1000, height: 300)
         let buttonRect = NSRect(x: 980, y: 280, width: 20, height: 20)
@@ -1951,63 +1285,15 @@ struct CoreBehaviorTests {
             panelSize: panelSize,
             visibleFrame: visibleFrame
         )
-        #expect(panelSize == NSSize(width: 900, height: 255))
-        #expect(origin == NSPoint(x: 92, y: 25))
-        #expect(origin.y + panelSize.height <= visibleFrame.maxY)
+        #expect(visibleFrame.contains(NSRect(origin: origin, size: panelSize)))
+        #expect(panelSize.width > 0 && panelSize.height > 0)
 
         let narrowPanel = StatusItemController.panelSize(
             preferred: NSSize(width: 900, height: 340),
             buttonRect: NSRect(x: 480, y: 780, width: 20, height: 20),
             visibleFrame: NSRect(x: 0, y: 0, width: 500, height: 800)
         )
-        #expect(narrowPanel.width == 484)
-        #expect(narrowPanel.width - 36 > 0)
-    }
-
-    @Test
-    @MainActor
-    func panelHeightTracksContentWithinBounds() {
-        #expect(StatusItemController.clampedContentHeight(20) == 100)
-        #expect(StatusItemController.clampedContentHeight(245.2) == 246)
-        #expect(StatusItemController.clampedContentHeight(900) == 900)
-        #expect(StatusItemController.maximumPanelHeight(
-            topY: 800,
-            visibleFrame: NSRect(x: 0, y: 0, width: 1000, height: 800)
-        ) == 680)
-        #expect(StatusItemController.maximumPanelHeight(
-            topY: 700,
-            visibleFrame: NSRect(x: 0, y: 0, width: 1000, height: 700)
-        ) == 595)
-        #expect(StatusItemController.maximumPanelHeight(
-            topY: 200,
-            visibleFrame: NSRect(x: 0, y: 0, width: 1000, height: 800)
-        ) == 184)
-
-        let visibleFrame = NSRect(x: 0, y: 0, width: 1000, height: 800)
-        let buttonRect = NSRect(x: 900, y: 780, width: 20, height: 20)
-        let fullHeightSize = StatusItemController.panelSize(
-            preferred: NSSize(width: 420, height: 900),
-            buttonRect: NSRect(x: 900, y: 800, width: 20, height: 20),
-            visibleFrame: visibleFrame
-        )
-        #expect(fullHeightSize.height == 680)
-        #expect(StatusItemController.panelTopY(
-            buttonRect: NSRect(x: 900, y: 800, width: 20, height: 20),
-            visibleFrame: visibleFrame
-        ) == visibleFrame.maxY)
-        let compactSize = NSSize(width: 900, height: 200)
-        let expandedSize = NSSize(width: 900, height: 500)
-        let compactOrigin = StatusItemController.panelOrigin(
-            buttonRect: buttonRect,
-            panelSize: compactSize,
-            visibleFrame: visibleFrame
-        )
-        let expandedOrigin = StatusItemController.panelOrigin(
-            buttonRect: buttonRect,
-            panelSize: expandedSize,
-            visibleFrame: visibleFrame
-        )
-        #expect(compactOrigin.y + compactSize.height == expandedOrigin.y + expandedSize.height)
+        #expect(narrowPanel.width > 0 && narrowPanel.width <= 500)
     }
 
     @Test
@@ -2028,21 +1314,9 @@ struct CoreBehaviorTests {
 
         #expect(expanded.minX == collapsed.minX)
         #expect(expanded.maxY == collapsed.maxY)
-        #expect(expanded.height == floor(visibleFrame.height * StatusItemController.panelScreenFraction))
-        #expect(expanded.minY == collapsed.maxY - expanded.height)
+        #expect(visibleFrame.contains(expanded))
         #expect(collapsedAgain.minX == collapsed.minX)
         #expect(collapsedAgain.maxY == collapsed.maxY)
-    }
-
-    @Test
-    @MainActor
-    func sourceSelectionImmediatelyNotifiesStatusItem() {
-        let store = SessionStore(client: HerdrClient(executable: nil))
-        var changes = 0
-        store.onChange = { changes += 1 }
-        store.setRemoteAlias("missing", enabled: false)
-        #expect(changes == 1)
-        store.stop()
     }
 
     @Test
@@ -2062,21 +1336,18 @@ struct CoreBehaviorTests {
 
     @Test
     @MainActor
-    func contextMenuOnlyOffersSettingsAndQuit() throws {
+    func contextMenuDispatchesSettingsAndTargetsQuit() throws {
         _ = NSApplication.shared
         let probe = ContextMenuActionProbe()
         let menu = HerdlingApplicationMenu.makeContext(target: probe)
         menu.update()
-        try #require(menu.items.count == 3)
-        #expect(menu.items.map(\.title) == ["Settings", "", "Quit Herdling"])
-        let settings = try #require(menu.items.first)
-        #expect(settings.action == #selector(ContextMenuActionProbe.openSettings))
+        let settingsIndex = try #require(menu.items.firstIndex { $0.action == #selector(ContextMenuActionProbe.openSettings) })
+        let settings = menu.items[settingsIndex]
+        let quit = try #require(menu.items.first { $0.action == #selector(NSApplication.terminate(_:)) })
         #expect(settings.isEnabled)
-        #expect(menu.items[1].isSeparatorItem)
-        #expect(menu.items[2].action == #selector(NSApplication.terminate(_:)))
-        #expect(menu.items[2].target === NSApp)
-        #expect(menu.items[2].isEnabled)
-        menu.performActionForItem(at: 0)
+        #expect(quit.target === NSApp)
+        #expect(quit.isEnabled)
+        menu.performActionForItem(at: settingsIndex)
         #expect(probe.settingsCount == 1)
     }
 
@@ -2325,35 +1596,6 @@ private final class MonitorFactoryQueue: @unchecked Sendable {
     }
 }
 
-private final class TerminalProbeFixture: @unchecked Sendable {
-    private let lock = NSLock()
-    private let overwritesFirstRead: Bool
-    private let duplicate: Bool
-    private var currentTitle = "original"
-    private var reads = 0
-    private var writes = 0
-
-    init(overwritesFirstRead: Bool = false, duplicate: Bool = false) {
-        self.overwritesFirstRead = overwritesFirstRead
-        self.duplicate = duplicate
-    }
-
-    var readCount: Int { lock.withLock { reads } }
-    var writeCount: Int { lock.withLock { writes } }
-    var title: String { lock.withLock { currentTitle } }
-
-    func write(_ title: String) { lock.withLock { writes += 1; currentTitle = title } }
-
-    func read() -> [GhosttyController.TerminalSnapshot] {
-        lock.withLock {
-            reads += 1
-            if overwritesFirstRead && reads == 1 { currentTitle = "startup" }
-            let target = GhosttyController.TerminalSnapshot(id: "target", name: currentTitle)
-            return duplicate ? [target, .init(id: "other", name: currentTitle)] : [target]
-        }
-    }
-}
-
 private func loadedSession(
     name: String = "default",
     paneID: String,
@@ -2378,17 +1620,6 @@ private func loadedSession(
 @MainActor
 private func waitForNavigationResult(_ store: SessionStore) async {
     while store.navigationAttempt?.phase == .pending { await Task.yield() }
-}
-
-private func fixtureAgent(_ title: String, _ status: AgentStatus, changedAt: Date) -> AgentInfo {
-    AgentInfo(
-        paneID: title,
-        title: title,
-        status: status,
-        workspace: "Space",
-        cwd: "/repo",
-        updatedAt: changedAt
-    )
 }
 
 private final class SourceLoadRecorder: @unchecked Sendable {

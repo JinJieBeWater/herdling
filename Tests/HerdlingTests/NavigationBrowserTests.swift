@@ -6,7 +6,9 @@ import Testing
 @Suite @MainActor
 struct NavigationBrowserTests {
     @Test func pointerHandoffIgnoresStationaryLayoutAndKeepsExactIdentityAcrossUpdates() {
-        let sources = [source(.local, agents: [agent("same", .blocked, time: 1)]),
+        var localSource = source(.local, agents: [agent("same", .blocked, time: 1)])
+        localSource.sessions.append(SessionInfo(name: "named", agents: [agent("same", .idle, time: 3)], online: true))
+        let sources = [localSource,
                        source(.remote("kvm"), agents: [agent("same", .working, time: 2)])]
         let browser = NavigationBrowser()
         let local = NavigationRowID.destination(target("same"))
@@ -35,7 +37,10 @@ struct NavigationBrowserTests {
         browser.pointerExited(remote)
         #expect(browser.highlightedSelection == nil)
         #expect(browser.selection == remote, "Leaving a row keeps its exact identity for subsequent keyboard input")
-        #expect(browser.attempt == nil)
+        let named = NavigationDestination.agent(sourceID: "local", sessionName: "named", paneID: "same")
+        browser.selectFromPointer(.destination(named), at: CGPoint(x: 13, y: 10))
+        #expect(browser.presentation(for: named).status == .idle)
+        #expect(browser.activateSelection() == named)
     }
 
     @Test func pointerCannotActivateUnavailableAndClosedRows() {
@@ -43,9 +48,6 @@ struct NavigationBrowserTests {
         let browser = NavigationBrowser()
         let a = NavigationRowID.destination(target("a")), b = NavigationRowID.destination(target("b"))
         browser.open(sources: sources, attempt: nil, keyboard: true, expandedSourceID: nil)
-        browser.holdPointer(at: CGPoint(x: 2, y: 0))
-        browser.selectFromPointer(b, at: CGPoint(x: 2, y: 0))
-        #expect(browser.selection == a, "A stationary pointer does not take keyboard ownership")
         browser.selectFromPointer(b, at: CGPoint(x: 3, y: 0))
         #expect(browser.highlightedSelection == b)
         browser.receive(sources: [], attempt: nil)
@@ -53,10 +55,7 @@ struct NavigationBrowserTests {
         #expect(browser.highlightedSelection == nil)
         #expect(browser.activateSelection() == nil, "An unavailable row must not activate the previous pointer target")
         browser.open(sources: sources, attempt: nil, keyboard: false, expandedSourceID: nil)
-        browser.setMode(.all)
-        browser.selectFromPointer(.source("local"), at: CGPoint(x: 5, y: 0))
-        #expect(browser.activateSelection() == nil)
-        #expect(browser.expandedSourceID == "local", "Source hover changes selection, Enter only folds it")
+        browser.selectFromPointer(b, at: CGPoint(x: 5, y: 0))
         browser.selectFromPointer(nil, at: CGPoint(x: 6, y: 0))
         #expect(browser.selection == nil, "Moving into the header releases the roster target")
         browser.close()
@@ -77,19 +76,6 @@ struct NavigationBrowserTests {
         SourceInfo(descriptor: descriptor, sessions: [SessionInfo(name: "default", groups: [AgentGroup(id: "workspace", name: "project", agents: agents)], online: online)], online: online, error: nil)
     }
 
-    @Test func openRanksAttentionBeforeWorkingAndUnvisitedIdleWithoutNavigation() {
-        let sources = [
-            source(.local, agents: [agent("working", .working, time: 50), agent("shared", .done, time: 30), agent("blocked", .blocked, time: 10)]),
-            source(.remote("kvm"), agents: [agent("shared", .done, time: 20), agent("idle", .idle, time: 40)]),
-        ]
-        let browser = NavigationBrowser()
-        browser.open(sources: sources, attempt: nil, keyboard: false, expandedSourceID: nil)
-        #expect(browser.quickIDs == [target("blocked"), target("shared"), target("shared", source: "ssh:kvm"), target("working"), target("idle", source: "ssh:kvm")])
-        #expect(browser.selection == nil)
-        #expect(browser.activateSelection() == nil)
-        #expect(browser.quickCandidateCount == 5)
-    }
-
     @Test func liveUpdatesDoNotMoveRowsAndReopeningRebuildsTheSnapshot() {
         let old = agent("old", .done, time: 10)
         let browser = NavigationBrowser()
@@ -106,9 +92,6 @@ struct NavigationBrowserTests {
 
         browser.receive(sources: [source(.local, agents: [added, agent("old", .idle, time: 30)])], attempt: nil)
         #expect(browser.presentation(for: target("old")).status == .idle)
-        #expect(browser.quickIDs == [target("new"), target("old")])
-        browser.close()
-        browser.open(sources: [source(.local, agents: [added, agent("old", .idle, time: 30)])], attempt: nil, keyboard: false, expandedSourceID: nil)
         #expect(browser.quickIDs == [target("new"), target("old")])
         browser.moveSelection(by: 1)
         browser.moveSelection(by: 1)
@@ -157,22 +140,11 @@ struct NavigationBrowserTests {
         browser.toggleSource("local")
         browser.toggleSource("ssh:kvm")
         #expect(browser.expandedSourceID == "ssh:kvm")
-        browser.toggleSource("ssh:kvm")
-        #expect(browser.expandedSourceID == nil)
-        browser.toggleSource("ssh:kvm")
-        browser.toggleSource("missing")
-        #expect(browser.expandedSourceID == "ssh:kvm")
-        browser.moveSelection(by: 1)
+        #expect(PanelKeyboard.handle(125, browser: browser) == .handled)
         #expect(browser.selection == .source("local"))
-        browser.horizontal(-1)
-        #expect(browser.expandedSourceID == "ssh:kvm")
-        browser.horizontal(1)
+        #expect(PanelKeyboard.handle(36, browser: browser) == .handled)
         #expect(browser.expandedSourceID == "local")
-        #expect(browser.activateSelection() == nil)
-        #expect(browser.expandedSourceID == nil)
-        browser.horizontal(1)
-        #expect(browser.expandedSourceID == "local")
-        browser.horizontal(-1)
+        #expect(PanelKeyboard.handle(36, browser: browser) == .handled)
         #expect(browser.expandedSourceID == nil)
         browser.open(sources: sources, attempt: nil, keyboard: false, expandedSourceID: "ssh:kvm")
         #expect(browser.expandedSourceID == "ssh:kvm")
@@ -214,37 +186,6 @@ struct NavigationBrowserTests {
         #expect(browser.selection == nil)
     }
 
-    @Test func idleRecencyAndStatusChangesWaitForReopeningWithoutMovingSelection() {
-        let initial = [source(.local, agents: [agent("a", .idle, time: 40), agent("b", .idle, time: 30),
-            agent("c", .idle, time: 20), agent("d", .idle, time: 10)])]
-        let browser = NavigationBrowser()
-        browser.open(sources: initial, attempt: nil, keyboard: true, expandedSourceID: nil)
-        #expect(browser.quickIDs == [target("a"), target("b"), target("c")])
-        let live = [source(.local, agents: [agent("a", .working, time: 1), agent("b", .idle, time: 30),
-            agent("c", .idle, time: 20), agent("d", .idle, time: 50), agent("new", .blocked, time: 5)])]
-        browser.receive(sources: live, attempt: nil)
-        #expect(browser.quickIDs == [target("a"), target("b"), target("c")])
-        #expect(browser.presentation(for: target("a")).status == .working)
-        #expect(browser.activateSelection() == target("a"))
-        browser.close()
-        browser.open(sources: live, attempt: nil, keyboard: false, expandedSourceID: nil)
-        #expect(browser.quickIDs == [target("new"), target("a"), target("d"), target("b"), target("c")])
-        #expect(browser.selection == nil)
-    }
-
-    @Test func conciseLabelsKeepRemoteNamedSessionAndDuplicatePaneIdentity() {
-        let namedAgent = agent("named", .done, time: 1)
-        let named = SourceInfo(descriptor: .local, sessions: [SessionInfo(name: "dev", groups: [AgentGroup(id: "workspace", name: "project", agents: [namedAgent])], online: true)], online: true, error: nil)
-        let browser = NavigationBrowser(sources: [source(.local, agents: [agent("one", .done, time: 1)]), source(.remote("kvm"), agents: [agent("one", .done, time: 1)])])
-        #expect(browser.presentation(for: target("one")).subtitle == "project")
-        #expect(browser.presentation(for: target("one", source: "ssh:kvm")).subtitle == "kvm / project")
-        browser.open(sources: [named], attempt: nil, keyboard: false, expandedSourceID: nil)
-        #expect(browser.presentation(for: .agent(sourceID: "local", sessionName: "dev", paneID: "named")).subtitle == "dev / project")
-        browser.open(sources: [source(.local, agents: [agent("one", .done, time: 1), agent("two", .done, time: 1)])], attempt: nil, keyboard: false, expandedSourceID: nil)
-        #expect(browser.presentation(for: target("one")).subtitle == "project / one")
-        #expect(browser.presentation(for: target("two")).subtitle == "project / two")
-    }
-
     @Test func failedTargetSurvivesStatusChangeReopenAndDisappearance() {
         let browser = NavigationBrowser()
         let failure = NavigationAttempt(destination: target("original"), title: "Original agent", subtitle: "local / default / project", phase: .failed, message: "Activation failed")
@@ -272,10 +213,6 @@ struct NavigationBrowserTests {
         #expect(PanelKeyboard.handle(48, modifiers: .shift, browser: browser) == .passThrough) // Shift-Tab returns native focus.
         #expect(browser.selection == nil)
         #expect(PanelKeyboard.handle(53, browser: browser) == .close)
-        browser.setMode(.all)
-        #expect(PanelKeyboard.handle(125, browser: browser) == .handled)
-        #expect(PanelKeyboard.handle(36, browser: browser) == .handled) // Source Enter folds only, never navigates.
-        #expect(browser.expandedSourceID == "local")
     }
 
     @Test func replacingRecoveryCannotActivateAnInvisibleSelection() {

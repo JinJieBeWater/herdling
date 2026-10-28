@@ -10,6 +10,14 @@ struct GhosttyClientProcess: Equatable, Sendable {
 enum GhosttyProcessCatalog {
     private static let logger = Logger(subsystem: "dev.herdr.Herdling", category: "ghostty")
 
+    static func normalizedTTY(_ value: String) -> String? {
+        let tty = value.hasPrefix("/dev/") ? String(value.dropFirst(5)) : value
+        guard tty.hasPrefix("ttys") else { return nil }
+        let digits = tty.dropFirst(4)
+        guard !digits.isEmpty, digits.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }) else { return nil }
+        return tty
+    }
+
     private struct Process {
         let pid: Int
         let parentPID: Int
@@ -33,8 +41,7 @@ enum GhosttyProcessCatalog {
         let processes = output.split(separator: "\n").compactMap(parseProcess)
         let byPID = Dictionary(uniqueKeysWithValues: processes.map { ($0.pid, $0) })
         return processes.compactMap { process in
-            guard process.tty != "??",
-                  isDescendant(process, of: ghosttyPID, processes: byPID)
+            guard isDescendant(process, of: ghosttyPID, processes: byPID)
             else { return nil }
             return client(from: process, herdrExecutable: herdrExecutable)
         }
@@ -71,7 +78,8 @@ enum GhosttyProcessCatalog {
 
     private static func client(from process: Process, herdrExecutable: String?) -> GhosttyClientProcess? {
         let arguments = HerdrProcessArguments.split(process.command, executable: herdrExecutable)
-        guard let executable = arguments.first,
+        guard let tty = normalizedTTY(process.tty),
+              let executable = arguments.first,
               URL(fileURLWithPath: executable).lastPathComponent == "herdr"
         else { return nil }
 
@@ -97,7 +105,7 @@ enum GhosttyProcessCatalog {
         }
 
         return GhosttyClientProcess(
-            tty: process.tty,
+            tty: tty,
             sourceID: remote.map { "ssh:\($0)" } ?? "local",
             session: session
         )

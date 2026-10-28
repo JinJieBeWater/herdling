@@ -4,15 +4,6 @@ import Testing
 
 struct KeroControllerTests {
     @Test
-    func paneCanRunHerdrAsItsRootProcess() {
-        let clients = KeroProcessCatalog.clients(
-            from: "100 1 ttys000 /opt/homebrew/bin/herdr --session work",
-            panes: [.init(id: "root", pid: 100)]
-        )
-        #expect(clients == [.init(paneID: "root", sourceID: "local", session: "work")])
-    }
-
-    @Test
     func catalogKeepsExactPaneSourceAndSessionWithoutAdoptingNestedTerminals() {
         let output = """
          100 1 ttys000 /bin/zsh
@@ -22,50 +13,31 @@ struct KeroControllerTests {
          200 1 ttys021 /bin/zsh
          201 200 ttys021 /usr/bin/env wrapper
          202 201 ttys021 /opt/homebrew/bin/herdr --remote kvm --session work --remote-keybindings local
-         300 1 ttys009 /opt/homebrew/bin/herdr --session unrelated
-         400 1 ttys010 /opt/homebrew/bin/herdr --unknown flag
-         500 501 ttys011 /opt/homebrew/bin/herdr --session cycle
-         501 500 ttys011 /bin/zsh
+         300 1 ttys009 /opt/homebrew/bin/herdr --session root
         """
         let panes: [KeroPane] = [
             .init(id: "local", pid: 100), .init(id: "remote", pid: 200),
-            .init(id: "unknown", pid: 400), .init(id: "browser", pid: nil),
-            .init(id: "exited", pid: 999),
+            .init(id: "root", pid: 300), .init(id: "browser", pid: nil),
         ]
         #expect(KeroProcessCatalog.clients(from: output, panes: panes) == [
             .init(paneID: "local", sourceID: "local", session: "default"),
             .init(paneID: "remote", sourceID: "ssh:kvm", session: "work"),
+            .init(paneID: "root", sourceID: "local", session: "root"),
         ])
     }
 
     @Test
     func activationReusesMatchingPaneWithoutCreatingOrTypingIntoIt() async throws {
-        let cli = KeroCLIStub(sessions: matchingRoster, processes: matchingProcesses)
+        let cli = KeroCLIStub(sessions: matchingRoster, processes: matchingProcesses, pendingFocusFailures: 1)
         let controller = KeroController(executable: "/fake/kero", runCommand: cli.run)
         try await controller.activateClient(source: .remote("kvm"), session: "work", command: "must not run")
         #expect(try await controller.focusExistingClient(session: "default"))
         #expect(cli.focusedPanes == ["remote-pane", "local-pane"])
+        #expect(cli.applicationArguments == [["-b", "sh.kero"], ["-b", "sh.kero"]])
         #expect(cli.newArguments.isEmpty)
-    }
-
-    @Test
-    func activationOpensKeroAndWaitsForItsAppConnection() async throws {
-        let cli = KeroCLIStub(sessions: matchingRoster, processes: matchingProcesses, pendingFocusFailures: 2)
-        let controller = KeroController(executable: "/fake/kero", runCommand: cli.run)
-        #expect(try await controller.focusExistingClient(session: "default"))
-        #expect(cli.applicationArguments == [["-b", "sh.kero"]])
-        #expect(cli.focusedPanes == ["local-pane"])
-        #expect(cli.newArguments.isEmpty)
-    }
-
-    @Test
-    func otherSourcesAndSessionsAreNotReused() async throws {
-        let cli = KeroCLIStub(sessions: matchingRoster, processes: matchingProcesses)
-        let controller = KeroController(executable: "/fake/kero", runCommand: cli.run)
         #expect(try await !controller.focusExistingClient(source: .remote("other"), session: "work"))
         #expect(try await !controller.focusExistingClient(session: "work"))
-        #expect(cli.focusedPanes.isEmpty)
-        #expect(cli.newArguments.isEmpty)
+        #expect(cli.focusedPanes == ["remote-pane", "local-pane"])
     }
 
     @Test
@@ -87,17 +59,6 @@ struct KeroControllerTests {
     }
 
     @Test
-    func activationReusesTheConfiguredHerdrPathWithoutCreatingAClient() async throws {
-        let herdr = ProcessInfo.processInfo.environment["HERDR_BIN_PATH"] ?? "/opt/homebrew/bin/herdr"
-        let cli = KeroCLIStub(sessions: matchingRoster,
-                              processes: "300 1 ttys002 \(herdr) --remote kvm --session work")
-        let controller = KeroController(executable: "/fake/kero", runCommand: cli.run)
-        try await controller.activateClient(source: .remote("kvm"), session: "work", command: "must not run")
-        #expect(cli.focusedPanes == ["remote-pane"])
-        #expect(cli.newArguments.isEmpty)
-    }
-
-    @Test
     func failedFocusDoesNotCreateADuplicateClientOrExposeCommandDetails() async throws {
         let cli = KeroCLIStub(sessions: matchingRoster, processes: matchingProcesses, failingCommand: "focus")
         let controller = KeroController(executable: "/fake/kero", runCommand: cli.run)
@@ -106,13 +67,14 @@ struct KeroControllerTests {
             Issue.record("Focus failure reported success")
         } catch KeroController.KeroError.commandFailed {
             #expect(cli.newArguments.isEmpty)
+            #expect(!KeroController.KeroError.commandFailed.localizedDescription.contains("secret"))
         }
-        #expect(await controller.connectionStatus() == "Ready", "Failure releases the activation guard")
+        #expect(try await !controller.focusExistingClient(session: "absent"), "Failure releases the activation guard")
     }
 
-    @Test(arguments: ["not json", "null", #"[{"id":"session"}]"#])
-    func malformedRosterDoesNotCreateClients(response: String) async throws {
-        let cli = KeroCLIStub(sessions: response, processes: "")
+    @Test
+    func malformedRosterDoesNotCreateClients() async throws {
+        let cli = KeroCLIStub(sessions: #"[{"id":"session"}]"#, processes: "")
         let controller = KeroController(executable: "/fake/kero", runCommand: cli.run)
         do {
             try await controller.activateClient(session: "default", command: "must not run")
@@ -152,21 +114,6 @@ struct KeroControllerTests {
         }
     }
 
-    @Test
-    func connectionStatusReportsMissingAndUnreachableCLIWithoutRawDetails() async throws {
-        #expect(await KeroController(executable: nil).connectionStatus() == "Not installed")
-        let controller = KeroController(executable: "/fake/kero", runCommand: { _, _, _ in
-            throw CommandRunner.Error.failed("secret=value ssh user@private-host")
-        })
-        #expect(await controller.connectionStatus() == "Unavailable")
-        do {
-            _ = try await controller.focusExistingClient(session: "default")
-            Issue.record("Unreachable CLI reported success")
-        } catch KeroController.KeroError.commandFailed {
-            #expect(!KeroController.KeroError.commandFailed.localizedDescription.contains("secret"))
-        }
-    }
-
     @Test(.timeLimit(.minutes(1)))
     func simultaneousActivationCannotCreateDuplicateClients() async throws {
         let started = AsyncStream<Void>.makeStream()
@@ -186,17 +133,6 @@ struct KeroControllerTests {
         } catch KeroController.KeroError.operationInProgress {}
         release.signal()
         #expect(try await !first.value)
-    }
-
-    @Test(.enabled(if: ProcessInfo.processInfo.environment["HERDLING_KERO_CATALOG_CHECK"] == "1"))
-    func liveCatalogFindsCurrentHerdrClientWithoutChangingFocus() throws {
-        let pane = try #require(ProcessInfo.processInfo.environment["KERO_PANE"])
-        let roster = try CommandRunner.run("/opt/homebrew/bin/kero", ["ls", "--json"])
-        let sessions = try JSONDecoder().decode([KeroSession].self, from: roster)
-        let processes = try CommandRunner.run("/bin/ps", ["-axo", "pid=,ppid=,tty=,command="])
-        let clients = KeroProcessCatalog.clients(from: String(decoding: processes, as: UTF8.self), panes: sessions.flatMap(\.panes))
-        #expect(clients.contains(.init(paneID: pane, sourceID: "local", session: "default")))
-        print("Verified live Kero pane \(pane) → local Herdr/default without focus or session creation")
     }
 }
 

@@ -3,7 +3,6 @@ import Foundation
 import Testing
 @testable import Herdling
 
-@Suite(.serialized)
 struct SocketConnectionLifecycleTests {
     @Test
     func replacingConnectionStopsPreviousTransportAndKeepsCurrentUsable() async throws {
@@ -28,6 +27,7 @@ struct SocketConnectionLifecycleTests {
         await roster.addConnection(previous, for: endpoint)
 
         await roster.addConnection(current, for: endpoint)
+        await roster.addConnection(current, for: endpoint)
 
         // stop() must reap the old child before replacement returns, not merely drop its owner.
         let previousStatus = kill(previousPID, 0)
@@ -40,30 +40,6 @@ struct SocketConnectionLifecycleTests {
         let currentStatus = kill(currentPID, 0)
         let currentError = errno
         #expect(currentStatus == -1 && currentError == ESRCH)
-    }
-
-    @Test
-    func addingSameConnectionAgainDoesNotStopItsTransport() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("herdling-lifecycle-\(UUID())", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let endpoint = HerdrSocketEndpoint(session: "fixture", path: "/unused")
-        let pidFile = directory.appendingPathComponent("current.pid")
-        let connection = transport(endpoint: endpoint, pidFile: pidFile)
-        defer { connection.stop() }
-        let roster = HerdrSocketRoster()
-
-        try connection.start()
-        let pid = try transportPID(at: pidFile)
-        try #require(kill(pid, 0) == 0)
-        await roster.addConnection(connection, for: endpoint)
-
-        await roster.addConnection(connection, for: endpoint)
-
-        #expect(kill(pid, 0) == 0)
-        #expect(try connection.refresh())
-        await roster.stop()
     }
 
     private func transport(endpoint: HerdrSocketEndpoint, pidFile: URL) -> HerdrSocketConnection {

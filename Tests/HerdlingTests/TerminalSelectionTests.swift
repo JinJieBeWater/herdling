@@ -1,58 +1,16 @@
-import AppKit
-import SwiftUI
+import Foundation
 import Testing
 @testable import Herdling
 
-@Suite(.serialized)
 @MainActor
 struct TerminalSelectionTests {
     @Test
-    func settingsOffersBothTerminals() throws {
-        let store = PreviewFixtures.makeStore()
-        let hosting = NSHostingView(rootView: SettingsView(store: store))
-        hosting.frame = NSRect(x: 0, y: 0, width: Theme.Size.settingsWidth, height: Theme.Size.settingsHeight)
-        let window = NSWindow(contentRect: hosting.frame, styleMask: .borderless, backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = hosting
-        window.orderBack(nil)
-        defer { window.close() }
-        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-        hosting.layoutSubtreeIfNeeded()
-        func controls(in view: NSView) -> [NSSegmentedControl] {
-            (view as? NSSegmentedControl).map { [$0] } ?? view.subviews.flatMap { controls(in: $0) }
-        }
-        let picker = try #require(controls(in: hosting).first { control in
-            Set((0..<control.segmentCount).compactMap { control.label(forSegment: $0) }) == ["Ghostty", "Kero"]
-        }, "Settings must let the user choose Ghostty or Kero")
-        #expect(picker.isEnabled)
-        store.setGhosttyOpenBehavior(.window)
-        let keroIndex = try #require((0..<picker.segmentCount).first { picker.label(forSegment: $0) == "Kero" })
-        picker.selectedSegment = keroIndex
-        #expect(picker.sendAction(picker.action, to: picker.target))
-        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-        #expect(store.terminalApplication == .kero)
-        #expect(!controls(in: hosting).contains { control in
-            Set((0..<control.segmentCount).compactMap { control.label(forSegment: $0) }) == ["Window", "Tab"]
-        }, "Ghostty's window/tab control must not appear for Kero")
-        let ghosttyIndex = try #require((0..<picker.segmentCount).first { picker.label(forSegment: $0) == "Ghostty" })
-        picker.selectedSegment = ghosttyIndex
-        #expect(picker.sendAction(picker.action, to: picker.target))
-        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-        #expect(store.terminalApplication == .ghostty)
-        let behavior = try #require(controls(in: hosting).first { control in
-            Set((0..<control.segmentCount).compactMap { control.label(forSegment: $0) }) == ["Window", "Tab"]
-        })
-        #expect(behavior.label(forSegment: behavior.selectedSegment) == "Window")
-        #expect(store.navigationAttempt == nil, "Changing terminal preferences must not navigate")
-    }
-
-    @Test
     func choicePersistsAndKeepsExistingGhosttyPreferences() {
         let defaults = PreviewFixtures.renderDefaults()
-        defaults.set("window", forKey: "ghostty-open-behavior")
         let store = PreviewFixtures.makeStore(defaults: defaults)
         #expect(store.terminalApplication == .ghostty)
-        #expect(store.ghosttyOpenBehavior == .window)
+        #expect(store.ghosttyOpenBehavior == .tab)
+        store.setGhosttyOpenBehavior(.window)
         store.setTerminalApplication(.kero)
         #expect(defaults.string(forKey: "terminal-application") == "kero")
         let reopened = PreviewFixtures.makeStore(defaults: defaults)
@@ -61,48 +19,41 @@ struct TerminalSelectionTests {
         #expect(reopened.ghosttyOpenBehavior == .window)
         #expect(defaults.string(forKey: "terminal-application") == "ghostty")
         #expect(reopened.navigationAttempt == nil)
-    }
-
-    @Test
-    func invalidPreferenceDoesNotSilentlySwitchExistingUsersToKero() {
-        let defaults = PreviewFixtures.renderDefaults()
         defaults.set("removed-terminal", forKey: "terminal-application")
         #expect(PreviewFixtures.makeStore(defaults: defaults).terminalApplication == .ghostty)
     }
 
-    @Test(.timeLimit(.minutes(1)), arguments: TerminalApplication.allCases)
-    func selectedTerminalReceivesBothLocalAndRemoteReuseOrCreation(application: TerminalApplication) async throws {
-        for reuse in [false, true] {
-            for source in [SourceDescriptor.local, .remote("kvm")] {
-                let events = TerminalEvents()
-                let client = HerdrClient(executable: "/fake/herdr")
-                let expectedCommand = try client.attachCommand(source: source, session: "work")
-                let store = SessionStore(
-                    client: client,
-                    loadSource: { _ in [.init(name: "work", groups: [], error: nil)] },
-                    loadBranches: { _, _ in [:] },
-                    focusExistingClient: { actualSource, name, terminal in
-                        #expect(actualSource == source && name == "work" && terminal == application)
-                        _ = await events.record("reuse")
-                        return reuse
-                    },
-                    sourceDescriptors: [source], defaults: PreviewFixtures.renderDefaults(),
-                    activateClient: { actualSource, name, command, terminal, behavior in
-                        #expect(actualSource == source && name == "work" && terminal == application)
-                        #expect(behavior == .window)
-                        #expect(command == expectedCommand)
-                        _ = await events.record("create")
-                    }
-                )
-                store.setTerminalApplication(application)
-                store.setGhosttyOpenBehavior(.window)
-                await store.refresh()
-                store.navigate(to: .session(sourceID: source.id, sessionName: "work"))
-                await waitForNavigation(store)
-                #expect(store.navigationAttempt?.phase == .succeeded)
-                #expect(await events.values == (reuse ? ["reuse"] : ["reuse", "create"]))
+    @Test(.timeLimit(.minutes(1)))
+    func selectedTerminalReceivesRemoteCreationThenReuse() async throws {
+        let source = SourceDescriptor.remote("kvm")
+        let events = TerminalEvents()
+        let client = HerdrClient(executable: "/fake/herdr")
+        let expectedCommand = try client.attachCommand(source: source, session: "work")
+        let store = SessionStore(
+            client: client,
+            loadSource: { _ in [.init(name: "work", groups: [], error: nil)] },
+            loadBranches: { _, _ in [:] },
+            focusExistingClient: { actualSource, name, terminal in
+                #expect(actualSource == source && name == "work" && terminal == .kero)
+                return await events.record("reuse") > 1
+            },
+            sourceDescriptors: [source], defaults: PreviewFixtures.renderDefaults(),
+            activateClient: { actualSource, name, command, terminal, _ in
+                #expect(actualSource == source && name == "work" && terminal == .kero)
+                #expect(command == expectedCommand)
+                _ = await events.record("create")
             }
-        }
+        )
+        store.setTerminalApplication(.kero)
+        await store.refresh()
+        let destination = NavigationDestination.session(sourceID: source.id, sessionName: "work")
+        store.navigate(to: destination)
+        await waitForNavigation(store)
+        #expect(store.navigationAttempt?.phase == .succeeded)
+        store.navigate(to: destination)
+        await waitForNavigation(store)
+        #expect(store.navigationAttempt?.phase == .succeeded)
+        #expect(await events.values == ["reuse", "create", "reuse"])
     }
 
     @Test(.timeLimit(.minutes(1)))

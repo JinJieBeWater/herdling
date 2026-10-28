@@ -12,6 +12,7 @@ actor GhosttyController {
         case automationFailed(String)
         case clientCreationFailed
         case clientLaunchFailed
+        case clientMatchFailed
         case operationInProgress
 
         var isAutomationPermissionDenied: Bool {
@@ -32,6 +33,8 @@ actor GhosttyController {
                 "Ghostty did not create a usable terminal. Try again or switch new clients to Window in Settings."
             case .clientLaunchFailed:
                 "Herdr client did not start in Ghostty. Check Herdr and the SSH connection, then retry."
+            case .clientMatchFailed:
+                "Ghostty terminal identity could not be verified. Update Ghostty to 1.4 or later, then retry."
             case .operationInProgress:
                 "Another Ghostty action is finishing. Try again."
             }
@@ -49,30 +52,38 @@ actor GhosttyController {
         }
     }
 
-    struct ClientMapping: Codable, Equatable, Sendable {
-        let terminalID: String
-        let tty: String?
-
-        init(terminalID: String, tty: String? = nil) {
-            self.terminalID = terminalID
-            self.tty = tty
-        }
-    }
-
-    struct TerminalSnapshot: Sendable {
+    private struct TerminalSnapshot: Sendable {
         let id: String
-        let name: String
+        let tty: String?
     }
 
-    private let defaults: UserDefaults
+    private let executeScript: @Sendable (String, TimeInterval) throws -> String
+    private let runningPID: @Sendable () async -> Int?
+    private let loadClients: @Sendable (Int, TimeInterval) throws -> [GhosttyClientProcess]
     private var activationInProgress = false
 
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
+    init(
+        executeScript: @escaping @Sendable (String, TimeInterval) throws -> String = { script, timeout in
+            let data = try CommandRunner.run("/usr/bin/osascript", ["-e", script], timeout: timeout)
+            return String(decoding: data, as: UTF8.self)
+        },
+        runningPID: @escaping @Sendable () async -> Int? = {
+            await MainActor.run {
+                NSRunningApplication.runningApplications(withBundleIdentifier: "com.mitchellh.ghostty")
+                    .first.map { Int($0.processIdentifier) }
+            }
+        },
+        loadClients: @escaping @Sendable (Int, TimeInterval) throws -> [GhosttyClientProcess] = {
+            try GhosttyProcessCatalog.load(ghosttyPID: $0, timeout: $1)
+        }
+    ) {
+        self.executeScript = executeScript
+        self.runningPID = runningPID
+        self.loadClients = loadClients
     }
 
     func automationPermissionStatus() async -> String {
-        guard !(await runningApplications()).isEmpty else { return "Ghostty not running" }
+        guard await runningPID() != nil else { return "Ghostty not running" }
         do {
             _ = try await runAppleScript("tell application \"Ghostty\" to return count of windows as text")
             return "Allowed"
@@ -95,31 +106,26 @@ actor GhosttyController {
         activationInProgress = true
         defer { activationInProgress = false }
 
-        let key = Self.mappingKey(source: source, session: session)
-        let applications = await runningApplications()
+        let pid = await runningPID()
         let existing = try await reuseExistingClient(
             source: source,
             session: session,
-            key: key,
-            application: applications.first,
-            allowAdoption: true
+            pid: pid
         )
-        if existing.focused { return }
+        if existing { return }
 
-        try await ensureGhosttyRunning(existing: applications.first)
-        let pendingMapping = switch openBehavior {
+        try await ensureGhosttyRunning(existing: pid)
+        let terminalID = switch openBehavior {
         case .tab:
             try await createTabOrWindow(initialInput: command)
         case .window:
             try await createWindow(initialInput: command)
         }
-        let mapping = try await confirmCreatedClient(
-            pendingMapping,
+        try await confirmCreatedClient(
+            terminalID,
             source: source,
-            session: session,
-            excluding: existing.targetTTYs
+            session: session
         )
-        saveMapping(mapping, forKey: key)
     }
 
     func focusExistingClient(
@@ -130,102 +136,54 @@ actor GhosttyController {
         activationInProgress = true
         defer { activationInProgress = false }
 
-        let key = Self.mappingKey(source: source, session: session)
         return try await reuseExistingClient(
             source: source,
             session: session,
-            key: key,
-            application: await runningApplications().first,
-            allowAdoption: true
-        ).focused
+            pid: await runningPID()
+        )
     }
 
     private func reuseExistingClient(
         source: SourceDescriptor,
         session: String,
-        key: String,
-        application: NSRunningApplication?,
-        allowAdoption: Bool
-    ) async throws -> (focused: Bool, targetTTYs: Set<String>) {
-        guard let application else { return (false, []) }
-        let existingMapping = loadMapping(forKey: key)
-        let clients = try await Task.detached {
-            try GhosttyProcessCatalog.load(ghosttyPID: Int(application.processIdentifier))
-        }.value
-        let targetTTYs = Set(clients.lazy.filter {
-            $0.sourceID == source.id && $0.session == session
-        }.map(\.tty))
-
-        if let existingMapping,
-           let terminalID = Self.reusableMappedTerminalID(
-               mapping: existingMapping,
-               clients: clients,
-               sourceID: source.id,
-               session: session
-           ),
-           try await focusTerminal(id: terminalID)
-        {
-            return (true, targetTTYs)
+        pid: Int?
+    ) async throws -> Bool {
+        guard let pid else { return false }
+        let clients = try await clients(pid: pid)
+        let terminals = try await terminalSnapshots()
+        let matches = try Self.matchingTerminals(
+            clients: clients, terminals: terminals, sourceID: source.id, session: session
+        )
+        guard let terminal = matches.first else {
+            return false
         }
-        if existingMapping != nil { defaults.removeObject(forKey: key) }
-        guard allowAdoption, !targetTTYs.isEmpty else { return (false, targetTTYs) }
+        guard try await focusTerminal(id: terminal.id) else { throw GhosttyError.clientMatchFailed }
+        return true
+    }
 
-        if let mapping = try await adoptExistingClient(
-            source: source,
-            session: session,
-            clients: clients,
-            preferredMapping: existingMapping
-        ), try await focusTerminal(id: mapping.terminalID) {
-            saveMapping(mapping, forKey: key)
-            return (true, targetTTYs)
-        }
-        return (false, targetTTYs)
+    private func clients(pid: Int, deadline: ContinuousClock.Instant? = nil) async throws -> [GhosttyClientProcess] {
+        let loadClients = loadClients
+        let timeout = try deadline.map { try Self.remainingTime(until: $0, maximum: 1) } ?? 1
+        return try await Task.detached { try loadClients(pid, timeout) }.value
     }
 
     private func confirmCreatedClient(
-        _ mapping: ClientMapping,
+        _ terminalID: String,
         source: SourceDescriptor,
-        session: String,
-        excluding existingTTYs: Set<String>
-    ) async throws -> ClientMapping {
+        session: String
+    ) async throws {
         let deadline = ContinuousClock.now + .seconds(10)
-        return try await Self.confirmCreatedClient(
-            mapping,
-            deadline: deadline,
-            newTTYs: {
-                guard let application = await self.runningApplications().first,
-                      let clients = try? await Task.detached(operation: {
-                          try GhosttyProcessCatalog.load(
-                              ghosttyPID: Int(application.processIdentifier),
-                              timeout: Self.remainingTime(until: deadline, maximum: 1)
-                          )
-                      }).value
-                else { return [] }
-                return Self.newClientTTYs(
-                    clients: clients,
-                    excluding: existingTTYs,
-                    sourceID: source.id,
-                    session: session
-                )
-            },
-            probe: { tty in
-                let terminals = try await self.terminalSnapshots(deadline: deadline)
-                return try await self.probeTerminal(tty: tty, terminals: terminals, deadline: deadline)
-            }
-        )
-    }
-
-    nonisolated static func confirmCreatedClient(
-        _ mapping: ClientMapping,
-        deadline: ContinuousClock.Instant,
-        newTTYs: @Sendable () async throws -> [String],
-        probe: @Sendable (String) async throws -> String?
-    ) async throws -> ClientMapping {
         while ContinuousClock.now < deadline {
-            for tty in try await newTTYs() {
-                guard ContinuousClock.now < deadline else { throw GhosttyError.clientLaunchFailed }
-                if try await probe(tty) == mapping.terminalID, ContinuousClock.now < deadline {
-                    return ClientMapping(terminalID: mapping.terminalID, tty: tty)
+            try Task.checkCancellation()
+            if let pid = await runningPID(),
+               let clients = try? await clients(pid: pid, deadline: deadline) {
+                let terminals = try await terminalSnapshots(deadline: deadline)
+                // Native TTY publication and client startup can finish on different polls.
+                let matches = (try? Self.matchingTerminals(
+                    clients: clients, terminals: terminals, sourceID: source.id, session: session
+                )) ?? []
+                if matches.contains(where: { $0.id == terminalID }), ContinuousClock.now < deadline {
+                    return
                 }
             }
             let remaining = ContinuousClock.now.duration(to: deadline)
@@ -235,13 +193,34 @@ actor GhosttyController {
         throw GhosttyError.clientLaunchFailed
     }
 
+    private static func matchingTerminals(
+        clients: [GhosttyClientProcess],
+        terminals: [TerminalSnapshot],
+        sourceID: String,
+        session: String
+    ) throws -> [TerminalSnapshot] {
+        let targets = clients.filter { $0.sourceID == sourceID && $0.session == session }
+        guard Set(terminals.map(\.id)).count == terminals.count,
+              terminals.allSatisfy({ $0.tty != nil }),
+              Set(terminals.compactMap(\.tty)).count == terminals.count
+        else { throw GhosttyError.clientMatchFailed }
+        return try targets.map { client in
+            guard let tty = GhosttyProcessCatalog.normalizedTTY(client.tty),
+                  clients.filter({ GhosttyProcessCatalog.normalizedTTY($0.tty) == tty }).count == 1
+            else { throw GhosttyError.clientMatchFailed }
+            let matches = terminals.filter { $0.tty == tty }
+            guard matches.count == 1, let terminal = matches.first else { throw GhosttyError.clientMatchFailed }
+            return terminal
+        }
+    }
+
     nonisolated static func remainingTime(until deadline: ContinuousClock.Instant, maximum: TimeInterval) throws -> TimeInterval {
         let remaining = ContinuousClock.now.duration(to: deadline)
         guard remaining > .zero else { throw GhosttyError.clientLaunchFailed }
         return min(maximum, Double(remaining.components.seconds) + Double(remaining.components.attoseconds) / 1e18)
     }
 
-    private func createTabOrWindow(initialInput: String) async throws -> ClientMapping {
+    private func createTabOrWindow(initialInput: String) async throws -> String {
         let windowInput = initialInput.hasSuffix("\n") ? initialInput : initialInput + "\n"
         let script = """
         tell application "Ghostty"
@@ -274,10 +253,10 @@ actor GhosttyController {
         """
         let terminalID = try await runAppleScript(script).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !terminalID.isEmpty else { throw GhosttyError.clientCreationFailed }
-        return ClientMapping(terminalID: terminalID)
+        return terminalID
     }
 
-    private func createWindow(initialInput: String) async throws -> ClientMapping {
+    private func createWindow(initialInput: String) async throws -> String {
         let input = initialInput.hasSuffix("\n") ? initialInput : initialInput + "\n"
         let script = """
         tell application "Ghostty"
@@ -290,76 +269,19 @@ actor GhosttyController {
         """
         let terminalID = try await runAppleScript(script).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !terminalID.isEmpty else { throw GhosttyError.clientCreationFailed }
-        return ClientMapping(terminalID: terminalID)
+        return terminalID
     }
 
     private func focusTerminal(id: String) async throws -> Bool {
         let value = Self.appleScriptString(id)
         let script = """
         tell application "Ghostty"
-          try
-            focus terminal id \(value)
-            activate
-            return "focused"
-          on error
-            return "missing"
-          end try
+          focus terminal id \(value)
+          activate
+          return "focused"
         end tell
         """
         return try await runAppleScript(script).trimmingCharacters(in: .whitespacesAndNewlines) == "focused"
-    }
-
-    private func adoptExistingClient(
-        source: SourceDescriptor,
-        session: String,
-        clients: [GhosttyClientProcess],
-        preferredMapping: ClientMapping?
-    ) async throws -> ClientMapping? {
-        let terminals = try await terminalSnapshots()
-        let liveTerminalIDs = terminals.map(\.id)
-        let targetTTYs = clients
-            .filter { $0.sourceID == source.id && $0.session == session }
-            .map(\.tty)
-        var seenTTYs: Set<String> = []
-        let uniqueTargetTTYs = targetTTYs.filter { seenTTYs.insert($0).inserted }
-        let claimedTerminalIDs = claimedTerminalIDs(
-            liveTerminalIDs: Set(liveTerminalIDs),
-            excluding: preferredMapping?.terminalID
-        )
-
-        if let preferredMapping,
-           preferredMapping.tty == nil,
-           liveTerminalIDs.contains(preferredMapping.terminalID)
-        {
-            for tty in uniqueTargetTTYs {
-                if try await probeTerminal(tty: tty, terminals: terminals) == preferredMapping.terminalID {
-                    return ClientMapping(terminalID: preferredMapping.terminalID, tty: tty)
-                }
-            }
-        }
-
-        if let terminalID = Self.adoptableTerminalID(
-            liveTerminalIDs: liveTerminalIDs,
-            claimedTerminalIDs: claimedTerminalIDs,
-            allClientTTYs: clients.map(\.tty),
-            targetTTYs: targetTTYs
-        ) {
-            return ClientMapping(terminalID: terminalID, tty: targetTTYs.first)
-        }
-
-        for tty in uniqueTargetTTYs {
-            guard let probedTerminalID = try await probeTerminal(tty: tty, terminals: terminals),
-                  let terminalID = Self.adoptableTerminalID(
-                  liveTerminalIDs: liveTerminalIDs,
-                  claimedTerminalIDs: claimedTerminalIDs,
-                  allClientTTYs: clients.map(\.tty),
-                  targetTTYs: [tty],
-                  probedTerminalID: probedTerminalID
-              )
-            else { continue }
-            return ClientMapping(terminalID: terminalID, tty: tty)
-        }
-        return nil
     }
 
     private func terminalSnapshots(deadline: ContinuousClock.Instant? = nil) async throws -> [TerminalSnapshot] {
@@ -368,101 +290,29 @@ actor GhosttyController {
           set output to ""
           set fieldSeparator to ASCII character 31
           set recordSeparator to ASCII character 30
-          repeat with win in windows
-            repeat with tabItem in tabs of win
-              repeat with term in terminals of tabItem
-                set output to output & (id of term as text) & fieldSeparator & (name of term as text) & recordSeparator
-              end repeat
-            end repeat
+          repeat with term in every terminal
+            set output to output & (id of term as text) & fieldSeparator & (tty of term as text) & recordSeparator
           end repeat
           return output
         end tell
         """
         return try await runAppleScript(script, deadline: deadline)
+            .trimmingCharacters(in: .newlines)
             .split(separator: "\u{1e}")
-            .compactMap { record in
-                let fields = record.split(separator: "\u{1f}", maxSplits: 1, omittingEmptySubsequences: false)
-                guard fields.count == 2 else { return nil }
-                return TerminalSnapshot(id: String(fields[0]), name: String(fields[1]))
+            .map { record in
+                let fields = record.split(separator: "\u{1f}", omittingEmptySubsequences: false)
+                guard fields.count == 2, !fields[0].isEmpty else { throw GhosttyError.clientMatchFailed }
+                return TerminalSnapshot(id: String(fields[0]), tty: GhosttyProcessCatalog.normalizedTTY(String(fields[1])))
             }
-    }
-
-    private func probeTerminal(
-        tty: String,
-        terminals: [TerminalSnapshot],
-        deadline: ContinuousClock.Instant? = nil
-    ) async throws -> String? {
-        guard tty.range(of: #"^ttys[0-9]+$"#, options: .regularExpression) != nil else { return nil }
-        return try await Self.probeTerminal(
-            terminals: terminals,
-            deadline: deadline,
-            writeTitle: { try Self.writeTitle($0, tty: tty) },
-            readTerminals: { try await self.terminalSnapshots(deadline: deadline) }
-        )
-    }
-
-    nonisolated static func probeTerminal(
-        terminals: [TerminalSnapshot],
-        deadline: ContinuousClock.Instant? = nil,
-        writeTitle: @Sendable (String) throws -> Void,
-        readTerminals: @Sendable () async throws -> [TerminalSnapshot]
-    ) async throws -> String? {
-        let marker = "herdling-\(UUID().uuidString)"
-        let retryDeadline = min(deadline ?? .now + .seconds(1), .now + .seconds(1))
-        var matched: TerminalSnapshot?
-        while ContinuousClock.now < retryDeadline {
-            // Client startup output can overwrite an earlier marker.
-            do { try writeTitle(marker) }
-            catch { return nil }
-            let candidates = try await readTerminals().filter { $0.name == marker }
-            if candidates.count > 1 { break }
-            if let candidate = candidates.first {
-                matched = candidate
-                break
-            }
-            let remaining = ContinuousClock.now.duration(to: retryDeadline)
-            guard remaining > .zero else { break }
-            try await Task.sleep(for: min(.milliseconds(25), remaining))
-        }
-
-        if let matched,
-           let previous = terminals.first(where: { $0.id == matched.id })?.name,
-           try await readTerminals().first(where: { $0.id == matched.id })?.name == marker
-        {
-            try? writeTitle(Self.safeTerminalTitle(previous))
-        }
-        return matched?.id
-    }
-
-    private static func writeTitle(_ title: String, tty: String) throws {
-        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: "/dev/\(tty)"))
-        defer { try? handle.close() }
-        try handle.write(contentsOf: Data("\u{1b}]2;\(title)\u{7}".utf8))
-    }
-
-    private static func safeTerminalTitle(_ title: String) -> String {
-        String(title.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7f }.prefix(256))
-    }
-
-    private func claimedTerminalIDs(liveTerminalIDs: Set<String>, excluding: String?) -> Set<String> {
-        Set(defaults.dictionaryRepresentation().compactMap { key, value in
-            guard key.hasPrefix("ghostty-client."),
-                  let data = value as? Data,
-                  let mapping = try? JSONDecoder().decode(ClientMapping.self, from: data),
-                  liveTerminalIDs.contains(mapping.terminalID),
-                  mapping.terminalID != excluding
-            else { return nil }
-            return mapping.terminalID
-        })
     }
 
     private func runAppleScript(_ script: String, deadline: ContinuousClock.Instant? = nil) async throws -> String {
+        let executeScript = executeScript
         do {
-            let data = try await Task.detached {
+            return try await Task.detached {
                 let timeout = try deadline.map { try Self.remainingTime(until: $0, maximum: 5) } ?? 5
-                return try CommandRunner.run("/usr/bin/osascript", ["-e", script], timeout: timeout)
+                return try executeScript(script, timeout)
             }.value
-            return String(decoding: data, as: UTF8.self)
         } catch GhosttyError.clientLaunchFailed {
             throw GhosttyError.clientLaunchFailed
         } catch {
@@ -470,13 +320,7 @@ actor GhosttyController {
         }
     }
 
-    private func runningApplications() async -> [NSRunningApplication] {
-        await MainActor.run {
-            NSRunningApplication.runningApplications(withBundleIdentifier: "com.mitchellh.ghostty")
-        }
-    }
-
-    private func ensureGhosttyRunning(existing: NSRunningApplication?) async throws {
+    private func ensureGhosttyRunning(existing: Int?) async throws {
         if existing != nil { return }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             Task { @MainActor in
@@ -490,80 +334,6 @@ actor GhosttyController {
                 }
             }
         }
-    }
-
-    static func mappingKey(source: SourceDescriptor, session: String) -> String {
-        "ghostty-client.\(source.id.utf8.count):\(source.id):\(session.utf8.count):\(session)"
-    }
-
-    nonisolated static func reusableMappedTerminalID(
-        mapping: ClientMapping,
-        clients: [GhosttyClientProcess],
-        sourceID: String,
-        session: String
-    ) -> String? {
-        guard let tty = mapping.tty,
-              clients.contains(where: {
-                  $0.tty == tty && $0.sourceID == sourceID && $0.session == session
-              })
-        else { return nil }
-        return mapping.terminalID
-    }
-
-    nonisolated static func newClientTTYs(
-        clients: [GhosttyClientProcess],
-        excluding existingTTYs: Set<String>,
-        sourceID: String,
-        session: String
-    ) -> [String] {
-        var seen: Set<String> = []
-        return clients.compactMap { client in
-            guard client.sourceID == sourceID,
-                  client.session == session,
-                  !existingTTYs.contains(client.tty),
-                  seen.insert(client.tty).inserted
-            else { return nil }
-            return client.tty
-        }
-    }
-
-    nonisolated static func adoptableTerminalID(
-        liveTerminalIDs: [String],
-        claimedTerminalIDs: Set<String>,
-        allClientTTYs: [String],
-        targetTTYs: [String],
-        probedTerminalID: String? = nil
-    ) -> String? {
-        let live = Set(liveTerminalIDs)
-        let clients = Set(allClientTTYs)
-        let targets = Set(targetTTYs)
-        let unclaimed = live.subtracting(claimedTerminalIDs)
-        if let probedTerminalID,
-           targets.count == 1,
-           targets.isSubset(of: clients),
-           live.contains(probedTerminalID)
-        {
-            return probedTerminalID
-        }
-        guard live.count == clients.count,
-              targets.count == 1,
-              unclaimed.count == 1
-        else { return nil }
-        return unclaimed.first
-    }
-
-    private func loadMapping(forKey key: String) -> ClientMapping? {
-        guard let data = defaults.data(forKey: key),
-              let mapping = try? JSONDecoder().decode(ClientMapping.self, from: data)
-        else {
-            defaults.removeObject(forKey: key)
-            return nil
-        }
-        return mapping
-    }
-
-    private func saveMapping(_ mapping: ClientMapping, forKey key: String) {
-        defaults.set(try? JSONEncoder().encode(mapping), forKey: key)
     }
 
     static func appleScriptString(_ value: String) -> String {

@@ -19,7 +19,7 @@ Herdling is a macOS menu bar companion for [Herdr](https://herdr.dev/). It shows
 - macOS 15 or later
 - Xcode 26.2 or later with Swift 6.2 or later (only when building from source; Command Line Tools alone are not sufficient)
 - [Herdr](https://herdr.dev/) installed locally and on each enabled SSH host
-- [Ghostty](https://ghostty.org/) or [Kero](https://kero.sh/) with its `kero` CLI for opening and focusing sessions
+- [Ghostty](https://ghostty.org/) 1.4.0 or later, or [Kero](https://kero.sh/) with its `kero` CLI for opening and focusing sessions
 - Key-based or otherwise non-interactive SSH access for remote hosts
 
 Herdling finds `herdr` through `HERDR_BIN_PATH` or common Homebrew/system paths. It finds `kero` through `KERO_BIN_PATH`, common Homebrew paths, or the Kero app bundle. Remote commands run through the host's login shell.
@@ -57,7 +57,7 @@ open .build/Herdling.app
 5. Under **Terminal → Application**, choose **Ghostty** or **Kero**. The default remains Ghostty; switching only affects subsequent jumps, not existing terminal sessions.
 6. Optionally record a global panel shortcut in Settings. No combination is assigned by default.
 
-Ghostty uses AppleScript Automation; allow Herdling to control Ghostty when macOS asks, and choose Tab or Window for new clients. Kero uses its native CLI, with no Automation permission or Tab/Window setting. Settings checks only the selected terminal.
+Ghostty uses AppleScript Automation; allow Herdling to control Ghostty when macOS asks, keep `macos-applescript` enabled (the default), and choose Tab or Window for new clients. Kero uses its native CLI, with no Automation permission or Tab/Window setting. Settings checks only the selected terminal.
 
 ### Remote hosts
 
@@ -87,6 +87,7 @@ ssh -o BatchMode=yes my-server '$SHELL -lc "herdr session list --json"'
 | `←` / `→` in Sources | Return to parent / collapse or expand a source |
 | `Tab` / `Shift-Tab` | Move among native controls |
 | `⌘,` | Open Settings |
+| `⌘W` in Settings | Close the Settings window |
 | `Esc` in roster | Close panel |
 | `⌘Q` | Quit Herdling |
 
@@ -97,13 +98,8 @@ Herdr focus can mark every pane in the destination tab as seen and affect all sh
 Run tests:
 
 ```bash
-swift test
-```
-
-Treat warnings as errors:
-
-```bash
-swift test -Xswiftc -warnings-as-errors
+bash scripts/test-build-app.sh
+swift test --no-parallel
 ```
 
 Build release app:
@@ -116,7 +112,7 @@ bash scripts/build-app.sh release
 
 `.github/workflows/release.yml` tests, builds and verifies app packaging for Apple Silicon and Intel on pushes to `main`, pull requests to `main`, and manual runs. These runs upload ZIPs and SHA-256 files as Actions artifacts without publishing a release. Xcode 26.2 is selected explicitly for Swift 6.2 and the macOS 26 APIs.
 
-CI excludes native rendering suites and the rendered status-item test: hosted VMs lack a reliable Metal GPU and the Retina display assumed by those tests. Run the full `swift test --no-parallel` suite on a Mac with a Retina display before release. A green CI run does not verify native UI appearance or real terminal navigation.
+CI runs the complete automated suite: navigation, session state, process/socket failures and cancellation, preferences, and packaging. Pixel and OCR checks are not part of the suite. Check visual changes and real terminal navigation manually; use an isolated desktop for GUI automation.
 
 To publish, set `CFBundleShortVersionString` in `Resources/Info.plist` to the release version and increment `CFBundleVersion` for subsequent releases. Commit and push the changes, including the workflow, then tag that commit:
 
@@ -132,7 +128,7 @@ Use `v<CFBundleShortVersionString>` for the tag; a mismatch fails the build. Aft
 - AppKit owns `NSStatusItem` and a nonactivating `NSPanel`; SwiftUI renders panel content.
 - Local and remote monitors maintain one NDJSON socket stream per Herdr session.
 - Periodic discovery finds added or removed sessions. CLI polling remains a fallback when a stream is unavailable.
-- Ghostty activation retains AppleScript and terminal/process validation. Kero activation uses `kero ls --json`, pane process ancestry and `kero focus`; new clients use `kero new`. Each backend verifies its own client, without falling back to another terminal.
+- Ghostty matches its native AppleScript `tty` to the Herdr client process, then focuses the stable terminal ID. It does not change terminal titles or save terminal mappings. Kero uses `kero ls --json`, pane process ancestry and `kero focus`; new clients use `kero new`. Each backend verifies its own client, without falling back to another terminal.
 
 ## Troubleshooting
 
