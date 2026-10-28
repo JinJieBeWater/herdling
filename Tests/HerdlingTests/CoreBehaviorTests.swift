@@ -1899,6 +1899,7 @@ struct CoreBehaviorTests {
     @Test
     @MainActor
     func statusItemOwnsNativeLayoutAndAccessibility() {
+        _ = NSApplication.shared
         let status = MenuStatus(
             counts: [
                 AgentStatusCount(status: .done, count: 1),
