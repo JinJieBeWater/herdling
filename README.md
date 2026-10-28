@@ -116,6 +116,8 @@ bash scripts/build-app.sh release
 
 `.github/workflows/release.yml` tests, builds and verifies app packaging for Apple Silicon and Intel on pushes to `main`, pull requests to `main`, and manual runs. These runs upload ZIPs and SHA-256 files as Actions artifacts without publishing a release. Xcode 26.2 is selected explicitly for Swift 6.2 and the macOS 26 APIs.
 
+CI excludes native rendering suites and the rendered status-item test: hosted VMs lack a reliable Metal GPU and the Retina display assumed by those tests. Run the full `swift test --no-parallel` suite on a Mac with a Retina display before release. A green CI run does not verify native UI appearance or real terminal navigation.
+
 To publish, set `CFBundleShortVersionString` in `Resources/Info.plist` to the release version and increment `CFBundleVersion` for subsequent releases. Commit and push the changes, including the workflow, then tag that commit:
 
 ```bash

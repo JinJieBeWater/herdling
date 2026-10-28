@@ -116,6 +116,8 @@ bash scripts/build-app.sh release
 
 `.github/workflows/release.yml` 在推送 `main`、向 `main` 提交 PR 或手动运行时，分别为 Apple Silicon 和 Intel 测试、构建并验证应用资源打包。这些运行只上传 ZIP 和 SHA-256 文件到 Actions artifacts，不发布 Release。工作流显式选择 Xcode 26.2，以使用 Swift 6.2 和 macOS 26 API。
 
+CI 不运行原生渲染测试套件和状态栏渲染测试：托管虚拟机缺少可靠的 Metal GPU，也没有这些测试假定的 Retina 屏幕。发版前请在带 Retina 屏幕的 Mac 上运行完整的 `swift test --no-parallel`。CI 通过不代表原生 UI 外观或真实终端定位已验收。
+
 发布时，先将 `Resources/Info.plist` 的 `CFBundleShortVersionString` 设为发行版本，后续版本同时递增 `CFBundleVersion`。提交并推送改动（包括工作流），再给该提交打 Tag：
 
 ```bash
