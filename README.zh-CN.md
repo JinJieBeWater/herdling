@@ -78,7 +78,7 @@ ssh -o BatchMode=yes my-server '$SHELL -lc "herdr session list --json"'
 | 操作 | 结果 |
 | --- | --- |
 | 左键点击菜单栏项目 | 打开或关闭 agent 列表 |
-| 右键点击菜单栏项目 | 打开 Refresh/Settings/Quit 菜单 |
+| 右键点击菜单栏项目 | 打开 Settings/Quit 菜单 |
 | 点击 Sources 中的设备 | 展开或收起目录；展开一个来源时收起前一个 |
 | 点击 agent、worktree、Space 或 Session | 在所选终端中聚焦目标 |
 | 全局呼出快捷键（配置后） | 开关面板；预选目标但不直接定位 |

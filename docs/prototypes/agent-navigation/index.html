@@ -117,7 +117,6 @@
         <section id="panel" class="panel" role="dialog" aria-modal="false" aria-label="模拟 Herdling agents 面板" tabindex="-1" hidden></section>
         <div id="closed-note" class="closed-note">面板已关闭。点击上方整个菜单栏入口，或使用右侧模拟快捷键呼出。</div>
         <div id="context-menu" class="context-menu" role="menu" aria-label="模拟菜单" hidden>
-          <button role="menuitem" data-ui="context" data-value="Refresh">Refresh（仅模拟快照更新）</button>
           <button role="menuitem" data-ui="context" data-value="Settings">Settings（仅记录日志）</button>
           <button role="menuitem" data-ui="context" data-value="Quit">Quit（仅关闭预览面板）</button>
         </div>
@@ -482,8 +481,7 @@ const NavigationModel = (() => {
       case 'CONTEXT': state.context = !state.context; break;
       case 'CONTEXT_ACTION':
         state.context = false;
-        if (action.name === 'Refresh') { snapshot(state); keepSelection(state); log(state,'模拟 Refresh：只更新本页快照，没有请求真实后端。'); }
-        else if (action.name === 'Quit') { state.open = false; log(state,'模拟 Quit：只关闭预览面板，不退出任何真实程序。'); }
+        if (action.name === 'Quit') { state.open = false; log(state,'模拟 Quit：只关闭预览面板，不退出任何真实程序。'); }
         else log(state,'模拟 Settings：只记录动作，不打开系统偏好或更改设置。');
         break;
       case 'STEP_DONE': state.step++; break;

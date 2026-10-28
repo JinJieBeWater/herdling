@@ -178,7 +178,7 @@ SF Symbol 的显式字号，也是 token：`leading 14 regular` · `navigation 1
 - **玻璃始终保持激活外观。** Liquid Glass 只在激活外观下折射背景，非 key 窗口会变平。原生 `NSPopupMenuWindow` 并非 key 却始终折射，靠的是 `_hasActiveAppearanceIgnoringKeyFocus`；`MenuBarPanel` 同样覆写。只改外观，不伪造键盘焦点。
 - **玻璃根层也裁圆角。** `NSGlassEffectView.cornerRadius` 与 SwiftUI 的 `clipShape` 不足以约束激活状态下的全部玻璃绘制；玻璃根 `CALayer` 用同一个 `Theme.Radius.panel`、与 SwiftUI 一致的 `.continuous` 曲线，并启用 `masksToBounds`。保留键盘焦点和窗口阴影。
 - **名单背景左右6pt，末行底部6pt。** 首末边界跟随面板内轮廓，内部相邻角同为6pt；顶栏点击区顶部1pt加上表面余量后，可见留白为6pt。不留操作条或safe-area占位。
-- **菜单操作独立于列表。** 右键或 Control-click 状态项打开原生菜单：Refresh、Settings、分隔线、Quit Herdling。刷新期间禁用 Refresh，并防止重复启动。Settings 的 `⌘,` 和退出的 `⌘Q` 继续通过应用菜单提供。
+- **菜单操作独立于列表。** 右键或 Control-click 状态项打开原生菜单：Settings、分隔线、Quit Herdling。Settings 的 `⌘,` 和退出的 `⌘Q` 继续通过应用菜单提供。
 
 ---
 

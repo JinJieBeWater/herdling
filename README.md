@@ -78,7 +78,7 @@ ssh -o BatchMode=yes my-server '$SHELL -lc "herdr session list --json"'
 | Action | Result |
 | --- | --- |
 | Left-click menu bar item | Open or close roster |
-| Right-click menu bar item | Open Refresh/Settings/Quit menu |
+| Right-click menu bar item | Open Settings/Quit menu |
 | Click a machine in Sources | Toggle its directory; expanding one closes the previous source |
 | Click an agent, worktree, Space, or session | Focus it in the selected terminal |
 | Global panel shortcut (when configured) | Toggle panel; select a target without navigating |

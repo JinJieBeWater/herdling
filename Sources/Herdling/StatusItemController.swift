@@ -57,7 +57,6 @@ final class StatusItemController: NSObject {
     private let menuBarItem = MenuBarStatusItem()
     private let panel = MenuBarPanel()
     private var settingsController: SettingsWindowController?
-    private var isRefreshing = false
     private lazy var hostingController = NSHostingController(
         rootView: AgentListView(store: store, browser: browser)
     )
@@ -127,7 +126,7 @@ final class StatusItemController: NSObject {
     private func showContextMenu() {
         if panel.isVisible { closePanel() }
 
-        let menu = HerdlingApplicationMenu.makeContext(target: self, isRefreshing: isRefreshing)
+        let menu = HerdlingApplicationMenu.makeContext(target: self)
         menuBarItem.item.menu = menu
         menuBarItem.item.button?.performClick(nil)
         menuBarItem.item.menu = nil
@@ -139,15 +138,6 @@ final class StatusItemController: NSObject {
             settingsController = SettingsWindowController(store: store)
         }
         settingsController?.show()
-    }
-
-    @objc func refreshSources() {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        Task {
-            defer { isRefreshing = false }
-            await store.refresh()
-        }
     }
 
     private func openPanel(keyboard: Bool = false) {

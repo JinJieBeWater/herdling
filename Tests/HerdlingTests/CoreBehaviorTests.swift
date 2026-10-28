@@ -2062,25 +2062,22 @@ struct CoreBehaviorTests {
 
     @Test
     @MainActor
-    func contextMenuRoutesActionsAndDisablesRefreshWhileBusy() throws {
+    func contextMenuOnlyOffersSettingsAndQuit() throws {
         _ = NSApplication.shared
         let probe = ContextMenuActionProbe()
-        for busy in [false, true] {
-            let menu = HerdlingApplicationMenu.makeContext(target: probe, isRefreshing: busy)
-            menu.update()
-            let refreshIndex = try #require(menu.items.firstIndex {
-                $0.action == #selector(ContextMenuActionProbe.refreshSources)
-            })
-            let settingsIndex = try #require(menu.items.firstIndex {
-                $0.action == #selector(ContextMenuActionProbe.openSettings)
-            })
-            #expect(menu.items[refreshIndex].isEnabled == !busy)
-            #expect(menu.items[settingsIndex].isEnabled)
-            if !busy { menu.performActionForItem(at: refreshIndex) }
-            menu.performActionForItem(at: settingsIndex)
-        }
-        #expect(probe.refreshCount == 1)
-        #expect(probe.settingsCount == 2)
+        let menu = HerdlingApplicationMenu.makeContext(target: probe)
+        menu.update()
+        try #require(menu.items.count == 3)
+        #expect(menu.items.map(\.title) == ["Settings", "", "Quit Herdling"])
+        let settings = try #require(menu.items.first)
+        #expect(settings.action == #selector(ContextMenuActionProbe.openSettings))
+        #expect(settings.isEnabled)
+        #expect(menu.items[1].isSeparatorItem)
+        #expect(menu.items[2].action == #selector(NSApplication.terminate(_:)))
+        #expect(menu.items[2].target === NSApp)
+        #expect(menu.items[2].isEnabled)
+        menu.performActionForItem(at: 0)
+        #expect(probe.settingsCount == 1)
     }
 
     @Test
@@ -2112,9 +2109,7 @@ struct CoreBehaviorTests {
 
 @MainActor
 private final class ContextMenuActionProbe: NSObject {
-    var refreshCount = 0
     var settingsCount = 0
-    @objc func refreshSources() { refreshCount += 1 }
     @objc func openSettings() { settingsCount += 1 }
 }
 

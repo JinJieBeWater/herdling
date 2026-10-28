@@ -18,4 +18,4 @@
 
 - When adding a header control or trailing readout, measure its background edge and content slot against roster rows. Avoid doubled insets and empty trailing views that still consume stack spacing; top hover fills must follow the same content contour as bottom rows.
 
-- When changing panel chrome, keep the panel roster-only: Refresh and Settings belong in the status item's context menu, not an independent footer. Judge changes in the whole panel; matching fonts and alignment alone does not establish cohesion.
+- When changing panel chrome, keep the panel roster-only: Settings and Quit belong in the status item's context menu, not an independent footer. Judge changes in the whole panel; matching fonts and alignment alone does not establish cohesion.
