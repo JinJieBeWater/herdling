@@ -52,6 +52,13 @@ git -C "$work" -c user.name=Test -c user.email=test@example.invalid commit -qm '
 git -C "$work" tag previous
 expect_failure env SPARKLE_PRIVATE_KEY="$private" PREVIOUS_RELEASE_TAG=previous bash "$work/scripts/prepare-release.sh" "$tools"
 printf 'PASS stale build preserves output\n'
+original_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$work/.build/Herdling.app/Contents/Info.plist")"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $((original_build + 1))" "$work/.build/Herdling.app/Contents/Info.plist"
+codesign --force --sign - "$work/.build/Herdling.app" >&2
+expect_failure env SPARKLE_PRIVATE_KEY="$private" PREVIOUS_RELEASE_TAG=previous bash "$work/scripts/prepare-release.sh" "$tools"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $original_build" "$work/.build/Herdling.app/Contents/Info.plist"
+codesign --force --sign - "$work/.build/Herdling.app" >&2
+printf 'PASS stale version with increased build preserves output\n'
 
 signature="$(python3 - "$work/expected.xml" <<'PY'
 import sys, xml.etree.ElementTree as ET
