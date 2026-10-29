@@ -19,6 +19,7 @@ assert re.fullmatch(r'[1-9][0-9]*', build), 'Build must be a positive integer'
 assert os.environ.get('RELEASE_TAG', 'v' + version) == 'v' + version, 'Tag does not match app version'
 assert p['SUFeedURL'] == f'https://github.com/{sys.argv[2]}/releases/latest/download/appcast.xml'
 assert p['SURequireSignedFeed'] is True, 'The app must require signed feeds'
+assert p.get('SUVerifyUpdateBeforeExtraction') is True, 'Signed feeds require verification before extraction'
 assert len(base64.b64decode(p['SUPublicEDKey'], validate=True)) == 32, 'Invalid update public key'
 previous = os.environ.get('PREVIOUS_RELEASE_TAG')
 if previous:

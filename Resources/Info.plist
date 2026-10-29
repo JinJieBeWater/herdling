@@ -30,6 +30,8 @@
     <string>HNChrQN+BwkDFuvcDNYNHNbzdY8MEtTj2rXIOK5sz7g=</string>
     <key>SURequireSignedFeed</key>
     <true/>
+    <key>SUVerifyUpdateBeforeExtraction</key>
+    <true/>
     <key>NSAppleEventsUsageDescription</key>
     <string>Herdling uses Ghostty automation to connect and focus the terminal containing the selected Herdr agent.</string>
 </dict>

@@ -37,6 +37,12 @@ expect_failure() {
 }
 expect_failure env SPARKLE_PRIVATE_KEY="$private" RELEASE_TAG=v999.0.0 bash "$work/scripts/prepare-release.sh" "$tools"
 printf 'PASS mismatched tag preserves output\n'
+/usr/libexec/PlistBuddy -c 'Set :SUVerifyUpdateBeforeExtraction false' "$work/.build/Herdling.app/Contents/Info.plist"
+codesign --force --sign - "$work/.build/Herdling.app" >&2
+expect_failure env SPARKLE_PRIVATE_KEY="$private" bash "$work/scripts/prepare-release.sh" "$tools"
+/usr/libexec/PlistBuddy -c 'Set :SUVerifyUpdateBeforeExtraction true' "$work/.build/Herdling.app/Contents/Info.plist"
+codesign --force --sign - "$work/.build/Herdling.app" >&2
+printf 'PASS invalid updater security policy preserves output\n'
 expect_failure env SPARKLE_PRIVATE_KEY="$(openssl rand -base64 32)" bash "$work/scripts/prepare-release.sh" "$tools"
 printf 'PASS mismatched key preserves output\n'
 
