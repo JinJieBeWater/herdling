@@ -1,13 +1,15 @@
 import AppKit
+import Sparkle
 
 @MainActor
 enum HerdlingApplicationMenu {
-    static func makeContext(target: AnyObject) -> NSMenu {
+    static func makeContext(target: AnyObject, updaterController: SPUStandardUpdaterController) -> NSMenu {
         let menu = NSMenu()
         let settings = NSMenuItem(title: "Settings", action: #selector(StatusItemController.openSettings), keyEquivalent: "")
         settings.target = target
         settings.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: "Settings")
         menu.addItem(settings)
+        menu.addItem(checkForUpdatesItem(controller: updaterController))
         menu.addItem(.separator())
 
         let quit = NSMenuItem(title: "Quit Herdling", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -17,7 +19,7 @@ enum HerdlingApplicationMenu {
         return menu
     }
 
-    static func make(settingsTarget: AnyObject) -> NSMenu {
+    static func make(settingsTarget: AnyObject, updaterController: SPUStandardUpdaterController) -> NSMenu {
         let mainMenu = NSMenu()
         let appItem = NSMenuItem()
         let appMenu = NSMenu(title: "Herdling")
@@ -29,6 +31,7 @@ enum HerdlingApplicationMenu {
         )
         settings.target = settingsTarget
         appMenu.addItem(settings)
+        appMenu.addItem(checkForUpdatesItem(controller: updaterController))
         appMenu.addItem(.separator())
 
         let quit = NSMenuItem(
@@ -48,5 +51,15 @@ enum HerdlingApplicationMenu {
         fileItem.submenu = fileMenu
         mainMenu.addItem(fileItem)
         return mainMenu
+    }
+
+    private static func checkForUpdatesItem(controller: SPUStandardUpdaterController) -> NSMenuItem {
+        let item = NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        item.target = controller
+        return item
     }
 }

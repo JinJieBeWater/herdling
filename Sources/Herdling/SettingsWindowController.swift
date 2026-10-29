@@ -9,7 +9,11 @@ import SwiftUI
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let store: SessionStore
 
-    init(store: SessionStore, frameAutosaveName: NSWindow.FrameAutosaveName = "Settings Window") {
+    init(
+        store: SessionStore,
+        updaterSettings: UpdaterSettings,
+        frameAutosaveName: NSWindow.FrameAutosaveName = "Settings Window"
+    ) {
         self.store = store
         let window = NSWindow(
             contentRect: NSRect(
@@ -29,7 +33,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         // Stock Settings is dragged by its titlebar, never by its content.
         window.isMovableByWindowBackground = false
         window.isReleasedWhenClosed = false
-        let hostingController = NSHostingController(rootView: SettingsView(store: store))
+        let hostingController = NSHostingController(rootView: SettingsView(store: store, updater: updaterSettings))
         // Settle content-driven sizing before restoring geometry; later hosting constraints would move it.
         hostingController.sizingOptions = []
         window.contentViewController = hostingController

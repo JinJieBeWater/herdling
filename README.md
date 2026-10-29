@@ -26,9 +26,11 @@ Herdling finds `herdr` through `HERDR_BIN_PATH` or common Homebrew/system paths.
 
 ## Build and run
 
-Check [Releases](https://github.com/JinJieBeWater/herdling/releases) for binary builds: choose `arm64` for Apple Silicon or `x86_64` for Intel. Extract `Herdling.app` and move it to `/Applications`. Each ZIP has a `.sha256` file; verify it with `shasum -a 256 -c <filename>.zip.sha256` from the download directory.
+Download the Universal2 ZIP from [Releases](https://github.com/JinJieBeWater/herdling/releases). The same app runs natively on Apple Silicon and Intel. Extract `Herdling.app` and move it to `/Applications`. Verify the download with `shasum -a 256 -c <filename>.zip.sha256` from the download directory.
 
 These builds use ad-hoc signing, without an Apple Developer ID certificate or notarization. macOS may block the first launch. After attempting to open the app, use **System Settings → Privacy & Security → Open Anyway** only if you trust the download. Do not disable Gatekeeper system-wide.
+
+Starting with 0.2.0, right-click the menu bar icon and choose **Check for Updates…**. **Settings → General → Automatically check for updates** controls background checks. Sparkle verifies both the feed and the downloaded archive before installing an update; installation and restart require confirmation. This does not replace Apple Developer ID or notarization. System permissions may need approval again after an ad-hoc-signed update. Older releases without Sparkle need one manual installation. Debug builds do not start the updater.
 
 To build from source:
 
@@ -39,7 +41,7 @@ bash scripts/build-app.sh release
 open .build/Herdling.app
 ```
 
-The script creates an ad-hoc-signed app at `.build/Herdling.app`. Move it to a stable location such as `/Applications` before enabling Launch at Login.
+The script creates an ad-hoc-signed Universal2 app at `.build/Herdling.app`, including the complete Sparkle runtime. Move it to a stable location such as `/Applications` before enabling Launch at Login.
 
 For a development build:
 
@@ -108,18 +110,22 @@ bash scripts/build-app.sh release
 
 ### Releases
 
-`.github/workflows/release.yml` tests, builds and verifies app packaging for Apple Silicon and Intel on pushes to `main`, pull requests to `main`, and manual runs. These runs upload ZIPs and SHA-256 files as Actions artifacts without publishing a release. Xcode 26.2 is selected explicitly for Swift 6.2 and the macOS 26 APIs.
+`.github/workflows/release.yml` tests, builds and verifies one Universal2 app on pushes to `main`, pull requests to `main`, and manual runs. It uploads the app ZIP as an Actions artifact without publishing a release. The macOS runner uses Xcode 26.2 for Swift 6.2 and the macOS 26 APIs. Intel code is cross-compiled and checked for architecture, signatures and relocatable dependencies; CI does not execute it on an Intel Mac.
 
-CI runs the complete automated suite: navigation, session state, process/socket failures and cancellation, preferences, and packaging. Pixel and OCR checks are not part of the suite. Check visual changes and real terminal navigation manually; use an isolated desktop for GUI automation.
+CI runs the complete automated suite and packaging failure checks. Release tooling also signs and verifies a test feed and archive with an ephemeral key, checks tag/key/version failures, and rejects modified archives and feed content. PR builds never receive the production signing key. Pixel and OCR checks are not part of the suite; use an isolated desktop for real update and navigation checks.
+
+Maintainers must configure the repository secret **`SPARKLE_PRIVATE_KEY`** with the private seed exported by Sparkle's official `generate_keys` tool. Its public key must match `SUPublicEDKey` in `Resources/Info.plist`. Tools are pinned to the package version and a SHA-256 checksum by `scripts/fetch-sparkle-tools.sh`. For this repository the key is stored in the maintainer's Keychain under account `dev.herdr.Herdling`; keep a secure backup outside the repository. Never commit the private key or upload it as an artifact. No Apple certificate or notarization credentials are used by this release path.
 
 To publish, set `CFBundleShortVersionString` in `Resources/Info.plist` to the release version and increment `CFBundleVersion` for subsequent releases. Commit and push the changes, including the workflow, then tag that commit:
 
 ```bash
-git tag -a v0.1.0 -m 'Herdling 0.1.0'
-git push origin v0.1.0
+git tag -a v0.2.0 -m 'Herdling 0.2.0'
+git push origin v0.2.0
 ```
 
-Use `v<CFBundleShortVersionString>` for the tag; a mismatch fails the build. After both architectures pass, the workflow creates a GitHub Release with both ZIPs, checksums and generated release notes. It only needs the automatic `GITHUB_TOKEN`; no Apple certificates or repository secrets are required. Do not create the Release manually first or move an existing release tag; use a new version for corrections.
+Use `v<CFBundleShortVersionString>` for the tag. Both the version and build must exceed the latest release. A serialized macOS release job restores the verified app, generates notes, then runs `scripts/prepare-release.sh` to create the ZIP, checksum and signed `appcast.xml` in `.build/release`. The job uploads all three assets to a draft, checks their names and sizes, and only then publishes it as Latest. Missing keys or failed checks stop publication; there is no unsigned fallback. Do not create the Release manually first or move an existing release tag; use a new version for corrections.
+
+The fixed feed is `https://github.com/JinJieBeWater/herdling/releases/latest/download/appcast.xml`. Each feed contains only the current release and points to an immutable, tagged ZIP URL. There are no per-architecture feeds, old-package synchronization or delta updates.
 
 ### Architecture
 

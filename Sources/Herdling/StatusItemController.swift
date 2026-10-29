@@ -1,4 +1,5 @@
 import AppKit
+import Sparkle
 import os
 import SwiftUI
 
@@ -53,6 +54,7 @@ final class StatusItemController: NSObject {
     static let panelMinHeight: CGFloat = Theme.Size.panelMinHeight
     static let panelScreenFraction: CGFloat = Theme.Size.panelScreenFraction
     private let store: SessionStore
+    private let updaterController: SPUStandardUpdaterController
     private let browser = NavigationBrowser()
     private let menuBarItem = MenuBarStatusItem()
     private let panel = MenuBarPanel()
@@ -69,8 +71,9 @@ final class StatusItemController: NSObject {
     private var lastStatus: MenuStatus?
     private var preferredPanelHeight: CGFloat = 340
 
-    init(store: SessionStore) {
+    init(store: SessionStore, updaterController: SPUStandardUpdaterController) {
         self.store = store
+        self.updaterController = updaterController
         super.init()
 
         PanelHeightBridge.applyHeight = { [weak self] height in
@@ -124,7 +127,7 @@ final class StatusItemController: NSObject {
     private func showContextMenu() {
         if panel.isVisible { closePanel() }
 
-        let menu = HerdlingApplicationMenu.makeContext(target: self)
+        let menu = HerdlingApplicationMenu.makeContext(target: self, updaterController: updaterController)
         menuBarItem.item.menu = menu
         menuBarItem.item.button?.performClick(nil)
         menuBarItem.item.menu = nil
@@ -133,7 +136,9 @@ final class StatusItemController: NSObject {
     @objc func openSettings() {
         if panel.isVisible { closePanel() }
         if settingsController == nil {
-            settingsController = SettingsWindowController(store: store)
+            settingsController = SettingsWindowController(
+                store: store, updaterSettings: UpdaterSettings(updater: updaterController.updater)
+            )
         }
         settingsController?.show()
     }

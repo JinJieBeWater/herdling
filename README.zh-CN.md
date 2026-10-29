@@ -26,9 +26,11 @@ Herdling 通过 `HERDR_BIN_PATH` 或常见 Homebrew/系统路径查找 `herdr`�
 
 ## 构建与运行
 
-在 [Releases](https://github.com/JinJieBeWater/herdling/releases) 查看二进制发行版：Apple Silicon 选择 `arm64`，Intel 选择 `x86_64`。解压后将 `Herdling.app` 移动到 `/Applications`。每个 ZIP 都有对应的 `.sha256` 文件，在下载目录执行 `shasum -a 256 -c <文件名>.zip.sha256` 即可校验。
+从 [Releases](https://github.com/JinJieBeWater/herdling/releases) 下载 Universal2 ZIP，同一个应用原生支持 Apple Silicon 和 Intel，不必选择架构。解压后将 `Herdling.app` 移动到 `/Applications`。在下载目录执行 `shasum -a 256 -c <文件名>.zip.sha256` 即可校验。
 
 发行版使用 ad-hoc 签名，没有 Apple Developer ID 证书，也未公证。macOS 可能拦截首次启动。尝试打开后，仅在信任下载来源时，前往 **系统设置 → 隐私与安全性 → 仍要打开** 放行。不要全局关闭 Gatekeeper。
+
+从 0.2.0 开始，右键点击菜单栏图标，选择 **Check for Updates…**。**Settings → General → Automatically check for updates** 控制后台检查。Sparkle 在安装前校验 feed 和下载包，安装及重启需要确认。这不替代 Apple Developer ID 或公证；ad-hoc 签名更新后，系统权限可能需要重新批准。没有 Sparkle 的旧版需手动安装一次新版。Debug 构建不启动更新器。
 
 从源码构建：
 
@@ -39,7 +41,7 @@ bash scripts/build-app.sh release
 open .build/Herdling.app
 ```
 
-脚本会在 `.build/Herdling.app` 生成使用 ad-hoc 签名的应用。启用登录时启动前，请将应用移动到 `/Applications` 等固定位置。
+脚本会在 `.build/Herdling.app` 生成使用 ad-hoc 签名的 Universal2 应用，包含完整 Sparkle 运行时。启用登录时启动前，请将应用移动到 `/Applications` 等固定位置。
 
 开发构建：
 
@@ -108,18 +110,22 @@ bash scripts/build-app.sh release
 
 ### 发版
 
-`.github/workflows/release.yml` 在推送 `main`、向 `main` 提交 PR 或手动运行时，分别为 Apple Silicon 和 Intel 测试、构建并验证应用资源打包。这些运行只上传 ZIP 和 SHA-256 文件到 Actions artifacts，不发布 Release。工作流显式选择 Xcode 26.2，以使用 Swift 6.2 和 macOS 26 API。
+`.github/workflows/release.yml` 在推送 `main`、向 `main` 提交 PR 或手动运行时，测试、构建并验证一个 Universal2 应用，上传应用 ZIP 到 Actions artifacts，不发布 Release。macOS runner 显式选择 Xcode 26.2，以使用 Swift 6.2 和 macOS 26 API。Intel 部分做交叉编译、架构、签名和可搬移依赖检查，CI 不在 Intel Mac 上执行它。
 
-CI 运行全部自动化测试，覆盖导航、会话状态、进程/Socket 失败与取消、偏好保存和打包，不再运行像素或 OCR 检查。视觉改动和真实终端定位需人工验收；GUI 自动化应使用隔离桌面。
+CI 运行全部自动化测试和打包失败回归。发布工具使用临时密钥实际生成并验证 feed 和归档，检查 tag、密钥与版本错误，并拒绝内容被修改的归档和 feed。PR 构建拿不到生产签名密钥。不运行像素或 OCR 检查；真实升级和终端定位使用隔离桌面验收。
+
+维护者需配置仓库 secret **`SPARKLE_PRIVATE_KEY`**，内容为 Sparkle 官方 `generate_keys` 导出的私钥 seed；对应公钥必须与 `Resources/Info.plist` 的 `SUPublicEDKey` 一致。`scripts/fetch-sparkle-tools.sh` 用版本和 SHA-256 固定官方工具。本仓库密钥保存在维护者 Keychain 的 `dev.herdr.Herdling` account 下，应在仓库外另做安全备份；不要提交私钥，也不要把它上传为 artifact。此发布路径不使用 Apple 证书或公证凭据。
 
 发布时，先将 `Resources/Info.plist` 的 `CFBundleShortVersionString` 设为发行版本，后续版本同时递增 `CFBundleVersion`。提交并推送改动（包括工作流），再给该提交打 Tag：
 
 ```bash
-git tag -a v0.1.0 -m 'Herdling 0.1.0'
-git push origin v0.1.0
+git tag -a v0.2.0 -m 'Herdling 0.2.0'
+git push origin v0.2.0
 ```
 
-Tag 必须为 `v<CFBundleShortVersionString>`，不匹配会构建失败。两种架构都验证通过后，工作流自动创建 GitHub Release，附带两份 ZIP、校验文件和自动生成的发行说明。仅使用自动提供的 `GITHUB_TOKEN`，无需 Apple 证书或仓库 secrets。不要提前手动创建 Release，也不要移动已发布的 Tag；修正发行版时使用新版本号。
+Tag 必须为 `v<CFBundleShortVersionString>`，发行版本和 build 都必须大于最新 Release。串行的 macOS 发布 job 还原已验证应用、生成发行说明，再由 `scripts/prepare-release.sh` 在 `.build/release` 生成 ZIP、校验文件和签名 `appcast.xml`。三份资产全部上传到 draft 并核对名称、大小后，才发布为 Latest。缺密钥或检查失败就停止，不降级发布未签名包。不要提前手动创建 Release，也不要移动已发布的 Tag；修正发行版时使用新版本号。
+
+固定 feed 为 `https://github.com/JinJieBeWater/herdling/releases/latest/download/appcast.xml`。每个 feed 仅包含当次发行版，指向带 tag 的不可变 ZIP 地址；没有分架构 feed、旧包同步或差分更新。
 
 ### 架构
 

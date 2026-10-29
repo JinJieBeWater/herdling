@@ -1339,7 +1339,7 @@ struct CoreBehaviorTests {
     func contextMenuDispatchesSettingsAndTargetsQuit() throws {
         _ = NSApplication.shared
         let probe = ContextMenuActionProbe()
-        let menu = HerdlingApplicationMenu.makeContext(target: probe)
+        let menu = HerdlingApplicationMenu.makeContext(target: probe, updaterController: makeInactiveUpdaterController())
         menu.update()
         let settingsIndex = try #require(menu.items.firstIndex { $0.action == #selector(ContextMenuActionProbe.openSettings) })
         let settings = menu.items[settingsIndex]
@@ -1354,7 +1354,7 @@ struct CoreBehaviorTests {
     @Test
     @MainActor
     func applicationMenuProvidesStandardSettingsAndQuitShortcuts() throws {
-        let menu = HerdlingApplicationMenu.make(settingsTarget: NSObject())
+        let menu = HerdlingApplicationMenu.make(settingsTarget: NSObject(), updaterController: makeInactiveUpdaterController())
         let appMenu = try #require(menu.items.first?.submenu)
         let settings = try #require(appMenu.items.first { $0.action == #selector(StatusItemController.openSettings) })
         let quit = try #require(appMenu.items.first { $0.action == #selector(NSApplication.terminate(_:)) })

@@ -27,7 +27,10 @@ struct SettingsWindowTests {
         )
         let name = "HerdlingSettingsTests.\(UUID())"
         defer { NSWindow.removeFrame(usingName: name) }
-        let controller = SettingsWindowController(store: store, frameAutosaveName: name)
+        let controller = SettingsWindowController(
+            store: store, updaterSettings: UpdaterSettings(updater: makeInactiveUpdaterController().updater),
+            frameAutosaveName: name
+        )
         let window = try #require(controller.window)
         defer { window.setFrameAutosaveName(""); window.close() }
         let delegate = try #require(window.delegate as? SettingsWindowController)
@@ -71,7 +74,8 @@ struct SettingsWindowTests {
         let name = "HerdlingSettingsTests.\(UUID())"
         defer { NSWindow.removeFrame(usingName: name) }
         let store = PreviewFixtures.makeStore()
-        let first = SettingsWindowController(store: store, frameAutosaveName: name)
+        let updaterSettings = UpdaterSettings(updater: makeInactiveUpdaterController().updater)
+        let first = SettingsWindowController(store: store, updaterSettings: updaterSettings, frameAutosaveName: name)
         let firstWindow = try #require(first.window)
         defer { firstWindow.close() }
         firstWindow.contentView?.layoutSubtreeIfNeeded()
@@ -87,7 +91,7 @@ struct SettingsWindowTests {
         firstWindow.saveFrame(usingName: name)
         firstWindow.setFrameAutosaveName("")
 
-        let reopened = SettingsWindowController(store: store, frameAutosaveName: name)
+        let reopened = SettingsWindowController(store: store, updaterSettings: updaterSettings, frameAutosaveName: name)
         let window = try #require(reopened.window)
         defer { window.close() }
         window.contentView?.layoutSubtreeIfNeeded()
@@ -100,7 +104,7 @@ struct SettingsWindowTests {
     @Test
     func closeUsesTheStandardResponderChainShortcut() throws {
         _ = NSApplication.shared
-        let menu = HerdlingApplicationMenu.make(settingsTarget: NSObject())
+        let menu = HerdlingApplicationMenu.make(settingsTarget: NSObject(), updaterController: makeInactiveUpdaterController())
         let fileMenu = try #require(menu.items.first { $0.submenu?.title == "File" }?.submenu)
 
         let window = SettingsCloseProbeWindow(

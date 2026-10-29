@@ -4,6 +4,7 @@ import SwiftUI
 /// system-drawn and the window reads as System Settings does. See `docs/ui.md`.
 struct SettingsView: View {
     let store: SessionStore
+    @ObservedObject var updater: UpdaterSettings
 
     var body: some View {
         Form {
@@ -112,6 +113,16 @@ struct SettingsView: View {
 
     private var general: some View {
         Section("General") {
+            Toggle(isOn: Binding(
+                get: { updater.automaticallyChecksForUpdates },
+                set: { updater.setAutomaticallyChecksForUpdates($0) }
+            )) {
+                SettingsLabel(
+                    title: "Automatically check for updates",
+                    symbol: "arrow.triangle.2.circlepath",
+                    tint: Theme.Hue.blue
+                )
+            }
             Toggle(isOn: Binding(
                 get: { store.launchAtLoginEnabled },
                 set: { store.setLaunchAtLogin($0) }

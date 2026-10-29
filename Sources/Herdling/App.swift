@@ -1,4 +1,5 @@
 import AppKit
+import Sparkle
 
 @main
 @MainActor
@@ -26,6 +27,11 @@ enum HerdlingApp {
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let instanceLock: SingleInstanceLock
+    private let updaterController = SPUStandardUpdaterController(
+        startingUpdater: false,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
     private var store: SessionStore?
     private var statusController: StatusItemController?
     private var terminationPending = false
@@ -50,10 +56,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let store = SessionStore()
         self.store = store
-        let statusController = StatusItemController(store: store)
+        let statusController = StatusItemController(store: store, updaterController: updaterController)
         self.statusController = statusController
-        NSApp.mainMenu = HerdlingApplicationMenu.make(settingsTarget: statusController)
+        NSApp.mainMenu = HerdlingApplicationMenu.make(
+            settingsTarget: statusController, updaterController: updaterController
+        )
         store.start()
+        UpdaterStartup.start(updaterController)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
