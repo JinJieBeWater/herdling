@@ -23,7 +23,9 @@ struct SettingsView: View {
             minWidth: Theme.Size.settingsWidth,
             minHeight: Theme.Size.settingsMinHeight
         )
-        .task(id: store.terminalApplication) { await store.refreshTerminalStatus() }
+        .onChange(of: store.terminalApplication) { _, _ in
+            Task { await store.refreshTerminalStatus() }
+        }
         .task { await store.refreshSSHAliases() }
     }
 

@@ -220,6 +220,8 @@ final class SessionStore {
     private let focusExistingClient: ExistingClientFocus
     private let activateClient: ClientActivation
     private let loadTerminalStatus: TerminalStatusLoader
+    private let loadLoginItemStatus: () -> SMAppService.Status
+    private let updateLoginItem: (Bool) throws -> Void
     private var terminalStatusRequest: UUID?
     private let defaults: UserDefaults
     private let sleep: @Sendable (Duration) async throws -> Void
@@ -283,7 +285,8 @@ final class SessionStore {
             workspaceID: group.id
         )
     }
-    private(set) var settingsError: String?
+    private var loginItemStatus = SMAppService.Status.notRegistered
+    private var loginItemError: String?
     private(set) var terminalStatus = "Not checked"
     private(set) var terminalApplication: TerminalApplication
     private(set) var ghosttyOpenBehavior: GhosttyOpenBehavior
@@ -299,7 +302,18 @@ final class SessionStore {
     }
 
     var menuStatus: MenuStatus { MenuStatus.summarize(sources) }
-    var launchAtLoginEnabled: Bool { SMAppService.mainApp.status == .enabled }
+    var launchAtLoginEnabled: Bool { loginItemStatus == .enabled }
+    var settingsError: String? {
+        if let loginItemError { return loginItemError }
+        return switch loginItemStatus {
+        case .requiresApproval:
+            "Launch at Login requires approval in System Settings."
+        case .notFound:
+            "Herdling must run from an app bundle before Launch at Login can be enabled."
+        default:
+            nil
+        }
+    }
 
     convenience init() {
         self.init(
@@ -313,6 +327,11 @@ final class SessionStore {
         client: HerdrClient,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         loadTerminalStatus: TerminalStatusLoader? = nil,
+        loadLoginItemStatus: @escaping () -> SMAppService.Status = { SMAppService.mainApp.status },
+        updateLoginItem: @escaping (Bool) throws -> Void = { enabled in
+            if enabled { try SMAppService.mainApp.register() }
+            else { try SMAppService.mainApp.unregister() }
+        },
         loadSource: SourceLoader? = nil,
         loadBranches: BranchLoader? = nil,
         localMonitor: (any SessionMonitoring)? = nil,
@@ -355,6 +374,8 @@ final class SessionStore {
             case .kero: await kero.connectionStatus()
             }
         }
+        self.loadLoginItemStatus = loadLoginItemStatus
+        self.updateLoginItem = updateLoginItem
         self.defaults = defaults
         availableSSHAliases = aliases
         selectedSSHAliases = selected
@@ -913,19 +934,17 @@ final class SessionStore {
 
     func setLaunchAtLogin(_ enabled: Bool) {
         do {
-            if enabled { try SMAppService.mainApp.register() }
-            else { try SMAppService.mainApp.unregister() }
-            settingsError = switch SMAppService.mainApp.status {
-            case .requiresApproval:
-                "Launch at Login requires approval in System Settings."
-            case .notFound:
-                "Herdling must run from an app bundle before Launch at Login can be enabled."
-            default:
-                nil
-            }
+            try updateLoginItem(enabled)
+            loginItemError = nil
         } catch {
-            settingsError = error.localizedDescription
+            loginItemError = error.localizedDescription
         }
+        loginItemStatus = loadLoginItemStatus()
+    }
+
+    func refreshSettingsStatus() async {
+        loginItemStatus = loadLoginItemStatus()
+        await refreshTerminalStatus()
     }
 
     func refreshTerminalStatus() async {

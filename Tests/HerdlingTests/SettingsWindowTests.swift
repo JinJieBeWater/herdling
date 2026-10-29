@@ -1,10 +1,70 @@
 import AppKit
+import Observation
+import ServiceManagement
+import Synchronization
 import Testing
 @testable import Herdling
 
 @Suite(.serialized)
 @MainActor
 struct SettingsWindowTests {
+    @Test(.timeLimit(.minutes(1)))
+    func refocusingRefreshesSystemStatusWithoutRegisteringOrClearingOperationErrors() async throws {
+        _ = NSApplication.shared
+        var loginStatus = SMAppService.Status.requiresApproval
+        var registrationCalls = 0
+        let terminalStatus = Mutex("Denied")
+        let store = SessionStore(
+            client: HerdrClient(executable: nil),
+            loadTerminalStatus: { _ in terminalStatus.withLock { $0 } },
+            loadLoginItemStatus: { loginStatus },
+            updateLoginItem: { _ in
+                registrationCalls += 1
+                throw NSError(domain: "SettingsTests", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "Cannot update login item"])
+            },
+            sourceDescriptors: [.local], defaults: PreviewFixtures.renderDefaults()
+        )
+        let name = "HerdlingSettingsTests.\(UUID())"
+        defer { NSWindow.removeFrame(usingName: name) }
+        let controller = SettingsWindowController(store: store, frameAutosaveName: name)
+        let window = try #require(controller.window)
+        defer { window.setFrameAutosaveName(""); window.close() }
+        let delegate = try #require(window.delegate as? SettingsWindowController)
+        let updates = AsyncStream<Void>.makeStream()
+        defer { updates.continuation.finish() }
+        func refocus() async throws {
+            var notifications = updates.stream.makeAsyncIterator()
+            withObservationTracking { _ = store.terminalStatus } onChange: {
+                updates.continuation.yield(())
+            }
+            // Exercise the wired delegate without activating a window on the user's desktop.
+            delegate.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: window))
+            try #require(await notifications.next() != nil)
+        }
+
+        try await refocus()
+        #expect(!store.launchAtLoginEnabled)
+        #expect(store.settingsError?.contains("requires approval") == true)
+        #expect(store.terminalStatus == "Denied")
+
+        loginStatus = .enabled
+        terminalStatus.withLock { $0 = "Allowed" }
+        try await refocus()
+        #expect(store.launchAtLoginEnabled)
+        #expect(store.settingsError == nil)
+        #expect(store.terminalStatus == "Allowed")
+        #expect(registrationCalls == 0)
+
+        store.setLaunchAtLogin(false)
+        terminalStatus.withLock { $0 = "Denied" }
+        try await refocus()
+        #expect(store.launchAtLoginEnabled)
+        #expect(store.settingsError == "Cannot update login item")
+        #expect(registrationCalls == 1)
+        #expect(!window.isVisible)
+    }
+
     @Test
     func settingsCentersInitiallyAndRestoresSavedGeometry() throws {
         _ = NSApplication.shared

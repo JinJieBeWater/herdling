@@ -6,8 +6,11 @@ import SwiftUI
 /// It keeps the system titlebar band — AppKit draws it, so a grouped `Form` scrolls under it the way
 /// a pane does in System Settings — and a lifecycle of its own: closing it never touches the panel.
 @MainActor
-final class SettingsWindowController: NSWindowController {
+final class SettingsWindowController: NSWindowController, NSWindowDelegate {
+    private let store: SessionStore
+
     init(store: SessionStore, frameAutosaveName: NSWindow.FrameAutosaveName = "Settings Window") {
+        self.store = store
         let window = NSWindow(
             contentRect: NSRect(
                 x: 0,
@@ -36,6 +39,7 @@ final class SettingsWindowController: NSWindowController {
 
         super.init(window: window)
 
+        window.delegate = self
         window.setFrameAutosaveName(frameAutosaveName)
         if !window.setFrameUsingName(frameAutosaveName) {
             window.center()
@@ -44,6 +48,10 @@ final class SettingsWindowController: NSWindowController {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        Task { await store.refreshSettingsStatus() }
+    }
 
     /// Herdling is an accessory app, so a window only comes forward when the app is activated.
     func show() {
