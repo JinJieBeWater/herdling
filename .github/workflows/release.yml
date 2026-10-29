@@ -47,12 +47,7 @@ jobs:
       - name: Build app
         run: bash scripts/build-app.sh release
       - name: Verify packaging
-        run: |
-          # SwiftPM's native and Xcode build engines put generated sources in different directories.
-          accessor=$(find .build -type f -path '*/[Rr]elease/*' -path '*/KeyboardShortcuts.build/*' \
-            -name resource_bundle_accessor.swift -print -quit)
-          bash scripts/verify-app-packaging.sh --app .build/Herdling.app \
-            --accessor "$accessor"
+        run: bash scripts/verify-app-packaging.sh --app .build/Herdling.app
       - name: Archive
         env:
           VERSION: ${{ steps.version.outputs.version }}

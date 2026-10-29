@@ -12,7 +12,7 @@ Herdling 是 [Herdr](https://herdr.dev/) 的 macOS 菜单栏配套工具。它�
 - 通过 Herdr Socket 事件流同步本机与远程 Session；必要时使用发现机制和 CLI fallback。
 - 在设置中选择 Ghostty 或 Kero，偏好会记住。复用所选终端内匹配的 Herdr client，没有时新建并验证。Ghostty 保留 Tab/Window 设置，Kero 新建 Session。
 - 读取 `~/.ssh/config` 中的 SSH 主机，包括 `Include` 文件。
-- 支持登录时启动、键盘快捷键、VoiceOver 标签、浅色/深色外观和“减少动态效果”。
+- 支持登录时启动、键盘操作、VoiceOver 标签、浅色/深色外观和“减少动态效果”。
 
 ## 环境要求
 
@@ -55,7 +55,6 @@ open .build/Herdling.app
 3. 按 `⌘,` 或右键点击菜单栏项目，打开 **Settings**。
 4. 在 **SSH Sources** 中启用需要的 SSH alias。
 5. 在 **Terminal → Application** 中选择 **Ghostty** 或 **Kero**。默认仍为 Ghostty；切换只影响后续定位，不改变已有终端 Session。
-6. 可在 Settings 录制全局呼出快捷键，默认不设置组合。
 
 Ghostty 使用 AppleScript 自动化，首次操作时按 macOS 提示授权，并保持 `macos-applescript` 启用（默认值）；新 client 可选择 Tab 或 Window。Kero 使用原生 CLI，不需要自动化权限或 Tab/Window 设置。设置只检查所选终端。
 
@@ -81,7 +80,6 @@ ssh -o BatchMode=yes my-server '$SHELL -lc "herdr session list --json"'
 | 右键点击菜单栏项目 | 打开 Settings/Quit 菜单 |
 | 点击 Sources 中的设备 | 展开或收起目录；展开一个来源时收起前一个 |
 | 点击 agent、worktree、Space 或 Session | 在所选终端中聚焦目标 |
-| 全局呼出快捷键（配置后） | 开关面板；预选目标但不直接定位 |
 | `↑` / `↓` | 移动选择，不定位 |
 | `Enter` | 定位选中目标；来源行只展开或收起目录 |
 | Sources 中的 `←` / `→` | 返回父层，或收起 / 展开来源 |

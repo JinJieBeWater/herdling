@@ -1,5 +1,4 @@
 import SwiftUI
-import KeyboardShortcuts
 
 /// The Settings window's content: one grouped `Form`, so cards, row insets and hairlines are
 /// system-drawn and the window reads as System Settings does. See `docs/ui.md`.
@@ -113,17 +112,6 @@ struct SettingsView: View {
 
     private var general: some View {
         Section("General") {
-            HStack {
-                SettingsLabel(
-                    title: "Toggle Panel",
-                    subtitle: "Show or hide Herdling from any app. Unset until you choose a shortcut.",
-                    symbol: "keyboard",
-                    tint: Theme.Hue.blue
-                )
-                Spacer()
-                KeyboardShortcuts.Recorder(for: PanelShortcut.name)
-                    .accessibilityLabel("Toggle Panel")
-            }
             Toggle(isOn: Binding(
                 get: { store.launchAtLoginEnabled },
                 set: { store.setLaunchAtLogin($0) }

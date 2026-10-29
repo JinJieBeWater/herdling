@@ -102,12 +102,10 @@ final class StatusItemController: NSObject {
 
         store.onChange = { [weak self] in self?.updateStatus() }
         store.onClientActivated = { [weak self] in self?.closePanel() }
-        PanelShortcut.register { [weak self] in self?.togglePanelFromKeyboard() }
         updateStatus()
     }
 
     isolated deinit {
-        PanelShortcut.unregister()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         NotificationCenter.default.removeObserver(self)
     }
@@ -140,14 +138,14 @@ final class StatusItemController: NSObject {
         settingsController?.show()
     }
 
-    private func openPanel(keyboard: Bool = false) {
+    private func openPanel() {
         guard let button = menuBarItem.item.button,
               let window = button.window,
               let screen = window.screen ?? NSScreen.main
         else { return }
 
         browser.open(sources: store.sources,
-                     attempt: store.navigationAttempt, keyboard: keyboard,
+                     attempt: store.navigationAttempt,
                      expandedSourceID: store.expandedSourceID)
         browser.holdPointer(at: NSEvent.mouseLocation)
         PanelHeightBridge.invalidate()
@@ -177,11 +175,6 @@ final class StatusItemController: NSObject {
         } else {
             openPanel()
         }
-    }
-
-    func togglePanelFromKeyboard() {
-        if panel.isVisible { closePanel() }
-        else { openPanel(keyboard: true) }
     }
 
     @objc private func screenGeometryChanged(_ notification: Notification) {

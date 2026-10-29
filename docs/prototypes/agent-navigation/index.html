@@ -115,7 +115,7 @@
       </div>
       <div class="panel-space">
         <section id="panel" class="panel" role="dialog" aria-modal="false" aria-label="模拟 Herdling agents 面板" tabindex="-1" hidden></section>
-        <div id="closed-note" class="closed-note">面板已关闭。点击上方整个菜单栏入口，或使用右侧模拟快捷键呼出。</div>
+        <div id="closed-note" class="closed-note">面板已关闭。点击上方整个菜单栏入口打开。</div>
         <div id="context-menu" class="context-menu" role="menu" aria-label="模拟菜单" hidden>
           <button role="menuitem" data-ui="context" data-value="Settings">Settings（仅记录日志）</button>
           <button role="menuitem" data-ui="context" data-value="Quit">Quit（仅关闭预览面板）</button>
@@ -143,13 +143,12 @@
       <section>
         <h2>自由操作</h2>
         <div class="button-row">
-          <button data-ui="keyboard-open">模拟快捷键呼出</button>
           <button data-ui="key" data-value="ArrowUp">↑ 选择</button>
           <button data-ui="key" data-value="ArrowDown">↓ 选择</button>
           <button data-ui="key" data-value="Enter">Enter 提交</button>
           <button data-ui="key" data-value="Escape">Esc 关闭</button>
         </div>
-        <details><summary>键盘操作说明</summary><p class="subtle">鼠标打开不预选。快捷键开关同一面板，打开时默认选首个可定位目标。↑ / ↓ 选择，Enter 执行选中项；来源只折叠。← / → 收起、展开来源，← 从子项返回父层。Esc 关闭；不注册 OS 全局快捷键。</p></details>
+        <details><summary>键盘操作说明</summary><p class="subtle">打开不预选。↑ / ↓ 选择，Enter 执行选中项；来源只折叠。← / → 收起、展开来源，← 从子项返回父层。Esc 关闭。</p></details>
         <div class="button-row">
           <button data-ui="dataset" data-value="zero">0 agents</button>
           <button data-ui="dataset" data-value="single">1 个 done</button>
@@ -325,12 +324,12 @@ const NavigationModel = (() => {
     state.log.push({ sequence:state.sequence, message });
     state.log = state.log.slice(-60);
   }
-  function open(state, keyboard) {
+  function open(state) {
     state.open = true;
     state.view = 'quick';
     snapshot(state);
-    state.selected = keyboard ? (selectable(state)[0]?.ref || null) : null;
-    log(state,keyboard ? '快捷键呼出：Quick access；选择首个可跳目标（需关注优先，再选历史），没有提交导航。' : '鼠标打开：Quick access；没有预选，没有导航。');
+    state.selected = null;
+    log(state,'菜单栏打开：Quick access；没有预选，没有导航。');
   }
   function commit(state, ref, retry = false) {
     if (!ref) { log(state,'没有选择；不提交导航。'); return; }
@@ -369,12 +368,7 @@ const NavigationModel = (() => {
     switch (action.type) {
       case 'TOGGLE':
         if (state.open) { state.open = false; log(state,'菜单栏入口关闭面板；已提交导航不变。'); }
-        else open(state,false);
-        state.context = false;
-        break;
-      case 'KEYBOARD_OPEN':
-        if (state.open) { state.open = false; log(state,'快捷键关闭面板；已提交导航不变。'); }
-        else open(state,true);
+        else open(state);
         state.context = false;
         break;
       case 'CLOSE': state.open = false; state.context = false; log(state,`${action.origin === 'outside' ? '外部点击' : 'Esc'}只关面板；已提交导航与目标窗口不回滚。`); break;
@@ -528,7 +522,8 @@ const NavigationModel = (() => {
       ['重新打开，done 仍由后端回报',{type:'TOGGLE'}]
     ]},
     { id:'same', label:'多个同名', dataset:'same', description:'report-writer 跨 JinJieBeWater / kvm 同名。先选择本机，再选择远端；只最后提交的 ID 决定目标。', steps:[
-      ['快捷键呼出并选择首个可跳 agent',{type:'KEYBOARD_OPEN'}],
+      ['点击菜单栏打开面板，不预选',{type:'TOGGLE'}],
+      ['↓ 选择首个可跳 agent',{type:'MOVE',direction:1}],
       ['↓ 只移动选择',{type:'MOVE',direction:1}],
       ['切到 All agents，不导航',{type:'VIEW',view:'all'}],
       ['点击 kvm 的 report-writer，提交 w8:p1',{type:'NAVIGATE',target:{kind:'agent',id:'remote-writer'}}],
@@ -562,7 +557,8 @@ const NavigationModel = (() => {
       ['返回成功；仍不自行改变后端状态',{type:'RESULT',success:true}]
     ]},
     { id:'updates', label:'运行时更新 / 离线', dataset:'same', description:'打开时固定名单与顺序，状态实时变。新成员等待 Update list，选择不被抢；离线与消失目标都拒绝跳转。', steps:[
-      ['快捷键呼出，记住选中的 ID',{type:'KEYBOARD_OPEN'}],
+      ['点击菜单栏打开面板，不预选',{type:'TOGGLE'}],
+      ['↓ 选择目标并记住其 ID',{type:'MOVE',direction:1}],
       ['选中行状态变 working；行不移走',{type:'BACKEND_STATUS',id:'local-review',status:'working'}],
       ['新增同名 done，只提示 Update list',{type:'BACKEND_ADD'}],
       ['显式更新名单；不再可见的选择清空，不换成别的 ID',{type:'REFRESH'}],
@@ -589,7 +585,8 @@ const NavigationModel = (() => {
       ['点击 report-writer，提交 w12:p1',{type:'NAVIGATE',target:{kind:'agent',id:'local-writer'}}],
       ['返回成功，记录一次 agent / pane 跳转',{type:'RESULT',success:true}],
       ['独立后端事件：report-writer → idle',{type:'BACKEND_STATUS',id:'local-writer',status:'idle'}],
-      ['快捷键呼出；无需关注项，首选真实 Recent jumps',{type:'KEYBOARD_OPEN'}],
+      ['点击菜单栏打开面板，不预选',{type:'TOGGLE'}],
+      ['↓ 选择真实 Recent jumps',{type:'MOVE',direction:1}],
       ['Enter 再提交同一历史目标',{type:'ENTER'}],
       ['返回失败，不增加历史记录',{type:'RESULT',success:false}],
       ['重试原目标',{type:'RETRY'}],
@@ -645,7 +642,7 @@ const NavigationModel = (() => {
     const quickHTML = `<div class="section-label" title="当前在线 blocked + done，不是未读数">Needs attention<span class="section-count">${attentionCount}</span></div>${attentionRows.map(rowHTML).join('')}${!attentionRows.length && (recentRows.length || recoveryRows.length) ? `<div class="section-note">${attentionCount ? 'Update list to show new targets' : 'No agents need attention'}</div>` : ''}${recentRows.length ? '<div class="section-label">Recent jumps</div>'+recentRows.map(rowHTML).join('') : ''}${recoveryRows.length ? '<div class="section-label">Last jump</div>'+recoveryRows.map(rowHTML).join('') : ''}${!list.length ? `<div class="empty">${emptyText}</div>` : ''}`;
     $('panel').innerHTML = `<div class="content"><div class="view-row" aria-label="视图"><button class="view-button" data-ui="view" data-value="quick" data-focus="view-quick" aria-pressed="${state.view === 'quick'}">Quick access</button><button class="view-button" data-ui="view" data-value="all" data-focus="view-all" aria-pressed="${state.view === 'all'}">All agents</button>${M.pendingList(state) ? '<button class="update-button" data-ui="refresh" data-focus="update-list" title="名单或排序变化；不是未读数">Update list</button>' : ''}</div><div class="roster">${state.view === 'quick' ? quickHTML : list.map(rowHTML).join('')}</div></div>`;
     $('panel').dataset.view = state.view;
-    $('panel').querySelector('.roster').scrollTop = sameRosterView && !['TOGGLE','KEYBOARD_OPEN','RESET'].includes(lastActionType) ? rosterScroll : 0;
+    $('panel').querySelector('.roster').scrollTop = sameRosterView && !['TOGGLE','RESET'].includes(lastActionType) ? rosterScroll : 0;
     $('coverage-note').textContent = offlineSources.length ? `覆盖不完整：${offlineSources.map(source => source.name).join('、')} 离线。计数只含在线来源；离线 / 消失行不可跳。` : '计数实时，名单固定快照；状态已变不是新增未读。';
     $('context-menu').hidden = !state.context;
     $('target-window').innerHTML = targetFields(state.landed);
@@ -697,7 +694,7 @@ const NavigationModel = (() => {
     const ui = button.dataset.ui, value = button.dataset.value;
     const targetAgent = $('event-agent').value;
     const actions = {
-      toggle:{type:'TOGGLE'},'keyboard-open':{type:'KEYBOARD_OPEN'},view:{type:'VIEW',view:value},
+      toggle:{type:'TOGGLE'},view:{type:'VIEW',view:value},
       collapse:{type:'COLLAPSE',source:button.dataset.id},navigate:{type:'NAVIGATE',target:{kind:button.dataset.kind,id:button.dataset.id}},
       refresh:{type:'REFRESH'},result:{type:'RESULT',success:value === 'success',request:Number($('result-request').value)},retry:{type:'RETRY'},
       status:{type:'BACKEND_STATUS',id:targetAgent,status:value},remove:{type:'BACKEND_REMOVE',id:targetAgent},
@@ -718,7 +715,6 @@ const NavigationModel = (() => {
         if (next) next.focus({preventScroll:true});
       }
     } else if (actions[ui]) dispatch(actions[ui]);
-    if (ui === 'keyboard-open') (state.open ? $('panel') : $('status-entry')).focus({preventScroll:true});
   });
   $('status-entry').addEventListener('contextmenu', event => { event.preventDefault(); dispatch({type:'CONTEXT'}); });
   $('event-agent').addEventListener('change',render);

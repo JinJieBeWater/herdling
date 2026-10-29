@@ -89,18 +89,17 @@ final class NavigationBrowser {
         rebuildSnapshot()
     }
 
-    func open(sources: [SourceInfo], attempt: NavigationAttempt?, keyboard: Bool, expandedSourceID: String?) {
+    func open(sources: [SourceInfo], attempt: NavigationAttempt?, expandedSourceID: String?) {
         latestSources = sources
         self.attempt = attempt
         self.expandedSourceID = RosterLayout.expandedSourceID(saved: expandedSourceID ?? "", available: sources.map(\.id))
         isOpen = true
         mode = .quick
         selection = nil
-        keyboardDriven = keyboard
+        keyboardDriven = false
         pointerSelection = nil
         pointerLocation = nil
         rebuildSnapshot()
-        if keyboard { selection = visibleRows.first(where: canSelect) }
     }
 
     func close() { isOpen = false; keyboardDriven = false; pointerSelection = nil }

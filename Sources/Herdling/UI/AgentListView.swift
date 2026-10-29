@@ -16,7 +16,7 @@ struct AgentListView: View {
             let model = NavigationBrowser(sources: store.sources)
             model.open(
                 sources: store.sources,
-                attempt: store.navigationAttempt, keyboard: false,
+                attempt: store.navigationAttempt,
                 expandedSourceID: store.expandedSourceID
             )
             _browser = State(initialValue: model)

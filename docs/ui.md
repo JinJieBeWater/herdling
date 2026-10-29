@@ -195,8 +195,7 @@ SF Symbol 的显式字号，也是 token：`leading 14 regular` · `navigation 1
 - 顶栏与列表之间保留 navigationHeaderGap，参与完整高度测量。快速列表空态只是一行次级文字，占40pt；不再加大图标、working 数量或重复的 Sources 入口。空快照有新状态时显示简短 reopen 提示，不自动插入新目标。
 - 副标题默认只显示工作区，本机来源名及 default Session 隐去。远程、非默认 Session 或同名目标需要区分时补齐身份；完整 ID 始终保留在 help/辅助功能中。
 - **Sources** 复用来源→Session→Space/worktree→agent 的目录和来源展开偏好。最多展开一个，允许全部收起：有效已保存来源优先，空偏好保持全部收起，失效偏好回退到第一个来源；点当前来源收起，点其他来源关闭前一个并展开该项。来源折叠不执行定位；agent、工作区、Session 各自定位自己的真实 ID。
-- 菜单栏永远只是面板开关，零/一/多候选一致。鼠标打开不预选；键盘打开选择首个有效目标。上下键仅移动选择，来源上的 Enter 只切换折叠，左右键收起或展开来源；子项左键返回父层，定位项上的 Enter 才提交。Tab 保持原生控件焦点。Escape 关闭但不撤销已提交动作。
-- 全局呼出使用 KeyboardShortcuts 的命名 Recorder，在 Settings 中配置，默认 unset；key-up 开关面板，不申请全局监听权限。面板内的组合键继续交给原生菜单和控件。
+- 菜单栏永远只是面板开关，零/一/多候选一致。打开不预选；上下键仅移动选择，来源上的 Enter 只切换折叠，左右键收起或展开来源；子项左键返回父层，定位项上的 Enter 才提交。Tab 保持原生控件焦点。Escape 关闭但不撤销已提交动作。面板内的组合键继续交给原生菜单和控件。
 - 打开期间固定成员与顺序，已有状态与可用性实时更新。删除 Update list 控件，重新打开重建名单。离线/退出立即阻止定位；菜单栏与需关注数量仍来自实时状态。空快照有新目标时提示重新打开，不声称没有需关注项。
 - 定位中显示 Opening；失败保留目标、原因与 Retry。失败目标不在新名单时保留独立恢复入口，不计入需关注数量。新请求覆盖旧请求的界面结果，旧成功不能关面板或写历史。
 - 看列表、悬停、选择不发送 focus/seen。实际 Herdr focus 可能将整个目标 tab 标为 seen，公共定位还可能影响同 Session 的多个 shell client；失败不保证零副作用。done 提示消失不是用户已处理的证明。
@@ -297,7 +296,6 @@ Settings 是**自己的 `NSWindow`**，不是面板里的一个子页面。
 - 内容是一个 `Form` + `.formStyle(.grouped)`：卡片、行内缩、hairline 都是系统画的，读起来和"系统设置"一致。
 - **单栏，无侧边栏。** tinycast 用 `NavigationSplitView` 是因为它有一打以上 pane；Herdling 只有四组。等到 pane 超过五个再加，别提前加。
 - 一行的 label 是 `SettingsLabel`：可选 `RowSymbol` + 标题 + 副标题。外面包 stock 控件（`Toggle` / `Picker` / `LabeledContent`），不要手搓带内边距的 `HStack`。
-- 尾部要放**自定义**控件（如快捷键录制器）时不要用 `LabeledContent`：它会把值包进一个可选中文本框，吞掉点击。只读值（权限状态那种）用 `LabeledContent` 就对了。
 - 一个被关掉的东西要读起来就是关的：开关关着的行，图标取 `textTertiary` 色；要禁用整行时用 `.disabled(...)` 加 `.opacity(0.45)`——裸 `.disabled` 会让标题留在全强度上。
 - 标题/副标题的用词省着用：副标题只在标题漏掉一个后果或限制时出现，不复述标题。
 - 关闭设置窗口回到面板：面板不因此打开或关闭。

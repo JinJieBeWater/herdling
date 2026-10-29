@@ -6,14 +6,10 @@ let package = Package(
     name: "Herdling",
     platforms: [.macOS(.v15)],
     dependencies: [
-        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts.git", exact: "3.1.0"),
         .package(url: "https://github.com/swiftlang/swift-testing.git", exact: "6.2.4"),
     ],
     targets: [
-        .executableTarget(
-            name: "Herdling",
-            dependencies: [.product(name: "KeyboardShortcuts", package: "KeyboardShortcuts")]
-        ),
+        .executableTarget(name: "Herdling"),
         .testTarget(
             name: "HerdlingTests",
             dependencies: ["Herdling", .product(name: "Testing", package: "swift-testing")]

@@ -22,7 +22,7 @@ cat > "$work/bin/codesign" <<'SH'
 set -euo pipefail
 [[ "$1" == --force && "$2" == --sign && "$3" == - ]]
 [[ -f "$4/Contents/MacOS/Herdling" ]]
-[[ -f "$4/Contents/Resources/KeyboardShortcuts-LICENSE.txt" ]]
+[[ -f "$4/Contents/Resources/Herdr-LICENSE.txt" ]]
 touch "$HERDLING_TEST_PRODUCT/../codesign-called"
 printf 'Fake signing log\n'
 if [[ "$HERDLING_TEST_CASE" == sign-failure ]]; then exit 1; fi
@@ -33,19 +33,17 @@ chmod +x "$work/bin/swift" "$work/bin/codesign"
 for scenario in copy-failure sign-failure success; do
   fixture="$work/$scenario"
   app="$fixture/.build/Herdling.app"
-  mkdir -p "$fixture/scripts" "$fixture/Resources" "$app/Contents/MacOS" \
-    "$fixture/product/KeyboardShortcuts_KeyboardShortcuts.bundle/en.lproj"
+  mkdir -p "$fixture/scripts" "$fixture/Resources" "$app/Contents/MacOS" "$fixture/product"
   cp "$root/scripts/build-app.sh" "$fixture/scripts/"
   printf 'previous executable\n' > "$app/Contents/MacOS/Herdling"
   printf 'previous resource\n' > "$app/Contents/old-resource"
   cp -R "$app" "$fixture/previous.app"
   printf 'new executable\n' > "$fixture/product/Herdling"
-  printf 'localized resource\n' > "$fixture/product/KeyboardShortcuts_KeyboardShortcuts.bundle/en.lproj/Localizable.strings"
-  for resource in Info.plist herdr-mark.svg THIRD_PARTY_NOTICES.md Herdr-LICENSE.txt KeyboardShortcuts-LICENSE.txt; do
+  for resource in Info.plist herdr-mark.svg THIRD_PARTY_NOTICES.md Herdr-LICENSE.txt; do
     printf '%s\n' "$resource" > "$fixture/Resources/$resource"
   done
   if [[ "$scenario" == copy-failure ]]; then
-    rm "$fixture/Resources/KeyboardShortcuts-LICENSE.txt"
+    rm "$fixture/Resources/Herdr-LICENSE.txt"
   fi
 
   rc=0
@@ -59,11 +57,9 @@ for scenario in copy-failure sign-failure success; do
     cmp "$fixture/expected-stdout" "$fixture/stdout"
     cmp "$fixture/product/Herdling" "$app/Contents/MacOS/Herdling"
     cmp "$fixture/Resources/Info.plist" "$app/Contents/Info.plist"
-    for resource in herdr-mark.svg THIRD_PARTY_NOTICES.md Herdr-LICENSE.txt KeyboardShortcuts-LICENSE.txt; do
+    for resource in herdr-mark.svg THIRD_PARTY_NOTICES.md Herdr-LICENSE.txt; do
       cmp "$fixture/Resources/$resource" "$app/Contents/Resources/$resource"
     done
-    diff -r "$fixture/product/KeyboardShortcuts_KeyboardShortcuts.bundle" \
-      "$app/Contents/Resources/KeyboardShortcuts_KeyboardShortcuts.bundle"
     [[ -f "$app/Contents/signature" && ! -e "$app/Contents/old-resource" ]]
   else
     [[ "$rc" != 0 && ! -s "$fixture/stdout" ]]

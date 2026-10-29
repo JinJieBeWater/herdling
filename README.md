@@ -12,7 +12,7 @@ Herdling is a macOS menu bar companion for [Herdr](https://herdr.dev/). It shows
 - Updates local and remote sessions through Herdr's socket event stream, with discovery and CLI fallback where needed.
 - Choose Ghostty or Kero in Settings; the choice is saved. Reuses a matching Herdr client in that terminal, or creates and verifies a new one. Ghostty keeps its Tab/Window setting; Kero opens new sessions.
 - Reads SSH hosts from `~/.ssh/config`, including `Include` files.
-- Supports Launch at Login, keyboard shortcuts, VoiceOver labels, light/dark appearance, and Reduce Motion.
+- Supports Launch at Login, keyboard navigation, VoiceOver labels, light/dark appearance, and Reduce Motion.
 
 ## Requirements
 
@@ -55,7 +55,6 @@ open .build/Herdling.app
 3. Open **Settings** with `⌘,` or by right-clicking the menu bar item.
 4. Enable required aliases under **SSH Sources**.
 5. Under **Terminal → Application**, choose **Ghostty** or **Kero**. The default remains Ghostty; switching only affects subsequent jumps, not existing terminal sessions.
-6. Optionally record a global panel shortcut in Settings. No combination is assigned by default.
 
 Ghostty uses AppleScript Automation; allow Herdling to control Ghostty when macOS asks, keep `macos-applescript` enabled (the default), and choose Tab or Window for new clients. Kero uses its native CLI, with no Automation permission or Tab/Window setting. Settings checks only the selected terminal.
 
@@ -81,7 +80,6 @@ ssh -o BatchMode=yes my-server '$SHELL -lc "herdr session list --json"'
 | Right-click menu bar item | Open Settings/Quit menu |
 | Click a machine in Sources | Toggle its directory; expanding one closes the previous source |
 | Click an agent, worktree, Space, or session | Focus it in the selected terminal |
-| Global panel shortcut (when configured) | Toggle panel; select a target without navigating |
 | `↑` / `↓` | Select a row without navigating |
 | `Enter` | Open selected target; source rows only toggle their directory |
 | `←` / `→` in Sources | Return to parent / collapse or expand a source |
