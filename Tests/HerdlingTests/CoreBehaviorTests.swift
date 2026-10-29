@@ -30,6 +30,32 @@ struct CoreBehaviorTests {
         #expect(store.navigationAttempt == nil)
     }
 
+    @Test(arguments: [false, true])
+    func menuBarIgnoresUnknownAgents(includeKnownAgents: Bool) {
+        let knownStatuses: [AgentStatus] = includeKnownAgents ? [.blocked, .done, .working, .idle] : []
+        let agents = ([AgentStatus.unknown] + knownStatuses).map {
+            AgentInfo(paneID: $0.rawValue, title: $0.rawValue, status: $0,
+                      workspace: "repo", cwd: "/repo", updatedAt: .now)
+        }
+        let status = MenuStatus.summarize([
+            SourceInfo(descriptor: .local,
+                       sessions: [SessionInfo(name: "default", agents: agents, online: true)], online: true)
+        ])
+        #expect(status.availability == .online)
+        #expect(status.counts == knownStatuses.map { AgentStatusCount(status: $0, count: 1) })
+        let presentation = MenuBarStatusPresentation.for(status)
+        if includeKnownAgents {
+            #expect(presentation.entries == knownStatuses.map {
+                MenuBarStatusEntry(statusSymbol: $0.indicatorSymbolName, count: 1)
+            })
+            #expect(presentation.accessibilityText ==
+                "Herdling, 1 blocked agent, 1 completed agent, 1 working agent, 1 idle agent")
+        } else {
+            #expect(presentation.entries == [MenuBarStatusEntry(statusSymbol: "circle.dotted", count: nil)])
+            #expect(presentation.accessibilityText == "Herdling, no running agents")
+        }
+    }
+
     @Test
     func remoteHerdrUsesLoginShellPath() throws {
         let command = HerdrClient.remoteCommand(arguments: ["session", "list", "--json"])

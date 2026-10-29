@@ -194,6 +194,7 @@ struct MenuStatus: Equatable {
             )
         }
         let agents = onlineSources.flatMap { $0.sessions.filter(\.online).flatMap(\.agents) }
+            .filter { $0.status != .unknown }
         return Self(counts: AgentStatusCount.summarize(agents), availability: .online)
     }
 }
