@@ -48,6 +48,10 @@ final class NavigationBrowser {
     private struct SourceShape: Equatable {
         let descriptor: SourceDescriptor
         let sessions: [SessionShape]
+        let hasLegacy: Bool
+        let hasCore: Bool
+        let coreID: String?
+        let coreTargets: [CoreTerminalTarget]
     }
     private var topology: [SourceShape] = []
 
@@ -65,12 +69,25 @@ final class NavigationBrowser {
                     }
                     return AgentGroup(id: groupShape.id, name: groupShape.name, agents: agents)
                 }
-                return SessionInfo(name: sessionShape.name, groups: groups, online: source?.online == true && session?.online == true,
+                return SessionInfo(name: sessionShape.name, groups: groups,
+                                   online: source?.hasLegacy == true && source?.online == true && session?.online == true,
                                    updatedAt: session?.updatedAt, error: session?.error)
             }
+            let core: CoreSourceInfo?
+            if shape.hasCore {
+                let current = shape.coreID.flatMap { id in
+                    latestSources.compactMap(\.core).first { $0.coreID == id }
+                } ?? (shape.coreID == nil ? source?.core : nil)
+                core = CoreSourceInfo(coreID: shape.coreID, terminals: shape.coreTargets.map { target in
+                    if let live = current?.terminals.first(where: { $0.id == target.id }) { return live }
+                    return CoreTerminalInfo(target: target, title: labels[.coreTerminal(target.id)]?.title ?? target.address,
+                                            status: nil, cwd: "", updatedAt: .distantPast, online: false)
+                }, online: current?.online == true, error: current?.error, retryAt: current?.retryAt)
+            } else { core = nil }
             return SourceInfo(descriptor: source?.descriptor ?? shape.descriptor, sessions: sessions,
-                              online: source?.online == true, error: source?.error ?? (source == nil ? "Source no longer available" : nil),
-                              retryAt: source?.retryAt, branches: source?.branches ?? [:])
+                              online: source?.hasLegacy == true && source?.online == true,
+                              error: source?.error ?? (source == nil ? "Source no longer available" : nil),
+                              retryAt: source?.retryAt, branches: source?.branches ?? [:], hasLegacy: shape.hasLegacy, core: core)
         }
     }
     var recoveryTarget: NavigationDestination? {
@@ -78,10 +95,22 @@ final class NavigationBrowser {
         let regular = mode == .all ? directoryRows.map(\.id) : quickIDs.map(NavigationRowID.destination)
         return regular.contains(.destination(attempt.destination)) ? nil : attempt.destination
     }
-    var offlineSourceNames: [String] { latestSources.filter { !$0.online || $0.sessions.contains { !$0.online } }.map(\.descriptor.name) }
+    var offlineSourceNames: [String] {
+        latestSources.flatMap { source in
+            var names: [String] = []
+            if source.hasLegacy && (!source.online || source.sessions.contains { !$0.online }) {
+                names.append(source.descriptor.name + (source.core == nil ? "" : " / Herdr"))
+            }
+            if source.core?.online == false { names.append(source.descriptor.name + " / Core") }
+            return names
+        }
+    }
     var quickCandidateCount: Int { candidates.count }
     var hasOnlineCoverage: Bool {
-        latestSources.contains { $0.online && ($0.sessions.isEmpty || $0.sessions.contains(where: \.online)) }
+        latestSources.contains { source in
+            source.core?.online == true || (source.hasLegacy && source.online &&
+                (source.sessions.isEmpty || source.sessions.contains(where: \.online)))
+        }
     }
 
     init(sources: [SourceInfo] = []) {
@@ -180,18 +209,20 @@ final class NavigationBrowser {
         let currentLabel = resolved.map(label(for:)) ?? labels[destination]
         let recovery = attempt?.destination == destination ? attempt : nil
         return NavigationRowPresentation(
-            title: currentLabel?.title ?? recovery?.title ?? destination.sessionName,
+            title: currentLabel?.title ?? recovery?.title ?? destination.fallbackTitle,
             subtitle: currentLabel?.subtitle ?? recovery?.subtitle ?? destination.sourceID,
-            status: resolved?.agent?.status,
+            status: resolved?.agent?.status ?? resolved?.coreTerminal?.status,
             available: resolved?.isAvailable == true
         )
     }
 
     private func label(for resolved: ResolvedNavigationDestination) -> Label {
+        if resolved.coreTerminal != nil { return Label(title: resolved.title, subtitle: resolved.subtitle) }
         let ambiguous = resolved.agent.map { agent in resolved.group?.agents.count { $0.title == agent.title } ?? 0 } ?? 0
         let pane = ambiguous > 1 ? resolved.agent.map { " / \($0.paneID)" } ?? "" : ""
         let parts = [resolved.source.sshAlias == nil ? nil : resolved.source.name,
-                     resolved.session.name == "default" ? nil : resolved.session.name,
+                     "Herdr",
+                     resolved.session?.name == "default" ? nil : resolved.session?.name,
                      resolved.group?.name].compactMap { $0 }
         return Label(title: resolved.title, subtitle: (parts.isEmpty ? resolved.source.name : parts.joined(separator: " / ")) + pane)
     }
@@ -218,7 +249,8 @@ final class NavigationBrowser {
                 SessionShape(name: session.name, groups: session.groups.map {
                     GroupShape(id: $0.id, name: $0.name, panes: $0.agents.map(\.paneID))
                 })
-            })
+            }, hasLegacy: source.hasLegacy, hasCore: source.core != nil, coreID: source.core?.coreID,
+                        coreTargets: source.core?.terminals.map(\.target) ?? [])
         }
     }
 
@@ -232,6 +264,7 @@ final class NavigationBrowser {
                     result += group.agents.map { .agent(sourceID: source.id, sessionName: session.name, paneID: $0.paneID) }
                 }
             }
+            result += source.core?.terminals.map { .coreTerminal($0.id) } ?? []
         }
         return result
     }
@@ -262,6 +295,9 @@ final class NavigationBrowser {
                     }
                 }
             }
+            for terminal in source.core?.terminals ?? [] {
+                result.append(DirectoryRow(id: .destination(.coreTerminal(terminal.id)), parent: sourceRow))
+            }
         }
         return result
     }
@@ -270,30 +306,38 @@ final class NavigationBrowser {
         func rank(_ status: AgentStatus) -> Int {
             switch status {
             case .blocked: 0
-            case .done: 1
-            case .working: 2
-            case .idle: 3
-            case .unknown: 4
+            case .error: 1
+            case .done: 2
+            case .working: 3
+            case .idle: 4
+            case .unknown: 5
             }
         }
-        let records = latestSources.flatMap { source in
-            source.sessions.flatMap { session in
-                session.agents.compactMap { agent -> (NavigationDestination, AgentInfo)? in
+        let records = latestSources.flatMap { source -> [(NavigationDestination, AgentStatus, Date)] in
+            var records = source.sessions.flatMap { session in
+                session.agents.compactMap { agent -> (NavigationDestination, AgentStatus, Date)? in
                     let destination = NavigationDestination.agent(sourceID: source.id, sessionName: session.name, paneID: agent.paneID)
-                    guard source.online && session.online && agent.status != .unknown else { return nil }
-                    return (destination, agent)
+                    guard source.hasLegacy && source.online && session.online && agent.status != .unknown else { return nil }
+                    return (destination, agent.status, agent.updatedAt)
                 }
             }
+            if let core = source.core, core.online {
+                records += core.terminals.compactMap { terminal in
+                    guard terminal.online, let status = terminal.status, status != .unknown else { return nil }
+                    return (.coreTerminal(terminal.id), status, terminal.updatedAt)
+                }
+            }
+            return records
         }
         var idleCount = 0
         return records.enumerated().sorted { left, right in
-            let a = left.element.1, b = right.element.1
-            let priorityA = rank(a.status), priorityB = rank(b.status)
+            let a = left.element, b = right.element
+            let priorityA = rank(a.1), priorityB = rank(b.1)
             if priorityA != priorityB { return priorityA < priorityB }
-            if a.updatedAt != b.updatedAt { return a.updatedAt > b.updatedAt }
+            if a.2 != b.2 { return a.2 > b.2 }
             return left.offset < right.offset
         }.filter { record in
-            guard record.element.1.status == .idle else { return true }
+            guard record.element.1 == .idle else { return true }
             idleCount += 1
             return idleCount <= 3
         }.map { $0.element.0 }

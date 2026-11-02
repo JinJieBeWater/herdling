@@ -51,9 +51,9 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            Text("SSH Sources")
+            Text("Herdr SSH Sources")
         } footer: {
-            Text("Herdr must be installed on each enabled host. Disabled hosts are never contacted.")
+            Text("These hosts are used for the original Herdr. Core uses its own machines; Herdling does not add or connect them.")
         }
     }
 
@@ -69,7 +69,7 @@ struct SettingsView: View {
             } label: {
                 SettingsLabel(
                     title: "Application",
-                    subtitle: "Open Herdr clients in this terminal.",
+                    subtitle: "Open legacy Herdr sessions here. Core opens in Herdr App.",
                     symbol: "terminal",
                     tint: Theme.Hue.blue
                 )

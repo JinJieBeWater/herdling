@@ -30,16 +30,13 @@ private struct NavigationRowIdentity: ViewModifier {
         let reason = browser?.attempt.flatMap { attempt in
             attempt.destination == destination && attempt.phase == .failed ? attempt.message : nil
         }
-        let identity: String
-        switch destination {
-        case let .agent(sourceID, sessionName, paneID):
-            identity = "Source \(sourceID), session \(sessionName), pane \(paneID)"
-        case let .workspace(sourceID, sessionName, workspaceID):
-            identity = "Source \(sourceID), session \(sessionName), workspace \(workspaceID)"
-        case let .session(sourceID, sessionName):
-            identity = "Source \(sourceID), session \(sessionName)"
+        let action = if case .coreTerminal = destination {
+            "Opens this terminal in Herdr App"
+        } else {
+            "Opens this item in your selected terminal"
         }
-        return ["Opens this item in your selected terminal", presentation?.title, presentation?.subtitle, identity, reason].compactMap { $0 }.joined(separator: "\n")
+        return [action, presentation?.title, presentation?.subtitle,
+                destination.identityDescription, reason].compactMap { $0 }.joined(separator: "\n")
     }
 }
 

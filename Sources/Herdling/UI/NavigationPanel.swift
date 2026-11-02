@@ -75,7 +75,7 @@ struct NavigationHeader: View {
                 .foregroundStyle(Theme.Colors.textPrimary)
                 .help(browser.offlineSourceNames.joined(separator: ", "))
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(browser.offlineSourceNames.count) sources have unavailable status")
+                .accessibilityLabel("\(browser.offlineSourceNames.count) runtime connections have unavailable status")
                 .accessibilityHint(browser.offlineSourceNames.joined(separator: ", "))
             }
         }
@@ -196,7 +196,7 @@ struct NavigationList: View {
             return "New activity — reopen"
         }
         if !browser.hasOnlineCoverage { return "Connect a source to see current status" }
-        return browser.offlineSourceNames.isEmpty ? "No agents available" : "No online agents available"
+        return browser.offlineSourceNames.isEmpty ? "No activity available" : "No online activity available"
     }
 
     private func quickRows(_ destinations: [NavigationDestination]) -> some View {
@@ -238,6 +238,7 @@ struct QuickNavigationRow: View {
         guard presentation.available else { return "Unavailable" }
         switch presentation.status {
         case .blocked: return "Needs input"
+        case .error: return "Error"
         case .done: return "Completed"
         case let status?: return status.rosterLabel
         case nil: return "Open"
@@ -281,6 +282,6 @@ struct QuickNavigationRow: View {
         }
         .navigationRow(.destination(destination))
         .help(statusText.capitalized + "\n" + presentation.title + "\n"
-              + [destination.sourceID, destination.sessionName, destination.agentFocusID?.paneID].compactMap { $0 }.joined(separator: " / "))
+              + destination.identityDescription)
     }
 }

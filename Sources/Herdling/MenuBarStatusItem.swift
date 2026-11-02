@@ -95,7 +95,7 @@ struct MenuBarStatusPresentation: Equatable {
         case .loading:
             return Self(
                 entries: [MenuBarStatusEntry(statusSymbol: "ellipsis", count: nil)],
-                accessibilityText: "Herdling, loading sessions"
+                accessibilityText: "Herdling, loading activity"
             )
         case .offline:
             return Self(
@@ -108,7 +108,7 @@ struct MenuBarStatusPresentation: Equatable {
         guard !status.counts.isEmpty else {
             return Self(
                 entries: [MenuBarStatusEntry(statusSymbol: "circle.dotted", count: nil)],
-                accessibilityText: "Herdling, no running agents"
+                accessibilityText: "Herdling, no reported activity"
             )
         }
 

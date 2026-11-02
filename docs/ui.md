@@ -35,7 +35,7 @@ Herdling 是一个**只展示列表的菜单栏下拉面板**：无边框面板�
 - **测量出来的高度属于窗口，不属于 view。** 列表通过 `PanelContentHeightKey` 发布包含内缩的完整高度，`PanelHeightBridge` 驱动窗口；不再叠加固定操作条高度。
 - **一行只有两级信息。** 标题 `textPrimary` + 尾部读数 `textSecondary`，读数里不再有第二种颜色：数字和状态词同色。一行里出现三种灰，读起来就是"这几个字为什么不一样"。
 - **header 的尾部只放一个读数。** 分支名是标题的**副标**（紧跟标题、`lg` 间距），不是读数：它曾和计数一起塞在尾部簇里，同色同字号、只隔 10pt，于是两者被读成一句话（`docs/assessment-consulting 2 idle`），而标题与这堆东西之间空出 160pt。现在是 tinycast 的行文法：`字形 ─ 标题 ─ 副标 ─…─ 尾部读数`。
-- **身份优先于元数据。** 来源和工作区先保标题，分支名先压缩；尾部最多显示优先级最高的两种状态（blocked → done → working → idle → unknown），完整计数保留在 help 和辅助功能中。不靠加宽面板或加高行容纳元数据。
+- **身份优先于元数据。** 来源和工作区先保标题，分支名先压缩；尾部最多显示优先级最高的两种状态（blocked → error → done → working → idle → unknown），完整计数保留在 help 和辅助功能中。不靠加宽面板或加高行容纳元数据。
 - **前导图标按 Tinycast 的角色区分字重。** 分组、来源、状态、错误和 Settings 共用 `RowSymbol`：22pt 透明槽位中的 14pt Regular 单色 glyph；导航使用 14pt Medium 和独立14pt槽。来源用中性色，状态和告警保留语义色。没有底板、描边或独立圆角。
 - **状态色是语义，不是装饰。** `StatusPalette` 已按亮/暗 + 高对比度四路自适应，普通行保留它；强调色高亮时字形改用白色，符号与辅助功能仍表达真实状态。
 - **可访问性与 Reduce Motion 一直保留。** 每个折叠动画都走 `AccordionMotion.animation(reduceMotion:)`，每个图标 `accessibilityHidden`，每行有 `accessibilityLabel`/`Hint`。

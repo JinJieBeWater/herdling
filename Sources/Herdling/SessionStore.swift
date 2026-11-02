@@ -11,6 +11,7 @@ private enum DefaultsKey {
 
 enum AgentStatus: String, Sendable {
     case blocked
+    case error
     case done
     case working
     case idle
@@ -23,8 +24,12 @@ struct AgentStatusCount: Equatable, Identifiable {
     let count: Int
 
     static func summarize(_ agents: [AgentInfo]) -> [Self] {
-        [AgentStatus.blocked, .done, .working, .idle, .unknown].compactMap { status in
-            let count = agents.count { $0.status == status }
+        summarize(statuses: agents.map(\.status))
+    }
+
+    static func summarize(statuses: [AgentStatus]) -> [Self] {
+        [AgentStatus.blocked, .error, .done, .working, .idle, .unknown].compactMap { status in
+            let count = statuses.count { $0 == status }
             return count == 0 ? nil : Self(status: status, count: count)
         }
     }
@@ -167,6 +172,37 @@ struct SourceInfo: Identifiable, Sendable {
     var error: String?
     var retryAt: Date? = nil
     var branches: [String: String] = [:]
+    var hasLegacy = true
+    var core: CoreSourceInfo?
+
+    var isAvailable: Bool { (hasLegacy && online) || core?.online == true }
+    var hasUnavailableRuntime: Bool {
+        (hasLegacy && (!online || sessions.contains { !$0.online })) || core?.online == false
+    }
+    var showsLegacy: Bool { hasLegacy && (core == nil || !sessions.isEmpty || error != nil || descriptor.sshAlias != nil) }
+    var reportedStatuses: [AgentStatus] {
+        let legacy = hasLegacy && online ? sessions.filter(\.online).flatMap(\.agents).map(\.status) : []
+        let reported = core?.online == true ? core?.terminals.filter(\.online).compactMap(\.status) ?? [] : []
+        return legacy + reported
+    }
+}
+
+struct CoreTerminalInfo: Identifiable, Sendable {
+    var id: CoreTerminalID { target.id }
+    let target: CoreTerminalTarget
+    let title: String
+    let status: AgentStatus?
+    let cwd: String
+    let updatedAt: Date
+    var online: Bool
+}
+
+struct CoreSourceInfo: Sendable {
+    let coreID: String?
+    var terminals: [CoreTerminalInfo]
+    var online: Bool
+    var error: String?
+    var retryAt: Date?
 }
 
 struct AgentFocusID: Hashable, Sendable {
@@ -186,16 +222,16 @@ struct MenuStatus: Equatable {
     let availability: MenuAvailability
 
     static func summarize(_ sources: [SourceInfo]) -> Self {
-        let onlineSources = sources.filter(\.online)
+        let onlineSources = sources.filter(\.isAvailable)
         guard !onlineSources.isEmpty else {
             return Self(
                 counts: [],
-                availability: sources.contains { $0.error == nil } ? .loading : .offline
+                availability: sources.allSatisfy { !$0.hasLegacy && $0.core == nil } ? .online
+                    : sources.contains { $0.hasLegacy && !$0.online && $0.error == nil } ? .loading : .offline
             )
         }
-        let agents = onlineSources.flatMap { $0.sessions.filter(\.online).flatMap(\.agents) }
-            .filter { $0.status != .unknown }
-        return Self(counts: AgentStatusCount.summarize(agents), availability: .online)
+        let statuses = onlineSources.flatMap(\.reportedStatuses).filter { $0 != .unknown }
+        return Self(counts: AgentStatusCount.summarize(statuses: statuses), availability: .online)
     }
 }
 
@@ -214,6 +250,9 @@ final class SessionStore {
     typealias ExistingClientFocus = @Sendable (SourceDescriptor, String, TerminalApplication) async throws -> Bool
     typealias ClientActivation = @Sendable (SourceDescriptor, String, String, TerminalApplication, GhosttyOpenBehavior) async throws -> Void
     typealias TerminalStatusLoader = @Sendable (TerminalApplication) async -> String
+    typealias CoreAppFocus = @Sendable (CoreTerminalTarget) async throws -> Void
+    typealias CoreAppSnapshotLoader = @Sendable (String) async throws -> HerdrAppSnapshot
+    typealias CoreAppChanges = @MainActor () -> AsyncThrowingStream<Void, Error>
 
     private let client: HerdrClient
     private let loadSource: SourceLoader
@@ -221,6 +260,19 @@ final class SessionStore {
     private let focusExistingClient: ExistingClientFocus
     private let activateClient: ClientActivation
     private let loadTerminalStatus: TerminalStatusLoader
+    private let coreMonitor: (any HerdrCoreMonitoring)?
+    private let legacyEnabled: Bool
+    private let focusCoreApp: CoreAppFocus
+    private let loadCoreAppSnapshot: CoreAppSnapshotLoader
+    private let coreAppChanges: CoreAppChanges
+    private var latestCoreSnapshot: HerdrCoreSnapshot?
+    private var coreAppSnapshot: HerdrAppSnapshot?
+    private var coreAppError: String?
+    private var coreAppTask: Task<Void, Never>?
+    private var coreAppReadTask: Task<HerdrAppSnapshot, Error>?
+    private var coreAppRequest = UUID()
+    private var coreMonitorTask: Task<Void, Never>?
+    private var coreMonitorGeneration: UUID?
     private let loadLoginItemStatus: () -> SMAppService.Status
     private let updateLoginItem: (Bool) throws -> Void
     private var terminalStatusRequest: UUID?
@@ -317,10 +369,15 @@ final class SessionStore {
     }
 
     convenience init() {
+        let client = HerdrClient()
+        let coreClient = HerdrCoreClient()
         self.init(
-            client: HerdrClient(),
+            client: client,
             localMonitor: HerdrLocalSessionMonitor(),
-            remoteMonitorFactory: { HerdrRemoteSessionMonitor(source: $0) }
+            remoteMonitorFactory: { HerdrRemoteSessionMonitor(source: $0) },
+            coreClient: coreClient,
+            coreMonitor: HerdrCoreMonitor(client: coreClient),
+            legacyEnabled: client.isInstalled
         )
     }
 
@@ -340,14 +397,26 @@ final class SessionStore {
         focusExistingClient: ExistingClientFocus? = nil,
         sourceDescriptors: [SourceDescriptor]? = nil,
         defaults: UserDefaults = .standard,
-        activateClient: ClientActivation? = nil
+        activateClient: ClientActivation? = nil,
+        coreClient: HerdrCoreClient = HerdrCoreClient(),
+        coreMonitor: (any HerdrCoreMonitoring)? = nil,
+        coreAppChanges: CoreAppChanges? = nil,
+        legacyEnabled: Bool = true,
+        focusCoreApp: CoreAppFocus? = nil,
+        loadCoreAppSnapshot: CoreAppSnapshotLoader? = nil
     ) {
         let persisted = defaults.stringArray(forKey: DefaultsKey.selectedSSHAliases) ?? []
         let aliases = sourceDescriptors?.compactMap(\.sshAlias) ?? SSHConfig.aliases()
         let selected = sourceDescriptors?.compactMap(\.sshAlias) ?? aliases.filter(persisted.contains)
         let kero = KeroController()
         let ghostty = GhosttyController()
+        let herdrApp = HerdrAppController(coreClient: coreClient)
         self.client = client
+        self.coreMonitor = coreMonitor
+        self.legacyEnabled = legacyEnabled
+        self.focusCoreApp = focusCoreApp ?? { try await herdrApp.focus(target: $0) }
+        self.loadCoreAppSnapshot = loadCoreAppSnapshot ?? { try await herdrApp.snapshot(entryCoreID: $0) }
+        self.coreAppChanges = coreAppChanges ?? { HerdrAppStateObserver.changes() }
         self.loadSource = loadSource ?? { try await client.load($0) }
         self.loadBranches = loadBranches ?? { source, paths in
             await GitBranchResolver.shared.branches(source: source, paths: paths)
@@ -386,19 +455,56 @@ final class SessionStore {
             defaults.set(selected, forKey: DefaultsKey.selectedSSHAliases)
         }
         let descriptors = sourceDescriptors ?? ([SourceDescriptor.local] + selected.map(SourceDescriptor.remote))
-        sources = descriptors.map { SourceInfo(descriptor: $0, sessions: [], online: false, error: nil) }
+        sources = descriptors.map {
+            SourceInfo(descriptor: $0, sessions: [], online: false, error: nil, hasLegacy: legacyEnabled)
+        }
     }
 
     func start() {
         guard !pollingStarted else { return }
         acceptsNavigation = true
         pollingStarted = true
-        if let localMonitor {
+        if let coreMonitor {
+            let generation = UUID()
+            coreMonitorGeneration = generation
+            coreMonitorTask = Task { [weak self] in
+                await coreMonitor.start { [weak self] event in
+                    await self?.handleCoreMonitor(event, generation: generation)
+                }
+                guard let self, self.pollingStarted, self.coreMonitorGeneration == generation else {
+                    await coreMonitor.stop()
+                    return
+                }
+            }
+            let changes = coreAppChanges()
+            coreAppTask = Task { [weak self] in
+                do {
+                    for try await _ in changes {
+                        guard let self, self.pollingStarted, self.coreMonitorGeneration == generation else { return }
+                        // An invalidation must not reuse a snapshot started before that change.
+                        let request = self.coreAppRequest
+                        _ = await self.coreAppReadTask?.result
+                        guard !Task.isCancelled, self.coreMonitorGeneration == generation else { return }
+                        _ = await self.refreshCoreAppState(forceRefresh: self.coreAppRequest == request)
+                    }
+                } catch {
+                    guard let self, self.pollingStarted, self.coreMonitorGeneration == generation else { return }
+                    self.coreAppReadTask?.cancel()
+                    self.coreAppReadTask = nil
+                    self.coreAppRequest = UUID()
+                    self.coreAppSnapshot = nil
+                    self.coreAppError = "Herdr App state notifications are unavailable. Reopen Herdling to reconnect."
+                    if let snapshot = self.latestCoreSnapshot { self.applyCoreSnapshot(snapshot) }
+                    self.onChange?()
+                }
+            }
+        }
+        if let localMonitor, sources.contains(where: { $0.id == SourceDescriptor.local.id && $0.hasLegacy }) {
             let generation = UUID()
             monitorGenerations[SourceDescriptor.local.id] = generation
             startMonitor(localMonitor, source: .local, generation: generation)
         }
-        for descriptor in sources.map(\.descriptor) where descriptor.sshAlias != nil {
+        for descriptor in sources.filter(\.hasLegacy).map(\.descriptor) where descriptor.sshAlias != nil {
             startRemoteMonitor(for: descriptor)
         }
         Task { await refresh() }
@@ -417,7 +523,11 @@ final class SessionStore {
     private func prepareToStop() -> (
         local: (any SessionMonitoring)?,
         remotes: [any SessionMonitoring],
-        starts: [Task<Void, Never>]
+        starts: [Task<Void, Never>],
+        core: (any HerdrCoreMonitoring)?,
+        coreStart: Task<Void, Never>?,
+        coreApp: Task<Void, Never>?,
+        coreAppRead: Task<HerdrAppSnapshot, Error>?
     ) {
         acceptsNavigation = false
         navigationToken = UUID()
@@ -435,22 +545,45 @@ final class SessionStore {
         let starts = Array(monitorStartTasks.values)
         starts.forEach { $0.cancel() }
         monitorStartTasks.removeAll()
-        return (localMonitor, monitors, starts)
+        coreMonitorGeneration = nil
+        let coreStart = coreMonitorTask
+        coreStart?.cancel()
+        coreMonitorTask = nil
+        let coreApp = coreAppTask
+        coreApp?.cancel()
+        coreAppTask = nil
+        let coreAppRead = coreAppReadTask
+        coreAppRead?.cancel()
+        coreAppReadTask = nil
+        coreAppRequest = UUID()
+        latestCoreSnapshot = nil
+        coreAppSnapshot = nil
+        return (localMonitor, monitors, starts, coreMonitor, coreStart, coreApp, coreAppRead)
     }
 
     private func finishStopping(_ plan: (
         local: (any SessionMonitoring)?,
         remotes: [any SessionMonitoring],
-        starts: [Task<Void, Never>]
+        starts: [Task<Void, Never>],
+        core: (any HerdrCoreMonitoring)?,
+        coreStart: Task<Void, Never>?,
+        coreApp: Task<Void, Never>?,
+        coreAppRead: Task<HerdrAppSnapshot, Error>?
     )) async {
         let monitors = [plan.local].compactMap { $0 } + plan.remotes
         // Stop once up front, then once more after the starts settle: a monitor whose start() was
         // already in flight re-arms itself when it finishes, so the trailing stop is the one that
         // guarantees it stays down. StopCount >= 2 is asserted by the race test.
         let stops = monitors.map { monitor in Task { await monitor.stop() } }
+        let coreStop = Task { await plan.core?.stop() }
         for start in plan.starts { await start.value }
         for stop in stops { await stop.value }
         for monitor in monitors { await monitor.stop() }
+        await plan.coreStart?.value
+        await coreStop.value
+        await plan.core?.stop()
+        await plan.coreApp?.value
+        _ = await plan.coreAppRead?.result
     }
 
     func setPanelOpen(_ open: Bool) {
@@ -486,7 +619,7 @@ final class SessionStore {
 
         let loadSource = self.loadSource
         let loadBranches = self.loadBranches
-        let descriptors = sources.map(\.descriptor).filter { !monitorOwnsSource($0.id) }
+        let descriptors = sources.filter(\.hasLegacy).map(\.descriptor).filter { !monitorOwnsSource($0.id) }
         guard !descriptors.isEmpty else { return }
         let previousSources = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
         var completed: [String: SourceLoad] = [:]
@@ -524,6 +657,7 @@ final class SessionStore {
         var nextSources = sources
         for index in nextSources.indices {
             let current = nextSources[index]
+            guard current.hasLegacy else { continue }
             guard let load = completed[current.id] else { continue }
             guard !monitorOwnsSource(load.descriptor.id) else { continue }
             var updated = current
@@ -590,6 +724,159 @@ final class SessionStore {
             } else {
                 markRemoteMonitorUnavailable(descriptor, reason: reason, retryAt: retryAt)
             }
+        }
+    }
+
+    private func handleCoreMonitor(_ event: HerdrCoreMonitorEvent, generation: UUID) async {
+        guard pollingStarted, coreMonitorGeneration == generation else { return }
+        switch event {
+        case let .snapshot(snapshot):
+            let changed = latestCoreSnapshot != snapshot
+            let needsAppSnapshot = latestCoreSnapshot?.entryCoreID != snapshot.entryCoreID
+            if needsAppSnapshot {
+                coreAppReadTask?.cancel()
+                coreAppReadTask = nil
+                coreAppSnapshot = nil
+                coreAppRequest = UUID()
+            }
+            latestCoreSnapshot = snapshot
+            applyCoreSnapshot(snapshot)
+            if changed { _ = await refreshCoreAppState() }
+        case let .unavailable(reason, retryAt):
+            if !sources.contains(where: { $0.core != nil }),
+               let index = sources.firstIndex(where: { $0.descriptor.isLocal })
+            {
+                sources[index].core = CoreSourceInfo(coreID: nil, terminals: [], online: false,
+                                                    error: nil, retryAt: retryAt)
+            }
+            markCoreUnavailable(reason: reason ?? "Core connection unavailable.", retryAt: retryAt)
+        case .absent:
+            // An unused runtime is not an offline source. A previously observed one remains stale.
+            markCoreUnavailable(reason: "Core is not running.", retryAt: nil)
+        }
+        onChange?()
+    }
+
+    private func markCoreUnavailable(reason: String, retryAt: Date?) {
+        latestCoreSnapshot = nil
+        coreAppSnapshot = nil
+        coreAppReadTask?.cancel()
+        coreAppReadTask = nil
+        coreAppRequest = UUID()
+        sources = sources.map { source in
+            var source = source
+            if var core = source.core {
+                core.online = false
+                core.error = reason
+                core.retryAt = retryAt
+                core.terminals = core.terminals.map { terminal in
+                    var terminal = terminal
+                    terminal.online = false
+                    return terminal
+                }
+                source.core = core
+            }
+            return source
+        }
+    }
+
+    @discardableResult
+    func refreshCoreAppState(forceRefresh: Bool = false) async -> Bool {
+        guard pollingStarted, let snapshot = latestCoreSnapshot else { return false }
+        let generation = coreMonitorGeneration
+        let read: Task<HerdrAppSnapshot, Error>
+        if !forceRefresh, let pending = coreAppReadTask {
+            read = pending
+        } else {
+            coreAppReadTask?.cancel()
+            let load = loadCoreAppSnapshot
+            read = Task { try await load(snapshot.entryCoreID) }
+            coreAppReadTask = read
+            coreAppRequest = UUID()
+        }
+        let request = coreAppRequest
+        let observed: HerdrAppSnapshot?
+        do {
+            let result = try await read.value
+            observed = result.entryCoreID == snapshot.entryCoreID ? result : nil
+        } catch {
+            observed = nil
+        }
+        guard pollingStarted, coreMonitorGeneration == generation,
+              let current = latestCoreSnapshot, current.entryCoreID == snapshot.entryCoreID else { return false }
+        if coreAppRequest == request {
+            coreAppReadTask = nil
+            coreAppSnapshot = observed
+            coreAppError = observed == nil ? "Herdr App status is unavailable. Open Herdr App to refresh Core activity." : nil
+            applyCoreSnapshot(current)
+            onChange?()
+        }
+        return observed != nil
+    }
+
+    private func applyCoreSnapshot(_ snapshot: HerdrCoreSnapshot) {
+        let previous = sources.compactMap(\.core).reduce(into: [String: CoreSourceInfo]()) {
+            if let id = $1.coreID { $0[id] = $1 }
+        }
+        var next = sources.map { source in
+            var source = source
+            source.core = nil
+            return source
+        }
+        var machines: [String: HerdrCoreMachine] = [:]
+        for machine in snapshot.machines where !machine.id.isEmpty {
+            if machines[machine.id] == nil || machine.online { machines[machine.id] = machine }
+        }
+        var coreIDs = [snapshot.entryCoreID]
+        for machine in snapshot.machines where !coreIDs.contains(machine.id) && !machine.id.isEmpty {
+            coreIDs.append(machine.id)
+        }
+        var seen: Set<CoreTerminalID> = []
+        let terminals = snapshot.terminals.filter { seen.insert($0.target.id).inserted }
+        let appStates = coreAppSnapshot?.entryCoreID == snapshot.entryCoreID
+            ? coreAppSnapshot?.terminals.reduce(into: [String: AgentStatus]()) { states, terminal in
+                states[terminal.address] = terminal.status
+            } ?? [:] : [:]
+        for coreID in coreIDs {
+            let machine = coreID == snapshot.entryCoreID ? nil : machines[coreID]
+            let online = machine?.online ?? (coreID == snapshot.entryCoreID)
+            let records = terminals.filter { $0.target.id.coreID == coreID }.map { terminal in
+                let status = appStates[terminal.target.address]
+                let old = previous[coreID]?.terminals.first { $0.id == terminal.target.id }
+                let updatedAt = old?.status == status ? old?.updatedAt ?? .distantPast
+                    : old?.status == nil ? terminal.statusChangedAt ?? .distantPast : Date()
+                return CoreTerminalInfo(target: terminal.target, title: terminal.title, status: status,
+                                        cwd: terminal.cwd, updatedAt: updatedAt, online: online && terminal.online)
+            }
+            let retained = online ? records : (previous[coreID]?.terminals ?? records).map {
+                var stale = $0
+                stale.online = false
+                return stale
+            }
+            let core = CoreSourceInfo(coreID: coreID, terminals: retained, online: online,
+                                      error: online ? coreAppError : "Core machine is unavailable. Reconnect it in hc.", retryAt: nil)
+            let index: Int?
+            if machine == nil {
+                index = next.firstIndex { $0.id == SourceDescriptor.local.id }
+            } else {
+                index = next.firstIndex { $0.descriptor.sshAlias == machine?.target && machine?.via == false }
+            }
+            if let index, next[index].core == nil {
+                next[index].core = core
+            } else {
+                let descriptor = SourceDescriptor(id: "core:\(coreID)", name: machine?.name ?? "Core", sshAlias: nil)
+                next.append(SourceInfo(descriptor: descriptor, sessions: [], online: false,
+                                       error: nil, hasLegacy: false, core: core))
+            }
+        }
+        sources = next.filter { $0.hasLegacy || $0.core != nil || $0.id == SourceDescriptor.local.id }
+    }
+
+    func retryCore() {
+        guard let coreMonitor, pollingStarted else { return }
+        Task {
+            _ = await refreshCoreAppState(forceRefresh: true)
+            await coreMonitor.retry()
         }
     }
 
@@ -720,15 +1007,10 @@ final class SessionStore {
         navigationToken = UUID()
         let previous = navigationAttempt?.destination == destination ? navigationAttempt : nil
         let message = (resolved == nil ? NavigationValidationError.missing : .offline).localizedDescription
-        let fallbackTitle = switch destination {
-        case let .agent(_, _, paneID): paneID
-        case let .workspace(_, _, workspaceID): workspaceID
-        case let .session(_, sessionName): sessionName
-        }
         navigationAttempt = NavigationAttempt(
             destination: destination,
-            title: resolved?.title ?? previous?.title ?? fallbackTitle,
-            subtitle: resolved?.subtitle ?? previous?.subtitle ?? "\(destination.sourceID) / \(destination.sessionName)",
+            title: resolved?.title ?? previous?.title ?? destination.fallbackTitle,
+            subtitle: resolved?.subtitle ?? previous?.subtitle ?? destination.identityDescription,
             phase: resolved?.isAvailable == true ? .pending : .failed,
             message: resolved?.isAvailable == true ? nil : message
         )
@@ -758,7 +1040,10 @@ final class SessionStore {
     private func performFocus(_ request: FocusRequest) async {
         guard request.token == navigationToken else { return }
         // Keep the error privacy boundary even if configuration disappears during the request.
-        let remote = request.destination.resolve(in: sources)?.source.sshAlias != nil
+        let initial = request.destination.resolve(in: sources)
+        let remote = initial?.source.sshAlias != nil || initial?.coreTerminal.map {
+            $0.target.id.coreID != $0.target.entryCoreID
+        } == true
         defer { onChange?() }
         do {
             let resolved = try availableDestination(for: request)
@@ -767,21 +1052,25 @@ final class SessionStore {
                 phase: .pending, message: nil
             )
             switch request.destination {
+            case .coreTerminal:
+                try await performCoreFocus(request)
             case .agent, .workspace:
+                guard let session = resolved.session else { throw NavigationValidationError.missing }
                 // Public focus affects all shell clients and the target tab's seen state, even if
                 // Terminal activation fails. The request token only gates Herdling's result UI.
                 async let herdrFocus: Void = performHerdrFocus(request)
-                let focusedExistingClient = try await focusExistingClient(resolved.source, resolved.session.name, request.terminalApplication)
+                let focusedExistingClient = try await focusExistingClient(resolved.source, session.name, request.terminalApplication)
                 guard request.token == navigationToken else { return }
                 _ = try availableDestination(for: request)
                 try await herdrFocus
                 guard request.token == navigationToken else { return }
                 let latest = try availableDestination(for: request)
+                guard let latestSession = latest.session else { throw NavigationValidationError.missing }
                 if !focusedExistingClient {
                     try await activateClient(
                         latest.source,
-                        latest.session.name,
-                        try client.attachCommand(source: latest.source, session: latest.session.name),
+                        latestSession.name,
+                        try client.attachCommand(source: latest.source, session: latestSession.name),
                         request.terminalApplication,
                         request.ghosttyOpenBehavior
                     )
@@ -789,14 +1078,16 @@ final class SessionStore {
                     _ = try availableDestination(for: request)
                 }
             case .session:
-                let existing = try await focusExistingClient(resolved.source, resolved.session.name, request.terminalApplication)
+                guard let session = resolved.session else { throw NavigationValidationError.missing }
+                let existing = try await focusExistingClient(resolved.source, session.name, request.terminalApplication)
                 guard request.token == navigationToken else { return }
                 let latest = try availableDestination(for: request)
+                guard let latestSession = latest.session else { throw NavigationValidationError.missing }
                 if !existing {
                     try await activateClient(
                         latest.source,
-                        latest.session.name,
-                        try client.attachCommand(source: latest.source, session: latest.session.name),
+                        latestSession.name,
+                        try client.attachCommand(source: latest.source, session: latestSession.name),
                         request.terminalApplication,
                         request.ghosttyOpenBehavior
                     )
@@ -807,10 +1098,27 @@ final class SessionStore {
             completeNavigation(request.destination)
         } catch {
             guard request.token == navigationToken else { return }
-            focusError = Self.focusErrorMessage(error, remote: remote)
+            if case .coreTerminal = request.destination,
+               !(error is NavigationValidationError),
+               !(error is HerdrAppError)
+            {
+                focusError = "Core terminal could not be opened in Herdr App. Check Herdr App and Core, then retry."
+            } else {
+                focusError = Self.focusErrorMessage(error, remote: remote)
+            }
             navigationAttempt?.phase = .failed
             navigationAttempt?.message = focusError
         }
+    }
+
+    private func performCoreFocus(_ request: FocusRequest) async throws {
+        guard let target = try availableDestination(for: request).coreTerminal?.target else {
+            throw NavigationValidationError.missing
+        }
+        try await focusCoreApp(target)
+        _ = try availableDestination(for: request)
+        guard await refreshCoreAppState(forceRefresh: true) else { throw HerdrCoreError.unavailable("Herdr App status is unavailable.") }
+        _ = try availableDestination(for: request)
     }
 
     private func availableDestination(for request: FocusRequest) throws -> ResolvedNavigationDestination {
@@ -823,7 +1131,7 @@ final class SessionStore {
     private func completeNavigation(_ destination: NavigationDestination) {
         navigationAttempt?.phase = .succeeded
         navigationAttempt?.message = nil
-        if case .agent = destination {
+        if destination.isActivityTarget {
             successfulJumps.removeAll { $0 == destination }
             successfulJumps.insert(destination, at: 0)
             successfulJumps = Array(successfulJumps.prefix(3))
@@ -836,6 +1144,10 @@ final class SessionStore {
     }
 
     private func hasDeparted(_ destination: NavigationDestination) -> Bool {
+        if case let .coreTerminal(id) = destination {
+            guard let core = sources.compactMap(\.core).first(where: { $0.coreID == id.coreID }) else { return true }
+            return core.online && !core.terminals.contains { $0.id == id }
+        }
         guard let source = sources.first(where: { $0.id == destination.sourceID }) else { return true }
         // An outage is not evidence that a session or pane identity exited.
         guard source.online else { return false }
@@ -846,6 +1158,7 @@ final class SessionStore {
 
     nonisolated static func focusErrorMessage(_ error: Error, remote: Bool = false) -> String {
         if let error = error as? NavigationValidationError { return error.localizedDescription }
+        if let error = error as? HerdrAppError { return error.localizedDescription }
         if let error = error as? GhosttyController.GhosttyError {
             return error.localizedDescription
         }
@@ -890,7 +1203,19 @@ final class SessionStore {
         let descriptors = [SourceDescriptor.local] + selectedSSHAliases.map(SourceDescriptor.remote)
         let retainedIDs = Set(descriptors.map(\.id))
         pruneSourceRuntime(retainedIDs: retainedIDs)
-        sources = descriptors.map { old[$0.id] ?? SourceInfo(descriptor: $0, sessions: [], online: false, error: nil) }
+        var next = descriptors.map { descriptor in
+            var source = old[descriptor.id] ?? SourceInfo(descriptor: descriptor, sessions: [], online: false, error: nil)
+            source.hasLegacy = legacyEnabled
+            return source
+        }
+        for source in sources where !retainedIDs.contains(source.id) && source.core != nil {
+            var retained = source
+            retained.hasLegacy = false
+            retained.sessions = []
+            retained.error = nil
+            next.append(retained)
+        }
+        sources = next
         for descriptor in descriptors where descriptor.sshAlias != nil {
             startRemoteMonitor(for: descriptor)
         }
@@ -994,17 +1319,19 @@ final class SessionStore {
 
     private var needsPolling: Bool {
         sources.contains { source in
-            !monitorOwnsSource(source.id)
+            guard source.hasLegacy else { return false }
+            return !monitorOwnsSource(source.id)
         }
     }
 
     private func performHerdrFocus(_ request: FocusRequest) async throws {
         let resolved = try availableDestination(for: request)
+        guard let session = resolved.session else { throw NavigationValidationError.missing }
         switch request.destination {
         case let .agent(_, _, paneID):
             try await runHerdrFocus(
                 source: resolved.source,
-                session: resolved.session.name,
+                session: session.name,
                 paneID: paneID,
                 tabID: resolved.agent?.tabID
             )
@@ -1013,11 +1340,11 @@ final class SessionStore {
             try await Task.detached {
                 try client.focusWorkspace(
                     source: resolved.source,
-                    session: resolved.session.name,
+                    session: session.name,
                     workspaceID: workspaceID
                 )
             }.value
-        case .session:
+        case .session, .coreTerminal:
             return
         }
     }

@@ -34,6 +34,7 @@ struct HerdrClient: Sendable {
     }
 
     private let executable: String?
+    var isInstalled: Bool { executable != nil }
     typealias CommandExecution = @Sendable (String, [String], TimeInterval, Data?) throws -> Data
     private let runCommand: CommandExecution
 

@@ -341,7 +341,7 @@ struct AgentRow: View {
 
     private var helpText: String {
         let status = isFocusPending ? "Opening" : enabled ? agent.status.rosterLabel.capitalized : "Unavailable"
-        let location = destination.map { [$0.sourceID, $0.sessionName, agent.paneID].joined(separator: " / ") } ?? agent.paneID
+        let location = destination?.identityDescription ?? agent.paneID
         return "\(status)\n\(agent.title)\n\(location)"
     }
 

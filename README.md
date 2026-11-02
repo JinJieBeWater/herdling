@@ -2,26 +2,28 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Herdling is a macOS menu bar companion for [Herdr](https://herdr.dev/). See which agents need attention across local and SSH sessions, then jump to their terminals in [Ghostty](https://ghostty.org/) or [Kero](https://kero.sh/).
+Herdling is a macOS menu bar companion for [Herdr](https://herdr.dev/). Monitor legacy Herdr sessions and [Herdr Core](https://github.com/herdrdev/herdr-core) together. Legacy targets open in [Ghostty](https://ghostty.org/) or [Kero](https://kero.sh/); Core targets open in the native Herdr App.
 
 **[Download Herdling for macOS →](https://github.com/JinJieBeWater/herdling/releases/latest)** · One Universal2 app for Apple Silicon and Intel
 
-Requires **macOS 15+**, Herdr, and **Ghostty 1.4+** or **Kero with its `kero` CLI**.
+Requires **macOS 15+**. Legacy Herdr uses **Ghostty 1.4+** or **Kero with its `kero` CLI**. Core uses the **native Herdr App** connected to the same Core.
 
 ![Herdling menu bar panel showing example Herdr sessions](docs/media/herdling-overview.png)
 
 ## What it does
 
-- **Activity** puts blocked agents first, then done, working, and the three most recently updated idle agents. Idle recency comes from Herdr's state timestamps, not your navigation history.
-- **Sources** browses the full directory by machine, session, Space, and worktree in Herdr order. Expand one source at a time, or keep them all closed.
-- **Terminal jumps** focus the selected agent, worktree, Space, or session. Herdling reuses a matching Herdr client in your chosen terminal, or creates and verifies a new one.
-- **Local + SSH** sessions stay current through Herdr's socket event streams, with discovery and CLI fallback when needed. SSH sources come from `~/.ssh/config`, including `Include` files.
+- **Activity** shows blocked, done, working, and recent idle states from both runtimes. Core activity follows the native Herdr App's seen-based states, not raw Core reports. Idle ordering follows status changes, not saved navigation history. Terminals without an App status appear only in Sources.
+- **Sources** browses legacy sessions, Spaces, and worktrees, alongside Core terminals grouped by machine. A Core terminal can be an ordinary shell; listing it does not make it an AI agent. Expand one source at a time, or keep them all closed.
+- **Terminal jumps** reuse or create a verified Ghostty/Kero client for legacy Herdr. Core targets focus their existing pane in Herdr App and bring that App forward; the terminal preference does not affect Core.
+- **Local + remote** activity stays current through runtime socket event streams. Legacy SSH sources come from `~/.ssh/config`, including `Include` files; Core uses its own machines. Both runtimes can run at once without a mode switch.
+
+Core completion prompts follow Herdr App's own seen state, including changes made outside Herdling. Herdling refreshes that state after a jump and does not maintain a separate unread queue. See [runtime boundaries](docs/development.md#runtime-boundaries).
 
 ## Demo
 
 [![Demo: Activity, jumping to Ghostty, and browsing Sources](docs/media/herdling-demo.gif)](docs/media/herdling-demo.mp4)
 
-Watch the [23-second demo (MP4)](docs/media/herdling-demo.mp4): find a blocked task in Activity, jump to Ghostty, approve the sample change, then browse Sources and open another project. Recorded in an isolated macOS VM with scripted sample tasks; waiting time is trimmed. No real work sessions or AI inference are shown. SSH and Kero are not demonstrated.
+Watch the [23-second demo (MP4)](docs/media/herdling-demo.mp4): find a blocked task in Activity, jump to Ghostty, approve the sample change, then browse Sources and open another project. Recorded in an isolated macOS VM with scripted sample tasks; waiting time is trimmed. No real work sessions or AI inference are shown. Core, SSH, and Kero are not demonstrated.
 
 ## Install
 
@@ -34,10 +36,10 @@ From **0.2.0**, right-click the menu bar icon → **Check for Updates…**. Back
 
 ## Setup
 
-1. Start at least one Herdr session, then click Herdling in the menu bar.
-2. Open **Settings** with `⌘,` or by right-clicking the menu bar icon. Under **Terminal → Application**, choose **Ghostty** (default) or **Kero**. Your choice is saved and only affects subsequent jumps.
+1. Start a legacy Herdr session or your usual Herdr Core, then click Herdling in the menu bar. If both are running, Herdling monitors both.
+2. Open **Settings** with `⌘,` or by right-clicking the menu bar icon. Under **Terminal → Application**, choose **Ghostty** (default) or **Kero** for legacy Herdr. Core always opens in Herdr App; existing preferences are preserved.
 3. **Ghostty:** allow Herdling to control Ghostty when macOS asks, keep `macos-applescript` enabled (the default), and choose Tab or Window for new clients. **Kero:** uses its native CLI; no Automation permission or Tab/Window setting is needed.
-4. **Optional SSH:** enable named hosts under **SSH Sources**. Each host needs Herdr, non-interactive SSH access, and `nc` with Unix-domain socket support. See [remote setup and connection check](docs/development.md#remote-hosts).
+4. **Optional legacy SSH:** enable named hosts under **Herdr SSH Sources**. Each host needs legacy Herdr, non-interactive SSH access, and `nc` with Unix-domain socket support. These selections affect only legacy sessions. Core uses the machines already configured in Core. See [remote setup and connection check](docs/development.md#remote-hosts).
 
 ## Controls
 
@@ -46,7 +48,8 @@ From **0.2.0**, right-click the menu bar icon → **Check for Updates…**. Back
 | Left-click menu bar icon | Open or close roster |
 | Right-click menu bar icon | Open Settings, updates, and Quit menu |
 | Click a machine in Sources | Toggle its directory; expanding one closes the previous source |
-| Click an agent, worktree, Space, or session | Focus it in the selected terminal |
+| Click a legacy agent, worktree, Space, or session | Focus it in the selected terminal |
+| Click a Core terminal | Focus its existing pane in Herdr App |
 | `↑` / `↓` | Select a row without navigating |
 | `Enter` | Open selected target; source rows only toggle their directory |
 | `←` / `→` in Sources | Return to parent / collapse or expand a source |
@@ -56,7 +59,7 @@ From **0.2.0**, right-click the menu bar icon → **Check for Updates…**. Back
 | `Esc` in roster | Close panel |
 | `⌘Q` | Quit Herdling |
 
-Herdr focus can mark every pane in the destination tab as seen and affect all shell clients in that session. A failed jump may already have changed focus; it does not imply rollback or that a task was handled.
+Legacy Herdr focus can mark every pane in the destination tab as seen and affect all shell clients in that session. Core follows Herdr App's native focus and seen rules. A failed jump may already have changed focus; it does not imply rollback or that a task was handled. Failures never open a different application as a fallback.
 
 ## Development and troubleshooting
 

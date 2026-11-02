@@ -10,6 +10,7 @@ struct SourceDescriptor: Identifiable, Hashable, Sendable {
     let id: String
     let name: String
     let sshAlias: String?
+    var isLocal: Bool { id == Self.local.id }
 
     static func remote(_ alias: String) -> SourceDescriptor {
         SourceDescriptor(id: "ssh:\(alias)", name: alias, sshAlias: alias)

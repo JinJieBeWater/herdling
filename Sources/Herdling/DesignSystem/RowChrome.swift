@@ -265,6 +265,6 @@ struct DisclosureChevron: View {
 /// answer "what colour is this". It also used to be written out at three call sites, two of which
 /// had already drifted apart.
 extension SourceInfo {
-    var rosterSymbol: String { descriptor.sshAlias == nil ? "desktopcomputer" : "network" }
+    var rosterSymbol: String { descriptor.isLocal ? "desktopcomputer" : "network" }
     var rosterTint: AnyShapeStyle { Theme.Colors.textSecondary }
 }

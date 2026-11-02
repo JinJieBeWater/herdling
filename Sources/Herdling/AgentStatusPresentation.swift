@@ -5,6 +5,7 @@ extension AgentStatus {
     var indicatorSymbolName: String {
         switch self {
         case .blocked: "xmark.circle.fill"
+        case .error: "exclamationmark.circle.fill"
         case .working: "circle.lefthalf.filled"
         case .done: "checkmark.circle.fill"
         case .idle: "circle"
@@ -15,7 +16,7 @@ extension AgentStatus {
     /// Vivid badge fill for states that need attention; nil keeps the neutral low-key badge.
     var badgeTint: Color? {
         switch self {
-        case .blocked, .working: color
+        case .blocked, .error, .working: color
         case .done, .idle, .unknown: nil
         }
     }
@@ -23,6 +24,7 @@ extension AgentStatus {
     var rosterLabel: String {
         switch self {
         case .blocked: "needs you"
+        case .error: "error"
         case .done: "done"
         case .working: "working"
         case .idle: "ready"
@@ -31,9 +33,10 @@ extension AgentStatus {
     }
 
     func menuBarLabel(count: Int) -> String {
-        let agent = count == 1 ? "agent" : "agents"
+        let agent = count == 1 ? "item" : "items"
         return switch self {
         case .blocked: "blocked \(agent)"
+        case .error: "failed \(agent)"
         case .working: "working \(agent)"
         case .done: "completed \(agent)"
         case .idle: "idle \(agent)"
@@ -44,6 +47,7 @@ extension AgentStatus {
     var color: Color {
         switch self {
         case .blocked: Color(nsColor: StatusPalette.blocked)
+        case .error: Color(nsColor: StatusPalette.blocked)
         case .working: Color(nsColor: StatusPalette.working)
         case .done, .idle, .unknown: .secondary
         }
