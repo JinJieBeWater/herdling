@@ -8,7 +8,7 @@ Herdling 是 [Herdr](https://herdr.dev/) 的 macOS 菜单栏配套工具，同�
 
 需要 **macOS 15+**。旧版 Herdr 使用 **Ghostty 1.4+** 或 **Kero 及其 `kero` CLI**；Core 使用连接到同一 Core 的**原生 Herdr App**。
 
-![Herdling 菜单栏面板中的 Herdr 示例会话](docs/media/herdling-overview.png)
+![Herdr App 上方的 Herdling Activity 面板：等待输入的 agent 排在最前，其次是已完成的](docs/media/herdling-overview.png)
 
 ## 功能
 
@@ -21,9 +21,9 @@ Core 完成提示沿用 Herdr App 的 seen 状态，也会同步直接在 App �
 
 ## 演示
 
-[![演示：Activity、跳转到 Ghostty、浏览 Sources](docs/media/herdling-demo.gif)](docs/media/herdling-demo.mp4)
+[![演示：在 Safari 中阅读时 agent 等待输入，Herdling 打开它在 Herdr App 中的 pane，查看已完成的 agent 后菜单栏提示随之清除](docs/media/herdling-demo.gif)](docs/media/herdling-demo.mp4)
 
-查看 [23 秒演示（MP4）](docs/media/herdling-demo.mp4)：在 Activity 中找到等待输入的任务，跳转到 Ghostty，批准示例改动，再浏览 Sources 并打开另一个项目。录制于隔离 macOS VM，使用脚本化示例任务，剪去了等待空档；不含真实工作会话或 AI 推理，未演示 Core、SSH 或 Kero。
+查看 [34 秒演示（MP4）](docs/media/herdling-demo.mp4)：在 Safari 中阅读时，一个 agent 请求批准。Herdling 在菜单栏和 Activity 顶部提示，一次点击打开它在 Herdr App 中的 pane，在那里批准。回到 Safari 后另一个 agent 完成，从 Activity 打开即标记为已查看，菜单栏提示随之清除。Sources 列出全部 Core 终端，包括普通 shell。使用 Herdr App 0.1.12、Herdr Core 和 [Herdr T3](https://github.com/JinJieBeWater/herdr-t3) 布局，在隔离 macOS VM 中以脚本化示例任务实时录制；不含真实工作会话或 AI 推理，未演示旧版 Herdr、SSH 或 Kero。
 
 ## 安装
 

@@ -8,7 +8,7 @@ Herdling is a macOS menu bar companion for [Herdr](https://herdr.dev/). Monitor 
 
 Requires **macOS 15+**. Legacy Herdr uses **Ghostty 1.4+** or **Kero with its `kero` CLI**. Core uses the **native Herdr App** connected to the same Core.
 
-![Herdling menu bar panel showing example Herdr sessions](docs/media/herdling-overview.png)
+![Herdling's Activity panel over Herdr App: the agent that needs input first, then the one that finished](docs/media/herdling-overview.png)
 
 ## What it does
 
@@ -21,9 +21,9 @@ Core completion prompts follow Herdr App's own seen state, including changes mad
 
 ## Demo
 
-[![Demo: Activity, jumping to Ghostty, and browsing Sources](docs/media/herdling-demo.gif)](docs/media/herdling-demo.mp4)
+[![Demo: while you read in Safari, an agent needs input; Herdling opens its pane in Herdr App, then clears a finished agent once you've seen it](docs/media/herdling-demo.gif)](docs/media/herdling-demo.mp4)
 
-Watch the [23-second demo (MP4)](docs/media/herdling-demo.mp4): find a blocked task in Activity, jump to Ghostty, approve the sample change, then browse Sources and open another project. Recorded in an isolated macOS VM with scripted sample tasks; waiting time is trimmed. No real work sessions or AI inference are shown. Core, SSH, and Kero are not demonstrated.
+Watch the [34-second demo (MP4)](docs/media/herdling-demo.mp4): while you read in Safari, an agent asks for approval. Herdling shows it in the menu bar and at the top of Activity; one click opens its pane in Herdr App, where you approve it. Back in Safari, another agent finishes; opening it from Activity marks it seen, and the menu bar clears. Sources lists every Core terminal, including plain shells. Recorded in real time with Herdr App 0.1.12, Herdr Core and the [Herdr T3](https://github.com/JinJieBeWater/herdr-t3) layout in an isolated macOS VM, using scripted sample tasks. No real work sessions or AI inference are shown. Legacy Herdr, SSH, and Kero are not demonstrated.
 
 ## Install
 
