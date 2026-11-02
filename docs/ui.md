@@ -294,7 +294,8 @@ Settings 是**自己的 `NSWindow`**，不是面板里的一个子页面。
 
 - 尺寸 `settingsWidth 560`，高度由内容决定；有真实红绿灯与系统 titlebar 带；`titlebarAppearsTransparent = false`，让 AppKit 自己画那条带；`isMovableByWindowBackground = false`。
 - 内容是一个 `Form` + `.formStyle(.grouped)`：卡片、行内缩、hairline 都是系统画的，读起来和"系统设置"一致。
-- **单栏，无侧边栏。** tinycast 用 `NavigationSplitView` 是因为它有一打以上 pane；Herdling 只有四组。等到 pane 超过五个再加，别提前加。
+- **单栏，无侧边栏。** tinycast 用 `NavigationSplitView` 是因为它有一打以上 pane；Herdling 只有三组。等到 pane 超过五个再加，别提前加。
+- **General 在前，旧版分组在后。** Core 固定在 Herdr App 打开，没有设置项；`Legacy Herdr`（终端）和 `Legacy SSH Sources` 只在本机装有旧版 `herdr` 时出现。
 - 一行的 label 是 `SettingsLabel`：可选 `RowSymbol` + 标题 + 副标题。外面包 stock 控件（`Toggle` / `Picker` / `LabeledContent`），不要手搓带内边距的 `HStack`。
 - 一个被关掉的东西要读起来就是关的：开关关着的行，图标取 `textTertiary` 色；要禁用整行时用 `.disabled(...)` 加 `.opacity(0.45)`——裸 `.disabled` 会让标题留在全强度上。
 - 标题/副标题的用词省着用：副标题只在标题漏掉一个后果或限制时出现，不复述标题。

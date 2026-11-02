@@ -261,7 +261,7 @@ final class SessionStore {
     private let activateClient: ClientActivation
     private let loadTerminalStatus: TerminalStatusLoader
     private let coreMonitor: (any HerdrCoreMonitoring)?
-    private let legacyEnabled: Bool
+    let legacyEnabled: Bool
     private let focusCoreApp: CoreAppFocus
     private let loadCoreAppSnapshot: CoreAppSnapshotLoader
     private let coreAppChanges: CoreAppChanges

@@ -8,9 +8,12 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            sshSources
-            terminal
             general
+            // Core always opens in Herdr App; these groups only configure legacy Herdr.
+            if store.legacyEnabled {
+                legacyTerminal
+                sshSources
+            }
 
             if let error = store.settingsError {
                 Section {
@@ -51,14 +54,14 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            Text("Herdr SSH Sources")
+            Text("Legacy SSH Sources")
         } footer: {
-            Text("These hosts are used for the original Herdr. Core uses its own machines; Herdling does not add or connect them.")
+            Text("Core uses its own machines; Herdling does not add or connect them.")
         }
     }
 
-    private var terminal: some View {
-        Section("Terminal") {
+    private var legacyTerminal: some View {
+        Section {
             Picker(selection: Binding(
                 get: { store.terminalApplication },
                 set: { store.setTerminalApplication($0) }
@@ -68,8 +71,7 @@ struct SettingsView: View {
                 }
             } label: {
                 SettingsLabel(
-                    title: "Application",
-                    subtitle: "Open legacy Herdr sessions here. Core opens in Herdr App.",
+                    title: "Terminal",
                     symbol: "terminal",
                     tint: Theme.Hue.blue
                 )
@@ -108,6 +110,10 @@ struct SettingsView: View {
                     tint: store.terminalApplication == .ghostty ? Theme.Hue.orange : Theme.Hue.blue
                 )
             }
+        } header: {
+            Text("Legacy Herdr")
+        } footer: {
+            Text("Herdr Core sessions always open in Herdr App.")
         }
     }
 

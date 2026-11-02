@@ -37,9 +37,9 @@ From **0.2.0**, right-click the menu bar icon → **Check for Updates…**. Back
 ## Setup
 
 1. Start a legacy Herdr session or your usual Herdr Core, then click Herdling in the menu bar. If both are running, Herdling monitors both.
-2. Open **Settings** with `⌘,` or by right-clicking the menu bar icon. Under **Terminal → Application**, choose **Ghostty** (default) or **Kero** for legacy Herdr. Core always opens in Herdr App; existing preferences are preserved.
+2. Open **Settings** with `⌘,` or by right-clicking the menu bar icon. Core always opens in Herdr App and needs no setup. If legacy Herdr is installed, choose **Ghostty** (default) or **Kero** under **Legacy Herdr → Terminal**; existing preferences are preserved.
 3. **Ghostty:** allow Herdling to control Ghostty when macOS asks, keep `macos-applescript` enabled (the default), and choose Tab or Window for new clients. **Kero:** uses its native CLI; no Automation permission or Tab/Window setting is needed.
-4. **Optional legacy SSH:** enable named hosts under **Herdr SSH Sources**. Each host needs legacy Herdr, non-interactive SSH access, and `nc` with Unix-domain socket support. These selections affect only legacy sessions. Core uses the machines already configured in Core. See [remote setup and connection check](docs/development.md#remote-hosts).
+4. **Optional legacy SSH:** enable named hosts under **Legacy SSH Sources**. Each host needs legacy Herdr, non-interactive SSH access, and `nc` with Unix-domain socket support. These selections affect only legacy sessions. Core uses the machines already configured in Core. See [remote setup and connection check](docs/development.md#remote-hosts).
 
 ## Controls
 

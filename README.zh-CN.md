@@ -37,9 +37,9 @@ Core 完成提示沿用 Herdr App 的 seen 状态，也会同步直接在 App �
 ## 配置
 
 1. 启动旧版 Herdr Session 或平时使用的 Herdr Core，然后点击菜单栏中的 Herdling。两者同时运行时，Herdling 同时监控。
-2. 按 `⌘,` 或右键点击菜单栏图标，打开 **Settings**。在 **Terminal → Application** 中为旧版 Herdr 选择 **Ghostty**（默认）或 **Kero**。Core 固定在 Herdr App 中打开；原有偏好保留。
+2. 按 `⌘,` 或右键点击菜单栏图标，打开 **Settings**。Core 固定在 Herdr App 中打开，无需配置。装有旧版 Herdr 时，在 **Legacy Herdr → Terminal** 中选择 **Ghostty**（默认）或 **Kero**；原有偏好保留。
 3. **Ghostty：** 按 macOS 提示允许 Herdling 控制 Ghostty，保持 `macos-applescript` 启用（默认值），并选择新 client 使用 Tab 还是 Window。**Kero：** 使用原生 CLI，无需自动化权限或 Tab/Window 设置。
-4. **可选旧版 SSH：** 在 **Herdr SSH Sources** 中启用命名主机。每台主机都需要旧版 Herdr、非交互式 SSH 登录，以及支持 Unix domain socket 的 `nc`。这些选择只影响旧版 Session；Core 沿用自身已配置的 machine。参见[远程配置与连接检查](docs/development.zh-CN.md#远程主机)。
+4. **可选旧版 SSH：** 在 **Legacy SSH Sources** 中启用命名主机。每台主机都需要旧版 Herdr、非交互式 SSH 登录，以及支持 Unix domain socket 的 `nc`。这些选择只影响旧版 Session；Core 沿用自身已配置的 machine。参见[远程配置与连接检查](docs/development.zh-CN.md#远程主机)。
 
 ## 操作
 
