@@ -186,7 +186,7 @@ SF Symbol 的显式字号，也是 token：`leading 14 regular` · `navigation 1
 
 ### 查看与定位
 
-行为与验收范围见 [Agent 查看与定位设计](agent-navigation-design.md)。HTML 原型不代替原生验收。
+行为契约见 [Agent 查看与定位设计](agent-navigation-design.md)。
 
 - 顶栏用 **Activity / Sources** 互斥视图切换，两个选项之间保留xs（4pt），按钮背景与名单共享6pt左边界。Activity用波形表示状态动态，Sources用服务器表示本机和SSH来源；14pt Medium裸字形使用独立14pt槽，后接10pt布局间距和10pt水平内缩，没有图标盘。图标中心与未缩进名单同在23pt，文字从40pt开始。当前选项使用主色文字和图标，其余使用次级色；两项静止时均透明，悬停时按命令菜单显示强调色底、白字和白色图标。28pt视觉表面居于38pt点击区中央，上、左外壳留白均6pt，四角均6pt。没有整条底板、共用轨道、下划线、常驻边框或第二层玻璃；当前视图不使用常驻底色。每次打开进入Activity：在线blocked → done → working → 最近三个idle；各等级按Herdr的状态更新时间由新到旧，同时间保留来源快照顺序。整个列表平铺，不显示分组标题或额外数量；idle不依赖成功定位记录。
 - 顶栏选项使用系统 callout Regular（macOS 默认12pt），两项及选中前后的字号、字重相同；选中靠底色与文字明暗区分。列表标题仍为 body，分组标题仍为 subheadline Medium。
