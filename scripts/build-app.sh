@@ -50,7 +50,7 @@ mkdir -p "$staged_app/Contents/"{MacOS,Resources,Frameworks}
 cp "$bin_dir/Herdling" "$staged_app/Contents/MacOS/Herdling"
 cp "$root/Resources/Info.plist" "$staged_app/Contents/Info.plist"
 cp \
-  "$root/Resources/herdr-mark.svg" \
+  "$root/Resources/AppIcon.icns" \
   "$root/Resources/THIRD_PARTY_NOTICES.md" \
   "$root/Resources/Herdr-LICENSE.txt" \
   "$root/Resources/Sparkle-LICENSE.txt" \

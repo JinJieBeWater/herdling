@@ -77,7 +77,7 @@ main_dependencies="$(otool -L "$app/Contents/MacOS/Herdling")"
 grep -q 'path @executable_path/../Frameworks ' <<< "$main_loads"
 grep -q '@rpath/Sparkle.framework/Versions/B/Sparkle ' <<< "$main_dependencies"
 codesign --verify --deep --strict "$app"
-for resource in herdr-mark.svg THIRD_PARTY_NOTICES.md Herdr-LICENSE.txt Sparkle-LICENSE.txt; do
+for resource in AppIcon.icns THIRD_PARTY_NOTICES.md Herdr-LICENSE.txt Sparkle-LICENSE.txt; do
   cmp "$root/Resources/$resource" "$app/Contents/Resources/$resource"
 done
 printf 'packaging_verified=%s\n' "$app"

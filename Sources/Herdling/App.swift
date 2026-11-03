@@ -16,7 +16,6 @@ enum HerdlingApp {
         }
         let app = NSApplication.shared
         app.disableRelaunchOnLogin()
-        app.applicationIconImage = HerdrBrand.applicationIcon
         let delegate = AppDelegate(instanceLock: instanceLock)
         app.delegate = delegate
         app.setActivationPolicy(.accessory)

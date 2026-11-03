@@ -90,11 +90,11 @@ for scenario in build-failure copy-failure sign-failure architecture-failure rpa
   for link in Sparkle Resources Autoupdate Updater.app XPCServices; do
     ln -s "Versions/Current/$link" "$framework/$link"
   done
-  for resource in Info.plist herdr-mark.svg THIRD_PARTY_NOTICES.md Herdr-LICENSE.txt Sparkle-LICENSE.txt; do
+  for resource in Info.plist AppIcon.icns THIRD_PARTY_NOTICES.md Herdr-LICENSE.txt Sparkle-LICENSE.txt; do
     printf '%s\n' "$resource" > "$fixture/Resources/$resource"
   done
   if [[ "$scenario" == copy-failure ]]; then
-    rm "$fixture/Resources/Herdr-LICENSE.txt"
+    rm "$fixture/Resources/AppIcon.icns"
   elif [[ "$scenario" == missing-helper ]]; then
     rm "$version/Autoupdate"
   elif [[ "$scenario" == broken-symlink ]]; then
@@ -113,7 +113,7 @@ for scenario in build-failure copy-failure sign-failure architecture-failure rpa
     cmp "$fixture/expected-stdout" "$fixture/stdout"
     cmp "$fixture/product/Herdling" "$app/Contents/MacOS/Herdling"
     cmp "$fixture/Resources/Info.plist" "$app/Contents/Info.plist"
-    for resource in herdr-mark.svg THIRD_PARTY_NOTICES.md Herdr-LICENSE.txt Sparkle-LICENSE.txt; do
+    for resource in AppIcon.icns THIRD_PARTY_NOTICES.md Herdr-LICENSE.txt Sparkle-LICENSE.txt; do
       cmp "$fixture/Resources/$resource" "$app/Contents/Resources/$resource"
     done
     [[ -f "$app/Contents/signature" && ! -e "$app/Contents/old-resource" ]] || exit 1

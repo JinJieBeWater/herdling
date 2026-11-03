@@ -8,6 +8,8 @@
     <string>Herdling</string>
     <key>CFBundleExecutable</key>
     <string>Herdling</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>dev.herdr.Herdling</string>
     <key>CFBundleInfoDictionaryVersion</key>
