@@ -19,6 +19,42 @@ struct DualRuntimeTests {
     }
 
     @Test
+    func subAgentsFoldIntoTheirParentAsHerdrT3FocusReadsThem() {
+        let rule = CoreTerminalInfo.treeStatus
+        #expect(rule(.done, [.working, .done]) == .done)
+        #expect(rule(.idle, [.working, .done]) == .working)
+        #expect(rule(.working, [.error]) == .blocked)
+        #expect(rule(.idle, [.done, .idle]) == .idle)
+        #expect(rule(.done, [.done]) == .done)
+        #expect(rule(.error, [.working]) == .error)
+        #expect(rule(nil, [.blocked]) == nil)
+    }
+
+    @Test
+    func parentRowCarriesItsWholeSubAgentTree() async {
+        let monitor = DualCoreMonitor()
+        let store = makeStore(monitor: monitor, app: appSnapshot(status: .done))
+        await store.refresh()
+        store.start()
+        func parent(_ kids: [HerdrCoreTerminal]) async -> CoreTerminalInfo? {
+            await monitor.emit(.snapshot(snapshot(terminals: [wireTerminal("t7", .done)] + kids)))
+            return store.sources[0].core?.terminals.first { $0.id == coreID("t7") }
+        }
+        // Its unread reply shows first; the working sub-agent still shows beside it.
+        let working = await parent([wireTerminal("t8", .working, parent: "t7"), wireTerminal("t9", .done, parent: "t7")])
+        #expect(working?.status == .done)
+        #expect(working?.workingSubAgents == 1)
+        #expect(store.sources[0].core?.terminals.first { $0.id == coreID("t8") }?.status == nil)
+        #expect(NavigationDestination.coreTerminal(coreID("t7")).resolve(in: store.sources)?.subtitle.hasSuffix("· 1 sub-agent working") == true)
+        let stuck = await parent([wireTerminal("t8", .working, parent: "t7"), wireTerminal("t9", .error, parent: "t8")])
+        #expect(stuck?.status == .blocked)
+        let finished = await parent([wireTerminal("t8", .done, parent: "t7")])
+        #expect(finished?.status == .done)
+        #expect(finished?.workingSubAgents == 0)
+        await store.stopAndWait()
+    }
+
+    @Test
     func coreTopologyFreezesButAvailabilityAndStatusStayLive() {
         var source = mixedSource()
         let browser = NavigationBrowser()
@@ -430,11 +466,11 @@ struct DualRuntimeTests {
         await store.stopAndWait()
     }
 
-    private func makeStore(monitor: DualCoreMonitor, sources: [SourceDescriptor] = [.local]) -> SessionStore {
+    private func makeStore(monitor: DualCoreMonitor, sources: [SourceDescriptor] = [.local], app: HerdrAppSnapshot = appSnapshot()) -> SessionStore {
         SessionStore(client: HerdrClient(executable: nil), loadSource: { _ in
             [.init(name: "default", groups: [.init(id: "w1", name: "project", agents: [legacyAgent("t7", .blocked)])], error: nil)]
         }, loadBranches: { _, _ in [:] }, sourceDescriptors: sources, defaults: PreviewFixtures.renderDefaults(),
-                     coreMonitor: monitor, coreAppChanges: quietAppChanges, loadCoreAppSnapshot: { _ in appSnapshot() })
+                     coreMonitor: monitor, coreAppChanges: quietAppChanges, loadCoreAppSnapshot: { _ in app })
     }
 
     private func navigationSettles(_ store: SessionStore) async {
@@ -474,12 +510,12 @@ private func mixedSource() -> SourceInfo {
                            online: true, error: nil, retryAt: nil))
 }
 
-private func wireTerminal(_ terminal: String, _ status: AgentStatus = .blocked, remote: Bool = false) -> HerdrCoreTerminal {
+private func wireTerminal(_ terminal: String, _ status: AgentStatus = .blocked, remote: Bool = false, parent: String? = nil) -> HerdrCoreTerminal {
     .init(target: .init(id: coreID(terminal, core: remote ? "core-remote" : "core-local"), socketPath: "/tmp/dual-runtime-test.sock",
                         entryCoreID: "core-local", address: remote ? "kvm/\(terminal)" : terminal),
           title: "same-name", rawStatus: status.rawValue, statusChangedAt: Date(timeIntervalSince1970: 1),
           cwd: "/same/path", machineName: remote ? "kvm" : nil, machineTarget: remote ? "kvm" : nil,
-          online: true, reported: true, state: "live", statusApp: "pi", statusMessage: nil)
+          online: true, reported: true, state: "live", statusApp: "pi", statusMessage: nil, parent: parent)
 }
 
 private func snapshot(remote: Bool = false, terminals: [HerdrCoreTerminal]? = nil) -> HerdrCoreSnapshot {

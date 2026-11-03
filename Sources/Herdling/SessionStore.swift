@@ -195,6 +195,18 @@ struct CoreTerminalInfo: Identifiable, Sendable {
     let cwd: String
     let updatedAt: Date
     var online: Bool
+    var workingSubAgents = 0
+
+    /// One row for an agent and the sub-agents it started, as Herdr T3 reads them: a stuck sub-agent needs the
+    /// person; the parent's unread reply comes next; a parent waiting on working sub-agents is still at work; a
+    /// sub-agent's own done is news for its parent, not for the person. Without an App status it is no agent row.
+    static func treeStatus(own: AgentStatus?, subAgents: [AgentStatus]) -> AgentStatus? {
+        guard let own else { return nil }
+        if own == .blocked || own == .error { return own }
+        let kids = subAgents.map { $0 == .error ? .blocked : $0 == .done ? .idle : $0 }
+        if kids.contains(.blocked) { return .blocked }
+        return own != .done && kids.contains(.working) ? .working : own
+    }
 }
 
 struct CoreSourceInfo: Sendable {
@@ -837,16 +849,32 @@ final class SessionStore {
             ? coreAppSnapshot?.terminals.reduce(into: [String: AgentStatus]()) { states, terminal in
                 states[terminal.address] = terminal.status
             } ?? [:] : [:]
+        // A sub-agent without a pane has no App status; its Core report is all there is.
+        let children = Dictionary(grouping: terminals.filter { $0.parent != nil }, by: { $0.parent! })
+        func subAgentStatuses(of address: String) -> [AgentStatus] {
+            var result: [AgentStatus] = [], pending = [address], visited: Set<String> = [address]
+            while let next = pending.popLast() {
+                for child in children[next] ?? [] where visited.insert(child.target.address).inserted {
+                    pending.append(child.target.address)
+                    if let status = appStates[child.target.address] ?? child.rawStatus.flatMap(AgentStatus.init(rawValue:)) {
+                        result.append(status)
+                    }
+                }
+            }
+            return result
+        }
         for coreID in coreIDs {
             let machine = coreID == snapshot.entryCoreID ? nil : machines[coreID]
             let online = machine?.online ?? (coreID == snapshot.entryCoreID)
             let records = terminals.filter { $0.target.id.coreID == coreID }.map { terminal in
-                let status = appStates[terminal.target.address]
+                let subAgents = subAgentStatuses(of: terminal.target.address)
+                let status = CoreTerminalInfo.treeStatus(own: appStates[terminal.target.address], subAgents: subAgents)
                 let old = previous[coreID]?.terminals.first { $0.id == terminal.target.id }
                 let updatedAt = old?.status == status ? old?.updatedAt ?? .distantPast
                     : old?.status == nil ? terminal.statusChangedAt ?? .distantPast : Date()
                 return CoreTerminalInfo(target: terminal.target, title: terminal.title, status: status,
-                                        cwd: terminal.cwd, updatedAt: updatedAt, online: online && terminal.online)
+                                        cwd: terminal.cwd, updatedAt: updatedAt, online: online && terminal.online,
+                                        workingSubAgents: status == nil ? 0 : subAgents.filter { $0 == .working }.count)
             }
             let retained = online ? records : (previous[coreID]?.terminals ?? records).map {
                 var stale = $0

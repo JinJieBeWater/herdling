@@ -85,6 +85,13 @@ struct HerdrCoreTests {
     }
 
     @Test
+    func parentsAreQualifiedOnTheirOwnMachine() throws {
+        let directory = try makeDirectory(terminals: [terminal("t7"), terminal("t8", parent: "t7"), terminal("box/t9", parent: "t3")])
+        let parents = try directory.snapshot().terminals.map { "\($0.target.address)<\($0.parent ?? "-")" }
+        #expect(parents == ["box/t9<box/t3", "t7<-", "t8<t7"])
+    }
+
+    @Test
     func eventsApplyRootStatusOnceAndMissedReplacesDirectory() throws {
         var directory = try makeDirectory(terminals: [terminal("t7")])
         #expect(try directory.snapshot().terminals[0].rawStatus == nil)
@@ -175,9 +182,10 @@ struct HerdrCoreTests {
     }
 }
 
-private func terminal(_ address: String, state: String? = nil, nativeState: String = "live") -> String {
+private func terminal(_ address: String, state: String? = nil, nativeState: String = "live", parent: String? = nil) -> String {
     let status = state.map { "{\"state\":\"\($0)\"}" } ?? "null"
-    return "{\"address\":\"\(address)\",\"cwd\":\"/fixture\",\"state\":\"\(nativeState)\",\"title\":\"same name\",\"pid\":42,\"status\":\(status),\"reported\":\(state != nil)}"
+    let parentJSON = parent.map { "\"\($0)\"" } ?? "null"
+    return "{\"address\":\"\(address)\",\"cwd\":\"/fixture\",\"state\":\"\(nativeState)\",\"title\":\"same name\",\"pid\":42,\"status\":\(status),\"reported\":\(state != nil),\"parent\":\(parentJSON)}"
 }
 
 private func makeDirectory(entryID: String = "entry-A", terminals: [String]) throws -> HerdrCoreDirectory {

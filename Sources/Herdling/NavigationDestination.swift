@@ -57,10 +57,12 @@ enum NavigationDestination: Hashable, Sendable {
             for source in sources {
                 guard let core = source.core,
                       let terminal = core.terminals.first(where: { $0.id == id }) else { continue }
+                let working = terminal.workingSubAgents
+                let subAgents = working == 0 ? "" : " · \(working) sub-agent\(working == 1 ? "" : "s") working"
                 return ResolvedNavigationDestination(
                     destination: self, source: source.descriptor, session: nil, agent: nil, group: nil,
                     isAvailable: core.online && terminal.online, title: terminal.title,
-                    subtitle: "\(source.descriptor.name) / Core / \(terminal.target.address)", coreTerminal: terminal
+                    subtitle: "\(source.descriptor.name) / Core / \(terminal.target.address)\(subAgents)", coreTerminal: terminal
                 )
             }
             return nil

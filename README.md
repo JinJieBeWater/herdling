@@ -12,7 +12,7 @@ Requires **macOS 15+**. Legacy Herdr uses **Ghostty 1.4+** or **Kero with its `k
 
 ## What it does
 
-- **Activity** shows blocked, done, working, and recent idle states from both runtimes. Core activity follows the native Herdr App's seen-based states, not raw Core reports. Idle ordering follows status changes, not saved navigation history. Terminals without an App status appear only in Sources.
+- **Activity** shows blocked, done, working, and recent idle states from both runtimes. Core activity follows the native Herdr App's seen-based states, not raw Core reports. Idle ordering follows status changes, not saved navigation history. Terminals without an App status appear only in Sources. A Core agent's row includes the sub-agents it started: one that is stuck shows the row as blocked; otherwise the agent's own unread reply shows as done, and the row stays working while any of them work, with the count of working sub-agents; a sub-agent finishing is its parent's news, not a separate prompt.
 - **Sources** browses legacy sessions, Spaces, and worktrees, alongside Core terminals grouped by machine. A Core terminal can be an ordinary shell; listing it does not make it an AI agent. Expand one source at a time, or keep them all closed.
 - **Terminal jumps** reuse or create a verified Ghostty/Kero client for legacy Herdr. Core targets focus their existing pane in Herdr App and bring that App forward; the terminal preference does not affect Core.
 - **Local + remote** activity stays current through runtime socket event streams. Legacy SSH sources come from `~/.ssh/config`, including `Include` files; Core uses its own machines. Both runtimes can run at once without a mode switch.

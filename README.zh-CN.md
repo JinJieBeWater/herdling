@@ -12,7 +12,7 @@ Herdling 是 [Herdr](https://herdr.dev/) 的 macOS 菜单栏配套工具，同�
 
 ## 功能
 
-- **Activity** 展示两套运行时的 blocked、done、working 和最近 idle 状态。Core 使用 Herdr App 结合 seen 得出的状态，不直接展示 Core 原始报告。idle 按状态变化排序，不按定位历史排序；没有 App 状态的终端只出现在 Sources。
+- **Activity** 展示两套运行时的 blocked、done、working 和最近 idle 状态。Core 使用 Herdr App 结合 seen 得出的状态，不直接展示 Core 原始报告。idle 按状态变化排序，不按定位历史排序；没有 App 状态的终端只出现在 Sources。Core agent 的一行包含它启动的 sub-agent：任一 sub-agent 卡住时该行显示 blocked；否则父 agent 自己有未读回复时显示 done，有 sub-agent 在运行时该行保持 working，并显示运行中的 sub-agent 数；sub-agent 完成只回报给父 agent，不单独提示。
 - **Sources** 浏览旧版的 Session、Space、worktree，以及按设备分组的 Core 终端。Core 终端可以只是普通 shell，列入目录不表示它是 AI agent。一次可展开一个来源，也可全部收起。
 - **终端跳转** 为旧版 Herdr 复用或新建并验证 Ghostty/Kero client。Core 定位到 Herdr App 中已有的 pane 并将 App 置前，不受终端偏好影响。
 - **本机 + 远程** 活动通过各自的 Socket 事件流同步。旧版 SSH 来源读取自 `~/.ssh/config`，包括 `Include` 文件；Core 沿用自身的 machine 配置。两套运行时可以同时运行，无需切换模式。

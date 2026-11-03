@@ -13,6 +13,8 @@ struct HerdrCoreTerminal: Equatable, Sendable {
     let state: String
     let statusApp: String?
     let statusMessage: String?
+    /// The address of the terminal that started it with `hc run`, prefixed like `target.address`.
+    var parent: String? = nil
 }
 
 struct HerdrCoreMachine: Codable, Equatable, Sendable {
@@ -77,6 +79,7 @@ struct HerdrCoreWireTerminal: Codable, Sendable {
     var reported: Bool?
     var pid: UInt32?
     var reason: String?
+    var parent: String?
 }
 
 struct HerdrCoreSubscription: Decodable, Sendable {
@@ -250,6 +253,10 @@ struct HerdrCoreDirectory: Sendable {
             let statusTitle = terminal.status?.title.flatMap { $0.isEmpty ? nil : $0 }
             let title = terminal.name.flatMap { $0.isEmpty ? nil : $0 }
                 ?? statusTitle ?? terminal.title.flatMap { $0.isEmpty ? nil : $0 } ?? terminal.address
+            // A parent is a bare address on its own machine; qualify it the way this terminal's address is.
+            let parent = terminal.parent.flatMap { $0.isEmpty ? nil : $0 }.map { bare in
+                parts.machine.map { bare.contains("/") ? bare : "\($0)/\(bare)" } ?? bare
+            }
             return HerdrCoreTerminal(
                 target: CoreTerminalTarget(id: CoreTerminalID(coreID: coreID, terminalID: parts.terminal), socketPath: socketPath, entryCoreID: entryCoreID, address: terminal.address),
                 title: title,
@@ -262,7 +269,8 @@ struct HerdrCoreDirectory: Sendable {
                 reported: terminal.reported ?? false,
                 state: terminal.state,
                 statusApp: terminal.status?.app,
-                statusMessage: terminal.status?.msg
+                statusMessage: terminal.status?.msg,
+                parent: parent
             )
         }
         return HerdrCoreSnapshot(entryCoreID: entryCoreID, socketPath: socketPath, terminals: records, machines: machines)
