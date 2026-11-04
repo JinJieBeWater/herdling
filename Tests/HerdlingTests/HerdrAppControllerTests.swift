@@ -28,6 +28,15 @@ struct HerdrAppControllerTests {
         #expect(fixture.proofCalls == 2)
     }
 
+    @Test
+    func briefProofFailureDoesNotHideAppStatus() async throws {
+        let fixture = NativeAppFixture()
+        fixture.transientProofFailures = 1
+        let snapshot = try await fixture.controller().snapshot(entryCoreID: "entry-A")
+        #expect(snapshot.terminals.map(\.address) == ["t7"])
+        #expect(fixture.proofCalls == 3)
+    }
+
     @Test(arguments: ["working", "idle", "blocked", "done"])
     func focusUsesNativePaneAndRaisesThenReadsBackExactDestination(status: String) async throws {
         let fixture = NativeAppFixture(world: appWorld([appTerminal("t7", status: status)]))
@@ -184,6 +193,7 @@ private final class NativeAppFixture: @unchecked Sendable {
     var address = "t7"
     var hostingCoreID = "entry-A"
     var rejectProof = false
+    var transientProofFailures = 0
     var changeProofAt: Int?
     var statusOverride: (String, String?)?
     var foreground = true
@@ -212,7 +222,7 @@ private final class NativeAppFixture: @unchecked Sendable {
             },
             nativeProof: { app, core in
                 let count = self.lock.withLock { self.proofs += 1; return self.proofs }
-                guard !self.rejectProof, app == 901, core == 900 else { throw HerdrAppError.identityUnverified }
+                guard !self.rejectProof, count > self.transientProofFailures, app == 901, core == 900 else { throw HerdrAppError.identityUnverified }
                 let connection: Int32 = count >= (self.changeProofAt ?? Int.max) ? 903 : 902
                 return HerdrAppProcessBinding(appProcessID: app, coreProcessID: core, connectionProcessID: connection,
                                               appStarted: 1, coreStarted: 2, connectionStarted: 3)

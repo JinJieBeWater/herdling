@@ -55,8 +55,13 @@ struct CoreProcessInvocation: Sendable {
     }
 
     private static func processIsGone(_ pid: Int32) -> Bool {
-        // macOS also returns EINVAL for reaped PIDs; signal 0 only checks existence.
-        kill(pid, 0) == -1 && errno == ESRCH
+        // macOS also returns EINVAL for reaped PIDs. An exiting or unreaped child keeps its PID, so signal 0 still
+        // succeeds, but its path and arguments are already gone.
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0 else { return false }
+        return size == 0 || info.kp_proc.p_flag & P_WEXIT != 0
     }
 
     static func decode(_ data: Data) throws -> Self {

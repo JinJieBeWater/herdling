@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import Herdling
@@ -40,6 +41,18 @@ struct CoreProcessInvocationTests {
         }
         #expect(throws: CoreClientIdentityError.self) { try CoreProcessInvocation.load(pid: -1) }
         #expect(throws: CoreClientIdentityError.self) { try CoreProcessInvocation.load(pid: Int.max) }
+    }
+
+    @Test
+    func exitedChildAwaitingReapIsNotAnUnreadableProcess() throws {
+        var pid: pid_t = 0
+        var argv: [UnsafeMutablePointer<CChar>?] = [strdup("/usr/bin/true"), nil]
+        defer { free(argv[0]) }
+        #expect(posix_spawn(&pid, "/usr/bin/true", nil, nil, &argv, nil) == 0)
+        defer { waitpid(pid, nil, 0) }
+        var exit = siginfo_t()
+        try #require(waitid(P_PID, id_t(pid), &exit, WEXITED | WNOWAIT) == 0)
+        #expect(try CoreProcessInvocation.load(pid: Int(pid)) == nil)
     }
 
     private func arguments(_ argv: [String], environment: [String]) -> Data {

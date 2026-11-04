@@ -145,9 +145,13 @@ actor HerdrAppController {
         guard let corePID = core.transport.peerProcessID, corePID > 0, appProcessID > 0 else {
             throw HerdrAppError.identityUnverified
         }
-        let proof: HerdrAppProcessBinding
-        do { proof = try nativeProof(appProcessID, corePID) }
-        catch { throw HerdrAppError.identityUnverified }
+        // LaunchServices can briefly fail to resolve a running App; a real mismatch still fails every attempt.
+        var verified = try? nativeProof(appProcessID, corePID)
+        for _ in 0..<2 where verified == nil {
+            usleep(20_000)
+            verified = try? nativeProof(appProcessID, corePID)
+        }
+        guard let proof = verified else { throw HerdrAppError.identityUnverified }
         guard proof.appProcessID == appProcessID, proof.coreProcessID == corePID,
               expected == nil || expected == proof else { throw HerdrAppError.identityUnverified }
         return proof
